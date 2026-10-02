@@ -22,3 +22,7 @@ publish:
   owner: KrommerGmbH
   repo: cmh-hub-app
 # updateManifest 서명 키(Ed25519 · electron-updater v27 규칙)는 빌드 PC 의 .secrets/ 에 — 저장소에 넣지 않는다
+# W04 — node-llama-cpp 네이티브 바이너리는 asar 밖에(문서 guide/electron.md «binaries are not packed into the asar»)
+asarUnpack:
+  - "**/node_modules/node-llama-cpp/**"
+  - "**/node_modules/@node-llama-cpp/**"

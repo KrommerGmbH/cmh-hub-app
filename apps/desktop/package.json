@@ -16,7 +16,8 @@
   "dependencies": {
     "@cmh-hub-app/contracts": "workspace:*",
     "electron-updater": "catalog:",
-    "ghost-cursor": "catalog:"
+    "ghost-cursor": "catalog:",
+    "node-llama-cpp": "catalog:"
   },
   "devDependencies": {
     "electron": "catalog:",
