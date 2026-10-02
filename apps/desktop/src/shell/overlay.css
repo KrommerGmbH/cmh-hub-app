@@ -1,0 +1,11 @@
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; cursor: default;
+  font-family: "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; font-size: 12.5px; color: #e8eaed; user-select: none; }
+.band { position: fixed; top: 0; left: 0; right: 0; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: rgba(20, 20, 23, .92); border-bottom: 1px solid rgba(76, 141, 255, .6); }
+.band-dot { width: 8px; height: 8px; border-radius: 50%; background: #4c8dff; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.band-text { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.band-stop { height: 26px; padding: 0 12px; border-radius: 6px; border: 1px solid #3a3a40; background: transparent; color: #e8eaed; font: inherit; cursor: pointer; }
+.band-stop:hover { background: #2b2b30; }
+.cursor { position: fixed; left: 0; top: 0; pointer-events: none; will-change: transform; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+[hidden] { display: none !important; }

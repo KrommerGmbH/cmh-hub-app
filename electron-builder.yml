@@ -1,0 +1,24 @@
+# G01 · G02 — Windows 먼저(macOS 는 서명 없이 자동 업데이트가 안 된다 · PLAN G01)
+appId: de.krommer.cmh-hub-app
+productName: cmh-hub
+directories:
+  output: release
+files:
+  - "apps/desktop/dist/**"
+  - "apps/desktop/package.json"
+  - "!**/*.map"
+extraMetadata:
+  main: apps/desktop/dist/main/main.js
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+publish:
+  provider: github
+  owner: KrommerGmbH
+  repo: cmh-hub-app
+# updateManifest 서명 키(Ed25519 · electron-updater v27 규칙)는 빌드 PC 의 .secrets/ 에 — 저장소에 넣지 않는다

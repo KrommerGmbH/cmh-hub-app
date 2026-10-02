@@ -1,0 +1,29 @@
+{
+  "name": "desktop",
+  "productName": "cmh-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "pnpm run build && node scripts/run-electron.mjs",
+    "start": "node scripts/run-electron.mjs",
+    "dist:win": "pnpm run build && electron-builder --win --config ../../electron-builder.yml"
+  },
+  "dependencies": {
+    "@cmh-hub-app/contracts": "workspace:*",
+    "electron-updater": "catalog:",
+    "ghost-cursor": "catalog:"
+  },
+  "devDependencies": {
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "chrome-tabs": "catalog:",
+    "typescript": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  }
+}

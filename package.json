@@ -1,0 +1,15 @@
+{
+  "name": "cmh-hub-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CmhHub 에 딸린 데스크톱 앱 — 서버 Shopware 어드민을 크롬 모양 탭 + VS Code 식 split view 로 연다. 설치 ID 서명 · heartbeat · 로컬 작업 런타임(네이버 pane 드라이버 · cmh-crawler)",
+  "packageManager": "pnpm@10.25.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "typecheck": "pnpm -r run typecheck",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "dev": "pnpm --filter desktop dev",
+    "dist:win": "pnpm --filter desktop dist:win"
+  }
+}

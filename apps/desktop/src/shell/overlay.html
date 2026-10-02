@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>AI 작업 중</title>
+  <link rel="stylesheet" href="./overlay.css">
+</head>
+<body>
+  <!-- U07 ⑥ — 투명 덮개: 사람 클릭을 막고(맨 위) · «AI 작업 중» 띠 · 가짜 커서 -->
+  <div id="band" class="band" hidden>
+    <span class="band-dot" aria-hidden="true"></span>
+    <span id="band-text" class="band-text"></span>
+    <button id="band-stop" class="band-stop">멈추기</button>
+  </div>
+  <svg id="cursor" class="cursor" width="20" height="24" viewBox="0 0 20 24" hidden aria-hidden="true">
+    <path d="M2 1 L2 19 L7 14.5 L10.5 22 L13.5 20.5 L10 13 L17 13 Z" fill="#000" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>
+  </svg>
+  <script type="module" src="./overlay.js"></script>
+</body>
+</html>

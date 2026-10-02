@@ -1,0 +1,14 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# 판은 한 곳(catalog)에서만 정한다 — 본보기 ../cmh-mcp/pnpm-workspace.yaml
+catalog:
+  electron: '^44.5.1'
+  electron-builder: '^26.15.3'
+  electron-updater: '^6.8.9'
+  chrome-tabs: '5.4.0'
+  ghost-cursor: '^1.4.2'
+  typescript: '^5.9.3'
+  '@types/node': '^22.20.1'
+  vitest: '^5.0.3'
