@@ -62,6 +62,9 @@ button:disabled { opacity: .35; cursor: default; }
 .sash.horizontal { cursor: col-resize; }
 .sash.vertical { cursor: row-resize; }
 .sash:hover, .sash.dragging { background: var(--accent); }
+/* 끄는 동안 — 커서 모양을 유지하고 글자 선택을 막는다 */
+body.dragging-col, body.dragging-col * { cursor: col-resize !important; }
+body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 
 /* ── «+» 메뉴 ── */
 .menu { position: absolute; z-index: 10; min-width: 220px; padding: 6px; background: #26262b; border: 1px solid #3a3a40; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }

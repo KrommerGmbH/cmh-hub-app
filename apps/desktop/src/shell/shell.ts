@@ -1,5 +1,6 @@
-// U01 — 셸 페이지. 상태(ShellState)가 정본 · 받을 때마다 통째로 다시 그린다. window.hubShell 만 쓴다(Node · electron 없음).
-import type { ShellCommand, ShellState } from '@cmh-hub-app/contracts';
+// U01 — 셸 페이지. 상태(ShellState)가 정본 · 받을 때마다 다시 그린다. window.hubShell 만 쓴다(Node · electron 없음).
+// 스트립 · sash 요소는 id 로 재사용한다(지우고 새로 만들지 않는다) — 끌고 있는 sash 가 사라지면 포인터 캡처가 끊긴다(2026-10-02 사장님 «넓히고 좁히기가 안 된다»).
+import type { SashGeometry, ShellCommand, ShellState } from '@cmh-hub-app/contracts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -13,8 +14,24 @@ const stripTemplate = $<HTMLTemplateElement>('#strip-template');
 const menuEl = $<HTMLElement>('#newtab-menu');
 const modalEl = $<HTMLElement>('#update-modal');
 
+const stripEls = new Map<string, HTMLElement>();
+const sashEls = new Map<string, HTMLElement>();
+const sashData = new Map<string, SashGeometry>();
+
 let lastState: ShellState | null = null;
-let dragging: { sashId: string; orientation: 'horizontal' | 'vertical'; start: number; length: number; raf: number | null; pending: number | null } | null = null;
+
+interface Drag {
+  sashId: string;
+  pointerId: number;
+  orientation: 'horizontal' | 'vertical';
+  /** pointerdown 때의 split 자리 — 끄는 동안 바뀌지 않는다 */
+  start: number;
+  length: number;
+  raf: number | null;
+  pending: number | null;
+  lastSent: number | null;
+}
+let drag: Drag | null = null;
 
 function send(cmd: ShellCommand): void {
   window.hubShell?.send(cmd);
@@ -31,6 +48,12 @@ function place(el: HTMLElement, r: { x: number; y: number; width: number; height
   el.style.height = px(r.height);
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
+}
+
+// ───────────────────────── 제목줄 ─────────────────────────
+
 function renderTitle(state: ShellState): void {
   $<HTMLElement>('#server-host').textContent = `· ${state.serverHost}`;
   $<HTMLElement>('#pane-count').textContent = `pane ${state.paneCount} / ${state.maxPanes}`;
@@ -38,105 +61,160 @@ function renderTitle(state: ShellState): void {
   $<HTMLElement>('#window-controls').hidden = state.platform !== 'linux';
 }
 
-function renderStrip(state: ShellState, pane: ShellState['panes'][number]): HTMLElement {
+// ───────────────────────── 탭 스트립(pane 마다 · id 로 재사용) ─────────────────────────
+
+function createStrip(paneId: string): HTMLElement {
   const strip = (stripTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
-  strip.dataset['paneId'] = pane.id;
+  strip.dataset['paneId'] = paneId;
+  strip.querySelector<HTMLButtonElement>('.strip-newtab')!.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!lastState) return;
+    openNewTabMenu(lastState, paneId, (e.currentTarget as HTMLElement).getBoundingClientRect());
+  });
+  strip.querySelector<HTMLButtonElement>('.strip-split-right')!.addEventListener('click', () => send({ cmd: 'split', paneId, orientation: 'horizontal' }));
+  strip.querySelector<HTMLButtonElement>('.strip-split-down')!.addEventListener('click', () => send({ cmd: 'split', paneId, orientation: 'vertical' }));
+  strip.addEventListener('mousedown', () => {
+    const pane = lastState?.panes.find((p) => p.id === paneId);
+    if (pane && !pane.focused) send({ cmd: 'focusPane', paneId });
+  });
+  panesEl.appendChild(strip);
+  stripEls.set(paneId, strip);
+  return strip;
+}
+
+function renderTab(tab: ShellState['panes'][number]['tabs'][number]): HTMLElement {
+  const el = (tabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
+  el.dataset['tabId'] = tab.id;
+  el.classList.toggle('active', tab.active);
+  el.title = tab.title;
+  el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : '불러오는 중');
+  const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
+  const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
+  if (tab.loading) spinner.hidden = false;
+  else if (tab.favicon) {
+    favicon.src = tab.favicon;
+    favicon.hidden = false;
+  }
+  el.addEventListener('mousedown', (e) => {
+    if (e.button === 1) {
+      e.preventDefault();
+      send({ cmd: 'closeTab', tabId: tab.id });
+    }
+  });
+  el.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('.tab-close')) return;
+    send({ cmd: 'activateTab', tabId: tab.id });
+  });
+  el.querySelector<HTMLButtonElement>('.tab-close')!.addEventListener('click', (e) => {
+    e.stopPropagation();
+    send({ cmd: 'closeTab', tabId: tab.id });
+  });
+  return el;
+}
+
+function upsertStrip(pane: ShellState['panes'][number]): void {
+  const strip = stripEls.get(pane.id) ?? createStrip(pane.id);
   strip.classList.toggle('pane-focused', pane.focused);
   place(strip, pane.stripRect);
-
-  const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
-  for (const tab of pane.tabs) {
-    const el = (tabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
-    el.dataset['tabId'] = tab.id;
-    el.classList.toggle('active', tab.active);
-    el.title = tab.title;
-    el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : '불러오는 중');
-    const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
-    const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
-    if (tab.loading) {
-      spinner.hidden = false;
-    } else if (tab.favicon) {
-      favicon.src = tab.favicon;
-      favicon.hidden = false;
-    }
-    el.addEventListener('mousedown', (e) => {
-      if (e.button === 1) {
-        e.preventDefault();
-        send({ cmd: 'closeTab', tabId: tab.id });
-      }
-    });
-    el.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('.tab-close')) return;
-      send({ cmd: 'activateTab', tabId: tab.id });
-    });
-    el.querySelector<HTMLButtonElement>('.tab-close')!.addEventListener('click', (e) => {
-      e.stopPropagation();
-      send({ cmd: 'closeTab', tabId: tab.id });
-    });
-    tabsEl.appendChild(el);
-  }
-
-  const newTabBtn = strip.querySelector<HTMLButtonElement>('.strip-newtab')!;
-  newTabBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openNewTabMenu(state, pane.id, newTabBtn.getBoundingClientRect());
-  });
+  // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다
+  strip.querySelector<HTMLElement>('.strip-tabs')!.replaceChildren(...pane.tabs.map(renderTab));
   const splitRight = strip.querySelector<HTMLButtonElement>('.strip-split-right')!;
   const splitDown = strip.querySelector<HTMLButtonElement>('.strip-split-down')!;
   splitRight.disabled = !pane.splitAllowed;
   splitDown.disabled = !pane.splitAllowed;
-  splitRight.addEventListener('click', () => send({ cmd: 'split', paneId: pane.id, orientation: 'horizontal' }));
-  splitDown.addEventListener('click', () => send({ cmd: 'split', paneId: pane.id, orientation: 'vertical' }));
-  strip.addEventListener('mousedown', () => {
-    if (!pane.focused) send({ cmd: 'focusPane', paneId: pane.id });
-  });
-  return strip;
 }
 
-function renderSash(sash: ShellState['sashes'][number]): HTMLElement {
-  const el = document.createElement('div');
-  el.className = `sash ${sash.orientation}`;
-  el.dataset['sashId'] = sash.id;
-  place(el, sash.rect);
-  el.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    el.setPointerCapture(e.pointerId);
-    el.classList.add('dragging');
-    const horizontal = sash.orientation === 'horizontal';
-    dragging = {
-      sashId: sash.id,
-      orientation: sash.orientation,
-      start: horizontal ? sash.splitRect.x : sash.splitRect.y,
-      length: horizontal ? sash.splitRect.width : sash.splitRect.height,
-      raf: null,
-      pending: null,
-    };
-  });
-  el.addEventListener('pointermove', (e) => {
-    if (!dragging || dragging.sashId !== sash.id) return;
-    const pos = dragging.orientation === 'horizontal' ? e.clientX : e.clientY;
-    const ratio = Math.min(0.8, Math.max(0.2, (pos - dragging.start) / dragging.length));
-    dragging.pending = ratio;
-    if (dragging.raf === null) {
-      dragging.raf = requestAnimationFrame(() => {
-        if (!dragging) return;
-        dragging.raf = null;
-        if (dragging.pending !== null) send({ cmd: 'resize', sashId: dragging.sashId, ratio: dragging.pending });
-        dragging.pending = null;
-      });
-    }
-  });
-  const end = (e: PointerEvent): void => {
-    if (!dragging || dragging.sashId !== sash.id) return;
-    el.classList.remove('dragging');
-    if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    if (dragging.pending !== null) send({ cmd: 'resize', sashId: dragging.sashId, ratio: dragging.pending });
-    dragging = null;
+// ───────────────────────── sash(id 로 재사용 · 드래그) ─────────────────────────
+
+function clampRatio(r: number): number {
+  return Math.min(0.8, Math.max(0.2, r));
+}
+
+function sendResize(d: Drag, ratio: number): void {
+  if (d.lastSent !== null && Math.abs(d.lastSent - ratio) < 0.002) return;
+  d.lastSent = ratio;
+  send({ cmd: 'resize', sashId: d.sashId, ratio });
+}
+
+function onSashPointerDown(e: PointerEvent): void {
+  if (e.button !== 0) return;
+  const el = e.currentTarget as HTMLElement;
+  const sashId = el.dataset['sashId'];
+  const sash = sashId ? sashData.get(sashId) : undefined;
+  if (!sashId || !sash) return;
+  e.preventDefault();
+  const horizontal = sash.orientation === 'horizontal';
+  drag = {
+    sashId,
+    pointerId: e.pointerId,
+    orientation: sash.orientation,
+    start: horizontal ? sash.splitRect.x : sash.splitRect.y,
+    length: horizontal ? sash.splitRect.width : sash.splitRect.height,
+    raf: null,
+    pending: null,
+    lastSent: null,
   };
-  el.addEventListener('pointerup', end);
-  el.addEventListener('pointercancel', end);
+  el.classList.add('dragging');
+  document.body.classList.add(horizontal ? 'dragging-col' : 'dragging-row');
+  try {
+    el.setPointerCapture(e.pointerId);
+  } catch {
+    // 캡처가 안 되어도 window 의 pointermove 로 받는다
+  }
+}
+
+function onWindowPointerMove(e: PointerEvent): void {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const pos = drag.orientation === 'horizontal' ? e.clientX : e.clientY;
+  if (drag.length <= 0) return;
+  drag.pending = clampRatio((pos - drag.start) / drag.length);
+  if (drag.raf === null) {
+    drag.raf = requestAnimationFrame(() => {
+      if (!drag) return;
+      drag.raf = null;
+      if (drag.pending !== null) sendResize(drag, drag.pending);
+      drag.pending = null;
+    });
+  }
+}
+
+function onWindowPointerEnd(e: PointerEvent): void {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const d = drag;
+  drag = null;
+  if (d.raf !== null) cancelAnimationFrame(d.raf);
+  if (d.pending !== null) sendResize(d, d.pending);
+  const el = sashEls.get(d.sashId);
+  el?.classList.remove('dragging');
+  try {
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  } catch {
+    // 이미 풀렸으면 그만
+  }
+  document.body.classList.remove('dragging-col', 'dragging-row');
+}
+
+function createSash(sashId: string): HTMLElement {
+  const el = document.createElement('div');
+  el.dataset['sashId'] = sashId;
+  el.addEventListener('pointerdown', onSashPointerDown);
+  panesEl.appendChild(el);
+  sashEls.set(sashId, el);
   return el;
 }
+
+function upsertSash(sash: SashGeometry): void {
+  sashData.set(sash.id, sash);
+  const el = sashEls.get(sash.id) ?? createSash(sash.id);
+  el.className = `sash ${sash.orientation}${drag?.sashId === sash.id ? ' dragging' : ''}`;
+  place(el, sash.rect);
+}
+
+window.addEventListener('pointermove', onWindowPointerMove);
+window.addEventListener('pointerup', onWindowPointerEnd);
+window.addEventListener('pointercancel', onWindowPointerEnd);
+
+// ───────────────────────── «+» 메뉴 ─────────────────────────
 
 function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): void {
   menuEl.replaceChildren();
@@ -160,9 +238,7 @@ function closeMenu(): void {
   menuEl.hidden = true;
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
-}
+// ───────────────────────── 업데이트 모달(G03) ─────────────────────────
 
 function renderUpdate(state: ShellState): void {
   const u = state.update;
@@ -219,13 +295,31 @@ function renderUpdate(state: ShellState): void {
   }
 }
 
+// ───────────────────────── 그리기(id 로 재사용 · 없어진 것만 지움) ─────────────────────────
+
 function render(state: ShellState): void {
   lastState = state;
   renderTitle(state);
-  const nodes: HTMLElement[] = [];
-  for (const pane of state.panes) nodes.push(renderStrip(state, pane));
-  for (const sash of state.sashes) nodes.push(renderSash(sash));
-  panesEl.replaceChildren(...nodes);
+
+  const paneIds = new Set(state.panes.map((p) => p.id));
+  for (const [id, el] of stripEls) {
+    if (!paneIds.has(id)) {
+      el.remove();
+      stripEls.delete(id);
+    }
+  }
+  for (const pane of state.panes) upsertStrip(pane);
+
+  const sashIds = new Set(state.sashes.map((s) => s.id));
+  for (const [id, el] of sashEls) {
+    if (!sashIds.has(id)) {
+      el.remove();
+      sashEls.delete(id);
+      sashData.delete(id);
+    }
+  }
+  for (const sash of state.sashes) upsertSash(sash);
+
   renderUpdate(state);
 }
 

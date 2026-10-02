@@ -12,7 +12,14 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   const log = (step: string, extra = ''): void => console.info(`[smoke] ${step.padEnd(28)} ${snapshot()} ${extra}`);
 
   await wait(3000);
-  log('start');
+  log('start(복원된 레이아웃)');
+
+  // ⓪ 바탕 맞추기 — U05 가 복원한 레이아웃을 pane 1 · 탭 1 로(기대값이 절대 수라서)
+  for (const pane of w.engine.listPanes().slice(1)) w.handleCommand({ cmd: 'closePane', paneId: pane.id });
+  const firstPane = w.engine.listPanes()[0];
+  if (firstPane) for (const tabId of firstPane.tabIds.slice(1)) w.handleCommand({ cmd: 'closeTab', tabId });
+  await wait(800);
+  log('reset', w.engine.paneCount() === 1 && Object.keys(w.engine.getTree().tabs).length === 1 ? 'OK' : 'FAIL');
 
   // ① 셸 «오른쪽으로 split» 단추
   await shellJs(`document.querySelector('.strip-split-right').click()`);
@@ -37,6 +44,29 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     return root.type === 'split' ? root.ratio : NaN;
   })();
   log('resize 0.35', `ratio ${ratio} ${Math.abs(ratio - 0.35) < 0.01 ? 'OK' : 'FAIL'}`);
+
+  // ③b sash 를 «진짜 마우스처럼» 끈다 — 셸 view 에 mouseDown → 여러 점 mouseMove → mouseUp(포인터 캡처 · 요소 재사용 경로)
+  {
+    const geo = w.engine.computeGeometry({ x: 0, y: 40, width: w.window.getContentSize()[0] ?? 0, height: (w.window.getContentSize()[1] ?? 0) - 40 });
+    const sash = geo.sashes[0];
+    if (sash) {
+      const before = (() => { const r = w.engine.getTree().root; return r.type === 'split' ? r.ratio : NaN; })();
+      const y = sash.rect.y + Math.round(sash.rect.height / 2);
+      const x0 = sash.rect.x + 2;
+      const wc = w.shellView.webContents;
+      wc.sendInputEvent({ type: 'mouseMove', x: x0, y });
+      wc.sendInputEvent({ type: 'mouseDown', x: x0, y, button: 'left', clickCount: 1 });
+      for (let i = 1; i <= 10; i++) {
+        // 왼쪽 단추가 눌린 채 움직인다는 표시가 없으면 Blink 가 «놓았다»로 보고 드래그를 끊는다
+        wc.sendInputEvent({ type: 'mouseMove', x: x0 + i * 20, y, button: 'left', modifiers: ['leftbuttondown'] });
+        await wait(30);
+      }
+      wc.sendInputEvent({ type: 'mouseUp', x: x0 + 200, y, button: 'left', clickCount: 1 });
+      await wait(600);
+      const after = (() => { const r = w.engine.getTree().root; return r.type === 'split' ? r.ratio : NaN; })();
+      log('drag sash +200px', `ratio ${before.toFixed(3)} → ${after.toFixed(3)} ${after > before + 0.05 ? 'OK' : 'FAIL(드래그가 안 따라옴)'}`);
+    }
+  }
 
   // ④ 첫 pane «아래로 split»
   await shellJs(`document.querySelectorAll('.strip-split-down')[0].click()`);
