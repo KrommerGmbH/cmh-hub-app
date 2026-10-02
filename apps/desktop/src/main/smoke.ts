@@ -13,6 +13,9 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
 
   await wait(3000);
   log('start(복원된 레이아웃)');
+  // 기본 창 크기 = 모니터 100%(최대화) — 1440×900 으로 뜨면 FAIL
+  const b = w.window.getBounds();
+  log('maximized on start', `${w.window.isMaximized() ? 'OK' : 'FAIL'} ${b.width}x${b.height}`);
 
   // ⓪ 바탕 맞추기 — U05 가 복원한 레이아웃을 pane 1 · 탭 1 로(기대값이 절대 수라서)
   for (const pane of w.engine.listPanes().slice(1)) w.handleCommand({ cmd: 'closePane', paneId: pane.id });

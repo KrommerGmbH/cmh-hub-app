@@ -44,6 +44,7 @@ export class ShellWindow {
       height: 900,
       minWidth: 800,
       minHeight: 600,
+      show: false, // 최대화한 뒤에 보인다(create) — 1440×900 으로 깜빡 떴다가 커지지 않게
       backgroundColor: '#1b1b1f',
       title: 'cmh-hub',
       titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
@@ -93,6 +94,9 @@ export class ShellWindow {
     const saved = await w.store.load();
     if (saved === null || !w.engine.loadTree(saved)) w.engine.resetToDefault(DEFAULT_TAB);
     w.views.ensureAll();
+    // 기본 = 모니터 100%(최대화 · 2026-10-02 사장님 지시). 1440×900 은 «이전 크기로» 눌렀을 때의 크기다
+    w.window.maximize();
+    w.window.show();
     w.relayout();
     await w.shellView.webContents.loadFile(join(DIST, 'shell', 'index.html'));
     w.sendState();
