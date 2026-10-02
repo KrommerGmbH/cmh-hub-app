@@ -19,5 +19,10 @@ export const APP_CONFIG = {
   ] as const,
   /** 네이버 pane 세션 — 우리 어드민 쿠키와 한 바구니에 두지 않는다 */
   naverPartition: 'persist:naver',
+  /** W04 — 기본 로컬 모델(unsloth Gemma 4 E4B QAT · UD-Q4_K_XL 4.2 GB · 사장님 2026-10-02 «sloth 거로»). RAM 이 적은 PC 는 E2B(2.6 GB) */
+  localModels: {
+    default: 'hf:unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL',
+    small: 'hf:unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL',
+  },
   adminPartition: 'persist:admin',
 } as const;
