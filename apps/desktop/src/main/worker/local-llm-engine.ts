@@ -60,6 +60,8 @@ export class LocalLlmEngine {
       const { history, lastUser } = toChatHistory(req.messages);
       session.setChatHistory(history);
       const answer = await session.prompt(lastUser, {
+        // Gemma 4 등 «생각» 모델이 토큰을 생각에 다 쓰면 답이 빈 글자가 된다(2026-10-02 끝-끝 시험 실측) — 생각 0
+        budgets: { thoughtTokens: 0 },
         ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
         ...(req.max_tokens !== undefined ? { maxTokens: req.max_tokens } : {}),
       });
@@ -70,7 +72,7 @@ export class LocalLlmEngine {
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: req.model,
-        choices: [{ index: 0, message: { role: 'assistant', content: answer }, finish_reason: 'stop' }],
+        choices: [{ index: 0, message: { role: 'assistant', content: stripThinking(answer) }, finish_reason: 'stop' }],
         usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
       };
     } finally {
@@ -98,6 +100,16 @@ export class LocalLlmEngine {
     this.loaded.set(uri, model);
     return model;
   }
+}
+
+/**
+ * Gemma 4 는 생각 글을 답 앞에 내고 `<channel|>` 표지 뒤에 진짜 답을 둔다. node-llama-cpp 3.22.1 이 그 구간을 못 떼어
+ * 답에 섞인다(2026-10-02 실측: «Thinking Process: … <channel|>말차, 말차가루, …»). 마지막 표지 뒤만 답으로 쓴다.
+ */
+export function stripThinking(text: string): string {
+  const marker = '<channel|>';
+  const at = text.lastIndexOf(marker);
+  return (at >= 0 ? text.slice(at + marker.length) : text).trim();
 }
 
 export function validateRequest(req: ChatCompletionRequest): void {

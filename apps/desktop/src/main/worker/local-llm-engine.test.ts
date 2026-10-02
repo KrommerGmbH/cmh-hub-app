@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { toChatHistory, validateRequest } from './local-llm-engine.js';
+import { stripThinking, toChatHistory, validateRequest } from './local-llm-engine.js';
+
+describe('stripThinking', () => {
+  it('마지막 <channel|> 뒤만 답 · 표지가 없으면 그대로', () => {
+    expect(stripThinking('Thinking Process:\n1. …<channel|>말차, 녹차')).toBe('말차, 녹차');
+    expect(stripThinking('베를린입니다.')).toBe('베를린입니다.');
+  });
+});
 
 describe('local-llm-engine 변환', () => {
   it('system 은 합쳐 맨 앞 · 마지막 user 는 prompt 로', () => {
