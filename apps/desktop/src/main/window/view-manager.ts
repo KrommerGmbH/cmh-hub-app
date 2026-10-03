@@ -69,7 +69,8 @@ export class ViewManager {
     const view = this.views.get(tabId);
     if (!view) return;
     this.views.delete(tabId);
-    this.window.contentView.removeChildView(view);
+    // 창이 이미 닫힌 뒤(`closed`)에는 contentView 도 사라져 removeChildView 가 «Object has been destroyed» 를 던진다(2026-10-03 앱 닫을 때 오류창)
+    if (!this.window.isDestroyed()) this.window.contentView.removeChildView(view);
     // BaseWindow 는 view 의 webContents 를 자동으로 안 닫는다(memory leak · Electron 문서)
     if (!view.webContents.isDestroyed()) view.webContents.close();
   }

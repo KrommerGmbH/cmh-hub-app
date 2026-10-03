@@ -1,11 +1,12 @@
 // 검증 하네스 — CMH_HUB_SMOKE=1 로 띄우면 셸 단추를 «실제로 눌러» split · 새 탭 · sash · 닫기 · 단축키를 돌리고 결과를 찍는다.
 // 셸 페이지(우리 로컬 HTML)에만 executeJavaScript 를 쓴다 — 서버 · 네이버 페이지에는 쓰지 않는다(U07 8-5).
+import { app } from 'electron';
 import type { ShellWindow } from './window/shell-window.js';
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
-  if (!process.env['CMH_HUB_SMOKE']) return;
+  if (!process.env['CMH_HUB_SMOKE'] || app.isPackaged) return; // 배포판에서는 환경값으로 셸을 움직이지 못하게
   const shellJs = <T>(code: string): Promise<T> => w.shellView.webContents.executeJavaScript(code) as Promise<T>;
   const snapshot = (): string =>
     `pane ${w.engine.paneCount()} · tabs ${Object.keys(w.engine.getTree().tabs).length} · focused ${w.focusedPaneId()?.slice(0, 8)}`;

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>cmh fingerprint probe</title>
+<style>body{font:14px system-ui;margin:24px}pre{white-space:pre-wrap;font-size:11px}</style>
+</head>
+<body>
+<h3>cmh-hub-app 지문 비교 — 값을 모아 로컬 서버(127.0.0.1)로 보냅니다. 이 탭은 닫으셔도 됩니다.</h3>
+<p id="state">모으는 중…</p>
+<pre id="out"></pre>
+<script>
+// 읽기만 한다 — navigator · prototype 을 덮어쓰지 않는다(U07 8-5). 권한 창이 뜨는 API 는 부르지 않는다.
+const safe = async (fn) => { try { return await fn(); } catch (e) { return 'ERR: ' + (e && e.message || String(e)); } };
+const sha = async (s) => { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('').slice(0, 16); };
+
+async function collect() {
+  const n = navigator;
+  const r = {};
+  r.navigator = {
+    userAgent: n.userAgent, appVersion: n.appVersion, platform: n.platform, vendor: n.vendor, productSub: n.productSub,
+    language: n.language, languages: n.languages, webdriver: n.webdriver, hardwareConcurrency: n.hardwareConcurrency,
+    deviceMemory: n.deviceMemory, maxTouchPoints: n.maxTouchPoints, cookieEnabled: n.cookieEnabled, doNotTrack: n.doNotTrack,
+    globalPrivacyControl: n.globalPrivacyControl, pdfViewerEnabled: n.pdfViewerEnabled, onLine: n.onLine,
+    plugins: [...(n.plugins || [])].map((p) => p.name), mimeTypes: [...(n.mimeTypes || [])].map((m) => m.type),
+    connection: n.connection ? { effectiveType: n.connection.effectiveType, rtt: n.connection.rtt, saveData: n.connection.saveData } : null,
+    webdriverDescriptor: String(Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver') ? 'proto' : 'none'),
+  };
+  r.userAgentData = await safe(async () => n.userAgentData ? {
+    brands: n.userAgentData.brands, mobile: n.userAgentData.mobile, platform: n.userAgentData.platform,
+    high: await n.userAgentData.getHighEntropyValues(['architecture', 'bitness', 'model', 'platformVersion', 'fullVersionList', 'wow64', 'formFactors']),
+  } : null);
+  r.windowChrome = await safe(() => typeof window.chrome === 'object' ? Object.keys(window.chrome).sort() : typeof window.chrome);
+  r.screen = { w: screen.width, h: screen.height, aw: screen.availWidth, ah: screen.availHeight, depth: screen.colorDepth, dpr: devicePixelRatio,
+    outerMinusInnerW: outerWidth - innerWidth, outerMinusInnerH: outerHeight - innerHeight, isExtended: screen.isExtended };
+  r.intl = { tz: Intl.DateTimeFormat().resolvedOptions().timeZone, locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    offset: new Date().getTimezoneOffset(), numberFmt: (1234567.89).toLocaleString() };
+  r.webgl = await safe(() => {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (!gl) return null;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    return { vendor: ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : null, renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : null,
+      version: gl.getParameter(gl.VERSION), maxTex: gl.getParameter(gl.MAX_TEXTURE_SIZE), extCount: (gl.getSupportedExtensions() || []).length };
+  });
+  r.webgpu = await safe(async () => { if (!n.gpu) return null; const a = await n.gpu.requestAdapter(); return a ? { vendor: a.info?.vendor, arch: a.info?.architecture } : 'no-adapter'; });
+  r.canvasHash = await safe(async () => {
+    const c = document.createElement('canvas'); c.width = 280; c.height = 60; const x = c.getContext('2d');
+    x.textBaseline = 'top'; x.font = '16px Arial'; x.fillStyle = '#f60'; x.fillRect(100, 1, 62, 20);
+    x.fillStyle = '#069'; x.fillText('cmh 지문 Cwm fjordbank 😃', 2, 15); x.fillStyle = 'rgba(102,204,0,0.7)'; x.fillText('cmh 지문 Cwm fjordbank 😃', 4, 17);
+    return sha(c.toDataURL());
+  });
+  r.audioHash = await safe(async () => {
+    const ctx = new OfflineAudioContext(1, 5000, 44100); const o = ctx.createOscillator(); o.type = 'triangle'; o.frequency.value = 10000;
+    const comp = ctx.createDynamicsCompressor(); o.connect(comp); comp.connect(ctx.destination); o.start(0);
+    const buf = await ctx.startRendering(); let s = 0; const d = buf.getChannelData(0); for (let i = 4500; i < 5000; i++) s += Math.abs(d[i]); return s.toFixed(8);
+  });
+  r.fonts = await safe(async () => { await document.fonts.ready; return ['Malgun Gothic', 'Gulim', 'Dotum', 'Batang', 'Segoe UI', 'Arial', 'Calibri', 'Cambria', 'Consolas', 'Noto Sans KR', 'Nanum Gothic', 'Helvetica Neue', 'Roboto']
+    .filter((f) => document.fonts.check(`12px "${f}"`)); });
+  r.media = {
+    h264: document.createElement('video').canPlayType('video/mp4; codecs="avc1.42E01E"'),
+    hevc: document.createElement('video').canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"'),
+    aac: document.createElement('audio').canPlayType('audio/mp4; codecs="mp4a.40.2"'),
+    mp3: document.createElement('audio').canPlayType('audio/mpeg'),
+  };
+  r.widevine = await safe(async () => { await n.requestMediaKeySystemAccess('com.widevine.alpha', [{ initDataTypes: ['cenc'], videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }] }]); return 'yes'; });
+  r.permissions = await safe(async () => { const o = {}; for (const p of ['notifications', 'geolocation', 'camera', 'microphone', 'clipboard-read', 'persistent-storage']) o[p] = await safe(async () => (await n.permissions.query({ name: p })).state); return o; });
+  r.notificationPermission = typeof Notification === 'function' ? Notification.permission : 'none';
+  r.speechVoices = await safe(() => new Promise((res) => { const v = speechSynthesis.getVoices(); if (v.length) return res(v.length); speechSynthesis.onvoiceschanged = () => res(speechSynthesis.getVoices().length); setTimeout(() => res(speechSynthesis.getVoices().length), 1500); }));
+  r.mediaDevices = await safe(async () => (await n.mediaDevices.enumerateDevices()).map((d) => d.kind).sort().join(','));
+  r.storageQuotaGb = await safe(async () => Math.round(((await n.storage.estimate()).quota || 0) / 1e9));
+  r.memory = performance.memory ? { jsHeapSizeLimit: performance.memory.jsHeapSizeLimit } : null;
+  r.apis = Object.fromEntries(['serial', 'hid', 'usb', 'bluetooth', 'xr', 'gpu', 'wakeLock', 'virtualKeyboard', 'windowControlsOverlay', 'ink', 'presentation', 'login', 'credentials', 'contacts', 'share', 'keyboard', 'managed', 'getInstalledRelatedApps']
+    .map((k) => [k, k in n]));
+  r.windowApis = Object.fromEntries(['documentPictureInPicture', 'showOpenFilePicker', 'queryLocalFonts', 'getScreenDetails', 'launchQueue', 'Translator', 'LanguageDetector', 'Summarizer', 'ai', 'cookieStore', 'PaymentRequest', 'IdentityCredential', 'onbeforeinstallprompt']
+    .map((k) => [k, k in window]));
+  r.media.prefersColorScheme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  r.errorStackHead = (() => { try { null.x; } catch (e) { return String(e.stack).split('\n')[0]; } })();
+  return r;
+}
+
+collect().then(async (r) => {
+  document.getElementById('out').textContent = JSON.stringify(r, null, 2);
+  const src = new URLSearchParams(location.search).get('src') || 'unknown';
+  await fetch('/report?src=' + encodeURIComponent(src), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(r) });
+  document.getElementById('state').textContent = '보냈습니다 — ' + src;
+});
+</script>
+</body>
+</html>
