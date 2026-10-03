@@ -20,6 +20,8 @@ import { ViewManager } from './view-manager.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
+/** 앱 아이콘(작업 표시줄 · 창) — resources/ 는 dist 옆(배포판은 electron-builder files 에 넣는다) */
+const APP_ICON = join(DIST, '..', 'resources', 'icon.png');
 
 export const DEFAULT_TAB: NewTabSpec = {
   kind: 'admin',
@@ -36,6 +38,8 @@ export class ShellWindow {
   private geometry: LayoutGeometry = { panes: [], sashes: [] };
   private update: UpdateState = { state: 'none' };
   private relayoutTimer: NodeJS.Timeout | null = null;
+  /** 셸 팝오버가 열려 셸이 맨 위인가 — 그동안 새 탭 view 가 생기면(단축키) 셸을 다시 올린다 */
+  private shellOnTop = false;
 
   private constructor() {
     this.store = new LayoutStore(join(app.getPath('userData'), 'layout.json'));
@@ -46,7 +50,8 @@ export class ShellWindow {
       minHeight: 600,
       show: false, // 최대화한 뒤에 보인다(create) — 1440×900 으로 깜빡 떴다가 커지지 않게
       backgroundColor: '#1b1b1f',
-      title: 'cmh-hub',
+      title: 'CMH Hub',
+      icon: APP_ICON,
       titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
       titleBarOverlay: { color: '#141417', symbolColor: '#c7c9cc', height: LAYOUT_LIMITS.titleBarHeight },
     });
@@ -59,6 +64,7 @@ export class ShellWindow {
         nodeIntegration: false,
       },
     });
+    this.shellView.setBackgroundColor('#00000000'); // 투명 — 팝오버 때 맨 위로 올라가도 pane 자리는 아래 페이지가 보인다(setShellOnTop)
     this.window.contentView.addChildView(this.shellView); // 첫 자식 = 맨 아래
     this.shellView.setBounds(this.contentRect());
 
@@ -127,6 +133,9 @@ export class ShellWindow {
       case 'aiTaskStop':
         console.info('[ai] 1차에서는 상태만 — W02 뒤에', cmd.paneId);
         return;
+      case 'shell.popup':
+        this.setShellOnTop(cmd.open);
+        return;
       default:
         break;
     }
@@ -143,12 +152,38 @@ export class ShellWindow {
       return;
     }
     this.views.applyChange(change);
+    // 메뉴가 열린 채 단축키(Ctrl+T · Ctrl+\)로 view 가 생기면 그 view 가 셸 위에 붙는다 — 셸을 다시 맨 위로(검수 2026-10-03)
+    if (this.shellOnTop && change.createdTabIds.length > 0) this.setShellOnTop(true);
     if (change.geometryChanged || change.createdTabIds.length > 0 || change.activeChangedPaneIds.length > 0) {
       this.relayout();
     }
     if (change.focusedPaneId) this.focusActiveViewOf(change.focusedPaneId);
     this.store.save(this.engine.getTree());
     this.sendState();
+  }
+
+  /**
+   * 셸 팝오버(«+» · 레이아웃 메뉴)가 열린 동안만 셸 view 를 맨 위로. 같은 view 를 addChildView 하면 순서만 바뀐다
+   * (Electron View 문서 «If the same View is added to a parent which already contains it, it will be reordered»).
+   * 닫히면 다시 맨 아래(index 0). 셸 바탕은 투명(setBackgroundColor #00000000 · shell.css)이라 올려도 아래 페이지가 보인다.
+   */
+  private setShellOnTop(on: boolean): void {
+    if (this.window.isDestroyed()) return;
+    this.shellOnTop = on;
+    if (on) {
+      this.window.contentView.addChildView(this.shellView);
+      return;
+    }
+    this.window.contentView.addChildView(this.shellView, 0);
+    // 페이지 자리를 눌러 메뉴를 닫으면 그 클릭은 셸이 먹는다 — 키보드 포커스를 포커스 pane 의 페이지로 돌려준다
+    const paneId = this.focusedPaneId();
+    if (paneId) this.focusActiveViewOf(paneId);
+  }
+
+  /** smoke — 셸 view 가 지금 맨 위 층인가 */
+  isShellOnTop(): boolean {
+    const children = this.window.contentView.children;
+    return children[children.length - 1] === this.shellView;
   }
 
   focusedPaneId(): string | null {

@@ -21,6 +21,8 @@ assertNoRemoteDebugging();
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 // U07 8-13b — navigator.language · Intl 이 OS 표시 언어(사장님 PC 는 독일어 → "de")를 따라가 네이버 사용자 크롬(ko-KR)과 어긋났다(2026-10-03 지문 비교)
 app.commandLine.appendSwitch('lang', 'ko-KR');
+// Windows 작업 표시줄이 이 앱을 electron.exe 가 아니라 «CMH Hub» 로 묶고 창 아이콘을 쓰게(electron-builder appId 와 같은 값)
+if (process.platform === 'win32') app.setAppUserModelId('de.krommer.cmh-hub-app');
 
 app.whenReady().then(async () => {
   await prepareSessions();

@@ -6,10 +6,12 @@ directories:
 files:
   - "apps/desktop/dist/**"
   - "apps/desktop/package.json"
+  - "apps/desktop/resources/**"
   - "!**/*.map"
 extraMetadata:
   main: apps/desktop/dist/main/main.js
 win:
+  icon: apps/desktop/resources/icon.ico
   target:
     - target: nsis
       arch: [x64]

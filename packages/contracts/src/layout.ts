@@ -2,6 +2,14 @@
 
 export type Orientation = 'horizontal' | 'vertical'; // horizontal = 좌우로 나눔(Ctrl+\) · vertical = 상하
 
+/**
+ * 레이아웃 고르기(2026-10-03 사장님 «split 아이콘 하나로 · 2단 가로 · 2단 세로 · 3단 위 가로 아래 솔로 · 4단»).
+ * single = pane 1 · columns2 = 좌우 2 · rows2 = 상하 2 · top2bottom1 = 위 좌우 2 + 아래 1 · grid4 = 2×2
+ */
+export type LayoutPreset = 'single' | 'columns2' | 'rows2' | 'top2bottom1' | 'grid4';
+
+export const LAYOUT_PRESET_PANES: Readonly<Record<LayoutPreset, number>> = { single: 1, columns2: 2, rows2: 2, top2bottom1: 3, grid4: 4 };
+
 /** 탭 종류 — 둘 다 서버·네이버 페이지(preload 0). 챗봇은 admin 탭(cmh-ai-chat 라우트). PLAN U02 · U06 */
 export type TabKind = 'admin' | 'naver';
 

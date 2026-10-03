@@ -12,6 +12,8 @@ const panesEl = $<HTMLElement>('#panes');
 const tabTemplate = $<HTMLTemplateElement>('#tab-template');
 const stripTemplate = $<HTMLTemplateElement>('#strip-template');
 const menuEl = $<HTMLElement>('#newtab-menu');
+const layoutMenuEl = $<HTMLElement>('#layout-menu');
+const layoutButtonEl = $<HTMLButtonElement>('#layout-button');
 const modalEl = $<HTMLElement>('#update-modal');
 
 const stripEls = new Map<string, HTMLElement>();
@@ -71,8 +73,6 @@ function createStrip(paneId: string): HTMLElement {
     if (!lastState) return;
     openNewTabMenu(lastState, paneId, (e.currentTarget as HTMLElement).getBoundingClientRect());
   });
-  strip.querySelector<HTMLButtonElement>('.strip-split-right')!.addEventListener('click', () => send({ cmd: 'split', paneId, orientation: 'horizontal' }));
-  strip.querySelector<HTMLButtonElement>('.strip-split-down')!.addEventListener('click', () => send({ cmd: 'split', paneId, orientation: 'vertical' }));
   strip.addEventListener('mousedown', () => {
     const pane = lastState?.panes.find((p) => p.id === paneId);
     if (pane && !pane.focused) send({ cmd: 'focusPane', paneId });
@@ -118,10 +118,6 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   place(strip, pane.stripRect);
   // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다
   strip.querySelector<HTMLElement>('.strip-tabs')!.replaceChildren(...pane.tabs.map(renderTab));
-  const splitRight = strip.querySelector<HTMLButtonElement>('.strip-split-right')!;
-  const splitDown = strip.querySelector<HTMLButtonElement>('.strip-split-down')!;
-  splitRight.disabled = !pane.splitAllowed;
-  splitDown.disabled = !pane.splitAllowed;
 }
 
 // ───────────────────────── sash(id 로 재사용 · 드래그) ─────────────────────────
@@ -216,26 +212,74 @@ window.addEventListener('pointercancel', onWindowPointerEnd);
 
 // ───────────────────────── «+» 메뉴 ─────────────────────────
 
+const ADMIN_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>';
+const NAVER_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 6.5 3.5 2.5h9l1 4M2.5 6.5h11v7h-11z"/><path d="M6.5 13.5v-4h3v4"/></svg>';
+
+
 function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): void {
   menuEl.replaceChildren();
   for (const choice of state.newTabChoices) {
     const item = document.createElement('button');
     item.className = 'menu-item';
     item.setAttribute('role', 'menuitem');
-    item.innerHTML = `${escapeHtml(choice.label)}<span class="kind">${choice.kind === 'naver' ? '네이버' : '어드민'}</span>`;
+    // 아이콘 · 이름 · (네이버만) 꼬리표 — 옛 «어드민» 꼬리표는 AI 채팅에도 붙어 틀렸다(디자인 검토 2026-10-03)
+    item.innerHTML = `<span class="menu-ico">${choice.kind === 'naver' ? NAVER_ICON : ADMIN_ICON}</span><span>${escapeHtml(choice.label)}</span>${choice.kind === 'naver' ? '<span class="kind">네이버</span>' : ''}`;
     item.addEventListener('click', () => {
       closeMenu();
       send({ cmd: 'newTab', paneId, kind: choice.kind, url: choice.url });
     });
     menuEl.appendChild(item);
   }
+  layoutMenuEl.hidden = true;
   menuEl.style.left = px(Math.min(anchor.left, window.innerWidth - 240));
   menuEl.style.top = px(anchor.bottom + 4);
   menuEl.hidden = false;
+  setPopupOpen(true);
+}
+
+// ───────────────────────── 레이아웃 고르기(제목줄 단추 하나) ─────────────────────────
+
+function openLayoutMenu(): void {
+  menuEl.hidden = true;
+  const r = layoutButtonEl.getBoundingClientRect();
+  layoutMenuEl.style.left = px(Math.max(8, Math.min(r.right - 220, window.innerWidth - 228)));
+  layoutMenuEl.style.top = px(r.bottom + 6);
+  const current = lastState?.paneCount ?? 1;
+  layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => b.classList.toggle('current-count', Number(b.dataset['count']) === current));
+  layoutMenuEl.hidden = false;
+  layoutButtonEl.setAttribute('aria-expanded', 'true');
+  setPopupOpen(true);
+}
+
+layoutButtonEl.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (layoutMenuEl.hidden) openLayoutMenu();
+  else closeMenu();
+});
+layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
+  b.addEventListener('click', () => {
+    closeMenu();
+    send({ cmd: 'applyLayout', preset: b.dataset['preset'] as Extract<ShellCommand, { cmd: 'applyLayout' }>['preset'] });
+  });
+});
+
+/**
+ * 팝오버가 열린 동안만 셸 view 를 맨 위로 올린다(main 이 한다). 셸은 맨 아래 층이라, 안 올리면 탭 아래로 펼친 메뉴를
+ * 어드민 · 네이버 view 가 덮는다(2026-10-03 사장님 «탭추가 버튼 작동 안됨» — smoke 는 JS 로 눌러 못 잡았다).
+ * 셸 바탕은 투명이라 올려도 아래 페이지가 보인다.
+ */
+let popupOpen = false;
+function setPopupOpen(open: boolean): void {
+  if (popupOpen === open) return;
+  popupOpen = open;
+  send({ cmd: 'shell.popup', open });
 }
 
 function closeMenu(): void {
   menuEl.hidden = true;
+  layoutMenuEl.hidden = true;
+  layoutButtonEl.setAttribute('aria-expanded', 'false');
+  setPopupOpen(false);
 }
 
 // ───────────────────────── 업데이트 모달(G03) ─────────────────────────
@@ -324,7 +368,15 @@ function render(state: ShellState): void {
 }
 
 document.addEventListener('click', (e) => {
-  if (!menuEl.hidden && !menuEl.contains(e.target as Node)) closeMenu();
+  const target = e.target as Node;
+  if (!popupOpen) return;
+  if (!menuEl.hidden && menuEl.contains(target)) return;
+  if (!layoutMenuEl.hidden && layoutMenuEl.contains(target)) return;
+  closeMenu();
+});
+// 메뉴가 열린 채 창 크기가 바뀌면 메뉴는 옛 좌표에 남는다 — 닫는다
+window.addEventListener('resize', () => {
+  if (popupOpen) closeMenu();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeMenu();

@@ -25,14 +25,18 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   await wait(800);
   log('reset', w.engine.paneCount() === 1 && Object.keys(w.engine.getTree().tabs).length === 1 ? 'OK' : 'FAIL');
 
-  // ① 셸 «오른쪽으로 split» 단추
-  await shellJs(`document.querySelector('.strip-split-right').click()`);
+  // ① 제목줄 레이아웃 단추 → 메뉴가 뜨는 동안 셸이 맨 위인가(아니면 어드민 view 가 메뉴를 덮는다 · 2026-10-03 결함) → «2단 좌우»
+  await shellJs(`document.querySelector('#layout-button').click()`);
+  await wait(300);
+  log('layout 메뉴 · 셸 맨 위?', w.isShellOnTop() ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
+  await shellJs(`document.querySelector('.layout-item[data-preset="columns2"]').click()`);
   await wait(800);
-  log('click split-right', w.engine.paneCount() === 2 ? 'OK' : 'FAIL(pane≠2)');
+  log('layout 2단 좌우', `${w.engine.paneCount() === 2 ? 'OK' : 'FAIL(pane≠2)'} · 닫은 뒤 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
 
   // ② 포커스 pane 의 «+» → 메뉴 «네이버 스마트스토어센터»
   await shellJs(`[...document.querySelectorAll('.strip')].find(s => s.classList.contains('pane-focused')).querySelector('.strip-newtab').click()`);
   await wait(300);
+  log('+ 메뉴 · 셸 맨 위?', w.isShellOnTop() ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
   const menuCount = await shellJs<number>(`document.querySelectorAll('#newtab-menu .menu-item').length`);
   await shellJs(`[...document.querySelectorAll('#newtab-menu .menu-item')].find(b => b.textContent.includes('네이버')).click()`);
   await wait(1500);
@@ -72,10 +76,12 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     }
   }
 
-  // ④ 첫 pane «아래로 split»
-  await shellJs(`document.querySelectorAll('.strip-split-down')[0].click()`);
+  // ④ 레이아웃 «3단(위 둘 · 아래 하나)»
+  await shellJs(`document.querySelector('#layout-button').click()`);
+  await wait(300);
+  await shellJs(`document.querySelector('.layout-item[data-preset="top2bottom1"]').click()`);
   await wait(800);
-  log('click split-down', w.engine.paneCount() === 3 ? 'OK' : 'FAIL(pane≠3)');
+  log('layout 3단', w.engine.paneCount() === 3 ? 'OK' : 'FAIL(pane≠3)');
 
   // ⑤ 단축키 Ctrl+\ — 포커스 pane 의 view 에 진짜 입력 이벤트(before-input-event 경로)
   const focused = w.activeTabOfFocusedPane();
@@ -87,15 +93,25 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     log('Ctrl+\\ 단축키', w.engine.paneCount() === 4 ? 'OK' : 'FAIL(pane≠4 — sendInputEvent 의 code 가 Backslash 가 아닐 수 있다 · 사람이 눌러 실측)');
   }
 
-  // ⑥ 상한: split 단추가 꺼졌나(pane 4 일 때만 의미)
-  const disabled = await shellJs<boolean>(`document.querySelector('.strip-split-right').disabled`);
-  log('split 단추 disabled?', `${disabled} ${w.engine.paneCount() >= 4 ? (disabled ? 'OK' : 'FAIL') : '(pane<4 라 판정 보류)'}`);
+  // ⑥ 상한: pane 4 에서 Ctrl+\ 를 또 눌러도 4
+  if (view) {
+    view.webContents.sendInputEvent({ type: 'keyDown', keyCode: '\\', modifiers: ['control'] });
+    view.webContents.sendInputEvent({ type: 'keyUp', keyCode: '\\', modifiers: ['control'] });
+    await wait(600);
+    log('상한 4 에서 Ctrl+\\', w.engine.paneCount() === 4 ? 'OK' : `FAIL(pane ${w.engine.paneCount()})`);
+  }
 
   // ⑦ 마지막 pane 의 탭 ✕ → pane 닫힘
   const before = w.engine.paneCount();
   await shellJs(`{ const strips = [...document.querySelectorAll('.strip')]; strips[strips.length - 1].querySelector('.tab-close').click(); }`);
   await wait(800);
   log('click tab ✕(마지막 pane)', w.engine.paneCount() === before - 1 ? 'OK' : `FAIL(pane ${before}→${w.engine.paneCount()})`);
+
+  // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
+  //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
+  const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  const cb = w.window.getContentBounds();
+  console.info(`[smoke] plus-screen ${Math.round(cb.x + plus.x)},${Math.round(cb.y + plus.y)}`);
 
   log('end', '— 창은 그대로 둔다(사장님이 보시게)');
 }

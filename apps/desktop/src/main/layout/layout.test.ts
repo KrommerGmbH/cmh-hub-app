@@ -195,3 +195,57 @@ describe('LayoutStore', () => {
     }
   });
 });
+
+describe('applyLayout — 레이아웃 고르기(2026-10-03)', () => {
+  it('1 → grid4: pane 4 · 새 탭 3 · 처음 탭은 첫 자리에 그대로', () => {
+    const e = engineWithOnePane();
+    const firstTab = e.listPanes()[0]!.tabIds[0]!;
+    const c = e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
+    expect(c.rejected).toBeNull();
+    expect(e.paneCount()).toBe(4);
+    expect(c.createdTabIds).toHaveLength(3);
+    expect(e.listPanes()[0]!.tabIds).toEqual([firstTab]);
+    assertNoGaps(e.getTree(), e.computeGeometry(VIEWPORT));
+  });
+
+  it('top2bottom1: 위 좌우 둘 + 아래 하나', () => {
+    const e = engineWithOnePane();
+    e.apply({ cmd: 'applyLayout', preset: 'top2bottom1' }, { newTab: ADMIN });
+    const root = e.getTree().root;
+    expect(root.type === 'split' && root.orientation).toBe('vertical');
+    if (root.type !== 'split') return;
+    expect(root.children[0].type === 'split' && root.children[0].orientation).toBe('horizontal');
+    expect(root.children[1].type).toBe('pane');
+  });
+
+  it('grid4 → columns2: 남는 pane 의 탭은 닫지 않고 둘째 pane 뒤에 붙는다 · 탭 수 그대로', () => {
+    const e = engineWithOnePane();
+    e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
+    const tabsBefore = Object.keys(e.getTree().tabs).length;
+    const c = e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    expect(e.paneCount()).toBe(2);
+    expect(c.closedTabIds).toHaveLength(0);
+    expect(c.closedPaneIds).toHaveLength(2);
+    expect(Object.keys(e.getTree().tabs).length).toBe(tabsBefore);
+    expect(e.listPanes()[1]!.tabIds).toHaveLength(3);
+  });
+
+  it('single: pane 1 · 포커스는 남은 pane', () => {
+    const e = engineWithOnePane();
+    e.apply({ cmd: 'applyLayout', preset: 'rows2' }, { newTab: ADMIN });
+    e.apply({ cmd: 'applyLayout', preset: 'single' }, { newTab: ADMIN });
+    expect(e.paneCount()).toBe(1);
+    expect(e.getTree().focusedPaneId).toBe(rootPaneId(e));
+  });
+});
+
+describe('applyLayout — 모르는 preset(검수 2026-10-03)', () => {
+  it('거절하고 트리는 그대로', () => {
+    const e = engineWithOnePane();
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    const before = JSON.stringify(e.getTree());
+    const c = e.apply({ cmd: 'applyLayout', preset: 'grid9' as never }, { newTab: ADMIN });
+    expect(c.rejected).toContain('없는 preset');
+    expect(JSON.stringify(e.getTree())).toBe(before);
+  });
+});

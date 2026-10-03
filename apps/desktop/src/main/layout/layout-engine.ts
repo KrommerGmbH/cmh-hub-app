@@ -14,7 +14,7 @@ import type {
   SplitNode,
   TabRecord,
 } from '@cmh-hub-app/contracts';
-import { LAYOUT_LIMITS } from '@cmh-hub-app/contracts';
+import { LAYOUT_LIMITS, LAYOUT_PRESET_PANES, type LayoutPreset } from '@cmh-hub-app/contracts';
 import { computeGeometry, subtreeMinSize } from './layout-rect.js';
 
 interface ParentRef {
@@ -218,7 +218,10 @@ export class LayoutEngine implements LayoutEngineApi {
         return this.closeTab(cmd.tabId, defaults.newTab);
       case 'activateTab':
         return this.activateTab(cmd.tabId);
+      case 'applyLayout':
+        return this.applyLayout(cmd.preset, defaults.newTab);
       // 아래는 트리를 바꾸지 않는다 — window 쪽이 처리한다
+      case 'shell.popup':
       case 'reloadTab':
       case 'aiTaskStop':
       case 'update.download':
@@ -413,6 +416,60 @@ export class LayoutEngine implements LayoutEngineApi {
       node.ratio = r;
       change.geometryChanged = true;
     }
+    return change;
+  }
+
+  /**
+   * 레이아웃 고르기 — 지금 pane 을 왼쪽 위부터(트리 차례) 새 자리에 다시 앉힌다. 탭 · view 는 그대로(새로고침 없음).
+   * pane 이 모자라면 기본 새 탭 하나로 채우고, 남으면 남는 pane 의 탭을 마지막 자리 pane 뒤에 붙인다(닫지 않는다).
+   */
+  private applyLayout(preset: LayoutPreset, spec: NewTabSpec): LayoutChange {
+    const change = emptyChange(this.tree.focusedPaneId);
+    // IPC 로 온 값은 검사 전 문자열이다 — 모르는 preset 이면 slice(undefined) 가 전체를 돌려 탭이 두 pane 에 들어간다(검수 2026-10-03)
+    if (!Object.hasOwn(LAYOUT_PRESET_PANES, preset)) return { ...change, rejected: `없는 preset: ${String(preset)}` };
+    const want = LAYOUT_PRESET_PANES[preset];
+    const panes = this.collectPanes(this.tree.root);
+    const kept = panes.slice(0, want);
+    const merged = panes.slice(want);
+    const last = kept[kept.length - 1];
+    if (last) {
+      for (const extra of merged) {
+        last.tabIds.push(...extra.tabIds);
+        change.closedPaneIds.push(extra.id);
+      }
+    }
+    while (kept.length < want) {
+      const tab = this.makeTab(spec);
+      this.tree.tabs[tab.id] = tab;
+      const pane: PaneNode = { type: 'pane', id: randomUUID(), tabIds: [tab.id], activeTabId: tab.id };
+      kept.push(pane);
+      change.createdTabIds.push(tab.id);
+    }
+    const split = (orientation: Orientation, a: LayoutNode, b: LayoutNode): SplitNode => ({
+      type: 'split', id: randomUUID(), orientation, ratio: 0.5, children: [a, b],
+    });
+    const [p0, p1, p2, p3] = kept as [PaneNode, PaneNode?, PaneNode?, PaneNode?];
+    switch (preset) {
+      case 'single':
+        this.tree.root = p0;
+        break;
+      case 'columns2':
+        this.tree.root = split('horizontal', p0, p1 as PaneNode);
+        break;
+      case 'rows2':
+        this.tree.root = split('vertical', p0, p1 as PaneNode);
+        break;
+      case 'top2bottom1':
+        this.tree.root = split('vertical', split('horizontal', p0, p1 as PaneNode), p2 as PaneNode);
+        break;
+      case 'grid4':
+        this.tree.root = split('vertical', split('horizontal', p0, p1 as PaneNode), split('horizontal', p2 as PaneNode, p3 as PaneNode));
+        break;
+    }
+    if (!kept.some((p) => p.id === this.tree.focusedPaneId)) this.tree.focusedPaneId = p0.id;
+    change.focusedPaneId = this.tree.focusedPaneId;
+    change.activeChangedPaneIds = kept.map((p) => p.id);
+    change.geometryChanged = true;
     return change;
   }
 

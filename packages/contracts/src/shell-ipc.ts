@@ -1,5 +1,5 @@
 // U01 · U03 — 셸 페이지 ↔ main 의 IPC. 채널은 이 둘(+덮개 셋)뿐이다. 서버 페이지에는 IPC 가 없다.
-import type { Orientation, Rect, SashGeometry, TabKind } from './layout.js';
+import type { LayoutPreset, Orientation, Rect, SashGeometry, TabKind } from './layout.js';
 import type { UpdateState } from './update.js';
 
 export const SHELL_IPC = {
@@ -20,6 +20,9 @@ export const OVERLAY_IPC = {
 
 export type ShellCommand =
   | { cmd: 'split'; paneId: string; orientation: Orientation }
+  | { cmd: 'applyLayout'; preset: LayoutPreset }
+  /** 셸 팝오버(«+» · 레이아웃 메뉴)가 열린 동안 셸 view 를 맨 위로 — 아니면 어드민 view 가 메뉴를 덮는다(2026-10-03 «탭추가 버튼 작동 안됨») */
+  | { cmd: 'shell.popup'; open: boolean }
   | { cmd: 'closePane'; paneId: string }
   | { cmd: 'moveTab'; tabId: string; toPaneId: string; index?: number }
   | { cmd: 'reorderTab'; tabId: string; index: number }

@@ -3,19 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'">
-  <title>cmh-hub</title>
+  <title>CMH Hub</title>
   <link rel="stylesheet" href="./shell.css">
 </head>
 <body>
   <!-- 제목줄: 창 단추는 Windows 에서 OS 가 그린다(titleBarOverlay) · linux 만 셸이 그린다 -->
   <header id="titlebar" class="titlebar">
     <div class="titlebar-left">
-      <span class="app-dot" aria-hidden="true"></span>
-      <span class="app-name">cmh-hub</span>
+      <img class="app-icon" src="./icon.svg" alt="" aria-hidden="true">
+      <span class="app-name">CMH Hub</span>
       <span id="server-host" class="server-host"></span>
     </div>
     <div class="titlebar-drag" aria-hidden="true"></div>
     <div class="titlebar-right">
+      <button id="layout-button" class="ico layout-button" aria-label="레이아웃 고르기" aria-haspopup="menu" title="레이아웃 (pane 나누기)"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 2.5v11M8 8h6.5" stroke="currentColor" stroke-width="1.3"/></svg></button>
       <span id="pane-count" class="pane-count"></span>
       <span id="update-dot" class="update-dot" hidden title="업데이트 있음"></span>
       <div id="window-controls" class="window-controls" hidden>
@@ -32,8 +33,17 @@
   <!-- «+» 메뉴 -->
   <div id="newtab-menu" class="menu" hidden role="menu"></div>
 
+  <!-- 레이아웃 고르기(2026-10-03 · 단추 하나 · 제목줄) -->
+  <div id="layout-menu" class="menu layout-menu" hidden role="menu">
+    <button class="menu-item layout-item" role="menuitem" data-preset="single" data-count="1"><svg class="layout-ico" width="22" height="16" viewBox="0 0 22 16"><rect x="1" y="1" width="20" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg><span>1단 (하나로 합치기)</span></button>
+    <button class="menu-item layout-item" role="menuitem" data-preset="columns2" data-count="2"><svg class="layout-ico" width="22" height="16" viewBox="0 0 22 16"><rect x="1" y="1" width="20" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M11 1v14" stroke="currentColor" stroke-width="1.3"/></svg><span>2단 좌우</span></button>
+    <button class="menu-item layout-item" role="menuitem" data-preset="rows2" data-count="2"><svg class="layout-ico" width="22" height="16" viewBox="0 0 22 16"><rect x="1" y="1" width="20" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 8h20" stroke="currentColor" stroke-width="1.3"/></svg><span>2단 상하</span></button>
+    <button class="menu-item layout-item" role="menuitem" data-preset="top2bottom1" data-count="3"><svg class="layout-ico" width="22" height="16" viewBox="0 0 22 16"><rect x="1" y="1" width="20" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 8h20M11 1v7" stroke="currentColor" stroke-width="1.3"/></svg><span>3단 (위 둘 · 아래 하나)</span></button>
+    <button class="menu-item layout-item" role="menuitem" data-preset="grid4" data-count="4"><svg class="layout-ico" width="22" height="16" viewBox="0 0 22 16"><rect x="1" y="1" width="20" height="14" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 8h20M11 1v14" stroke="currentColor" stroke-width="1.3"/></svg><span>4단 (2×2)</span></button>
+  </div>
+
   <!-- 업데이트 모달(G03) -->
-  <div id="update-modal" class="modal" hidden>
+  <div id="update-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="update-title">
     <div class="modal-card">
       <h2 id="update-title">업데이트</h2>
       <p id="update-text"></p>
@@ -59,8 +69,6 @@
       <div class="strip-tabs"></div>
       <button class="ico strip-newtab" aria-label="새 탭"><svg width="14" height="14" viewBox="0 0 14 14"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.4"/></svg></button>
       <div class="strip-spacer"></div>
-      <button class="ico strip-split-right" aria-label="오른쪽으로 split (Ctrl+\)"><svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 2v10" stroke="currentColor" stroke-width="1.3"/></svg></button>
-      <button class="ico strip-split-down" aria-label="아래로 split (Ctrl+Shift+\)"><svg width="14" height="14" viewBox="0 0 14 14"><rect x="1" y="2" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1 7h12" stroke="currentColor" stroke-width="1.3"/></svg></button>
     </div>
   </template>
 

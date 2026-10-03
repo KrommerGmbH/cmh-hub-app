@@ -5,7 +5,19 @@
   --text: #e8eaed;
   --muted: #9aa0a6;
   --hover: #2b2b30;
-  --accent: #4c8dff;
+  --pressed: #35353c;
+  --border: #3a3a40;
+  --surface-2: #232328;
+  --text-dim: #8a9099; /* 호스트 글 · 제목줄 위 5.7:1 (옛 #6b7075 은 3.7:1) */
+  --accent: #4c8dff; /* 선 · 링 전용 — 흰 글자 바탕으로 쓰지 않는다(3.2:1) */
+  --accent-fill: #2a66d9;
+  --accent-fill-hover: #2458c2;
+  --danger: #c42b1c;
+  --radius-s: 6px;
+  --radius-l: 12px;
+  --focus-ring: 0 0 0 2px var(--frame), 0 0 0 4px var(--accent);
+  --dur: 120ms;
+  --ease: cubic-bezier(.2, 0, 0, 1);
   --tab-active: #ffffff;
   --tab-active-text: #1f1f23;
   --titlebar-h: 40px;
@@ -15,7 +27,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; user-select: none; }
-html, body { margin: 0; height: 100%; background: var(--frame); color: var(--text); overflow: hidden;
+html, body { margin: 0; height: 100%; background: transparent; /* 셸 view 투명 — 팝오버 때 맨 위로 올라가도 pane 자리는 아래 페이지가 보인다 */ color: var(--text); overflow: hidden;
   font-family: "Segoe UI", "Noto Sans KR", "Malgun Gothic", sans-serif; font-size: 12.5px; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 button:disabled { opacity: .35; cursor: default; }
@@ -25,15 +37,18 @@ button:disabled { opacity: .35; cursor: default; }
   width: env(titlebar-area-width, 100%); height: env(titlebar-area-height, var(--titlebar-h));
   display: flex; align-items: center; background: var(--titlebar); border-bottom: 1px solid #0d0d0f; z-index: 5; }
 .titlebar-left { display: flex; align-items: center; gap: 8px; padding: 0 14px; font-weight: 600; white-space: nowrap; }
-.app-dot { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); display: inline-block; }
-.server-host { color: #6b7075; font-weight: 500; }
+.app-icon { width: 18px; height: 18px; display: block; flex: 0 0 auto; }
+.app-name { font-size: 13px; font-weight: 600; letter-spacing: .1px; }
+.server-host { color: var(--text-dim); font-weight: 500; font-size: 12px; }
+.layout-button { margin-bottom: 0; app-region: no-drag; -webkit-app-region: no-drag; }
+.layout-button[aria-expanded="true"] { background: var(--pressed); color: var(--text); }
 .titlebar-drag { flex: 1 1 auto; height: 100%; app-region: drag; -webkit-app-region: drag; }
 .titlebar-right { display: flex; align-items: center; gap: 10px; padding: 0 10px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .update-dot { width: 8px; height: 8px; border-radius: 50%; background: #f0b451; display: inline-block; }
 .window-controls { display: flex; }
 .wc { width: 46px; height: var(--titlebar-h); display: flex; align-items: center; justify-content: center; color: #c7c9cc; }
 .wc:hover { background: var(--hover); }
-.wc-close:hover { background: #c42b1c; color: #fff; }
+.wc-close:hover { background: var(--danger); color: #fff; }
 
 /* ── pane 스트립(절대 좌표 · 좌표는 창 기준 px) ── */
 .panes { position: absolute; inset: 0; }
@@ -42,6 +57,7 @@ button:disabled { opacity: .35; cursor: default; }
 .strip-spacer { flex: 1 1 auto; min-width: 8px; height: 100%; }
 .ico { width: 28px; height: 28px; margin-bottom: 3px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); flex: 0 0 auto; }
 .ico:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.ico:active:not(:disabled) { background: var(--pressed); }
 
 .tab { display: flex; align-items: center; gap: 8px; height: var(--tab-h); padding: 0 8px 0 12px; border-radius: var(--tab-radius) var(--tab-radius) 0 0;
   color: var(--muted); font-weight: 500; white-space: nowrap; max-width: 220px; min-width: 72px; cursor: default; position: relative; }
@@ -51,9 +67,9 @@ button:disabled { opacity: .35; cursor: default; }
 .pane-focused .tab.active { box-shadow: inset 0 2px 0 var(--accent); }
 .tab-title { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tab-favicon { width: 16px; height: 16px; flex: 0 0 auto; }
-.tab-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #3a3a40; border-top-color: var(--accent); animation: spin .8s linear infinite; flex: 0 0 auto; }
+.tab-spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: 0 0 auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.tab-close { width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; color: inherit; opacity: .7; }
+.tab-close { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; color: inherit; opacity: .7; }
 .tab-close:hover { background: rgba(0,0,0,.12); opacity: 1; }
 .tab.active .tab-close:hover { background: #e3e5e8; }
 
@@ -66,22 +82,35 @@ button:disabled { opacity: .35; cursor: default; }
 body.dragging-col, body.dragging-col * { cursor: col-resize !important; }
 body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 
-/* ── «+» 메뉴 ── */
-.menu { position: absolute; z-index: 10; min-width: 220px; padding: 6px; background: #26262b; border: 1px solid #3a3a40; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
-.menu-item { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; color: var(--text); }
+/* ── 팝오버(«+» · 레이아웃) — 셸이 맨 위로 올라온 동안만 보인다(shell.ts setPopupOpen) · 블러는 안 쓴다(셸 층이 투명이라 아래 페이지가 안 흐려진다) ── */
+.menu { position: absolute; z-index: 10; min-width: 232px; padding: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-l);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.3), 0 10px 30px -6px rgba(0,0,0,.6); animation: pop-in var(--dur) var(--ease); }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.menu-item { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px; text-align: left; border-radius: var(--radius-s); color: var(--text); }
 .menu-item:hover { background: var(--hover); }
-.menu-item .kind { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.menu-item:active { background: var(--pressed); }
+.menu-item .kind { color: var(--muted); font-size: 11px; }
+.menu-item .menu-ico { color: var(--muted); display: flex; }
+.layout-menu { min-width: 236px; }
+.layout-item .layout-ico { color: var(--muted); }
+.layout-item.current-count .layout-ico { color: var(--accent); }
+.layout-item.current-count::after { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); justify-self: end; }
 
 /* ── 업데이트 모달 ── */
 .modal { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
-.modal-card { width: 420px; padding: 20px; background: #26262b; border: 1px solid #3a3a40; border-radius: 12px; display: flex; flex-direction: column; gap: 12px; }
+.modal-card { width: 420px; padding: 20px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; gap: 12px; }
 .modal-card h2 { margin: 0; font-size: 15px; }
 .modal-card p { margin: 0; color: var(--muted); line-height: 1.5; }
 .progress { height: 8px; background: #1f1f24; border-radius: 999px; overflow: hidden; }
 .progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.btn { height: 32px; padding: 0 14px; border-radius: 6px; border: 1px solid #3a3a40; color: var(--text); }
+.btn { height: 32px; padding: 0 14px; border-radius: var(--radius-s); border: 1px solid var(--border); color: var(--text); }
 .btn:hover { background: var(--hover); }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.btn-primary:hover { background: #3f7fe8; }
+.btn-primary { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; font-weight: 600; }
+.btn-primary:hover { background: var(--accent-fill-hover); }
+/* 상태 전환 · 키보드 포커스 링 */
+.tab, .ico, .menu-item, .btn, .wc { transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+.ico:focus-visible, .menu-item:focus-visible, .btn:focus-visible, .wc:focus-visible, .tab-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+@media (prefers-reduced-motion: reduce) { .menu { animation: none; } .tab, .ico, .menu-item, .btn, .wc { transition: none; } }
 [hidden] { display: none !important; }
