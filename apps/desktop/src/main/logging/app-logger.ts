@@ -5,6 +5,7 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
+import { APP_ERROR_REPORT_LIMITS, type AppErrorEntry } from '@cmh-hub-app/contracts';
 
 export type LogLevel = 'info' | 'warn' | 'error';
 
@@ -12,6 +13,33 @@ const MAX_BYTES = 5 * 1024 * 1024;
 const KEEP_FILES = 3; // main.log + main.1.log + main.2.log
 
 let logDir: string | null = null;
+
+// ── 서버로 보낼 오류 줄(warn · error) — worker/error-reporter.ts 가 60초마다 가져간다(2026-10-03 사장님 «오류보내기») ──
+const REPORT_QUEUE_MAX = 200;
+/** 보내는 쪽 자신의 로그 — 다시 줄에 넣으면 보내기 실패가 끝없이 쌓인다 */
+export const ERROR_REPORT_TAG = '[error-report]';
+const reportQueue: AppErrorEntry[] = [];
+
+function enqueueForReport(level: LogLevel, line: string, now: Date): void {
+  if (level === 'info' || line.startsWith(ERROR_REPORT_TAG)) return;
+  reportQueue.push({ time: now.toISOString(), level, message: line.slice(0, APP_ERROR_REPORT_LIMITS.maxMessageLength) });
+  if (reportQueue.length > REPORT_QUEUE_MAX) reportQueue.splice(0, reportQueue.length - REPORT_QUEUE_MAX); // 오래된 것부터 버린다
+}
+
+/** 보낼 묶음을 꺼낸다(최대 max 건) */
+export function takeErrorReportBatch(max: number = APP_ERROR_REPORT_LIMITS.maxEntries): AppErrorEntry[] {
+  return reportQueue.splice(0, max);
+}
+
+/** 보내기 실패 — 꺼낸 묶음을 앞에 되돌린다(상한은 그대로) */
+export function returnErrorReportBatch(batch: readonly AppErrorEntry[]): void {
+  reportQueue.unshift(...batch);
+  if (reportQueue.length > REPORT_QUEUE_MAX) reportQueue.splice(REPORT_QUEUE_MAX);
+}
+
+export function pendingErrorReportCount(): number {
+  return reportQueue.length;
+}
 
 /** `userData/logs` — app 이름(productName)마다 다른 폴더다. 처음 쓸 때 만든다 */
 export function logDirectory(): string {
@@ -54,10 +82,12 @@ export function formatLogLine(level: LogLevel, args: readonly unknown[], now: Da
 
 /** 동기 쓰기 — 죽기 직전 오류도 남게. 로그 쓰기가 실패해도 앱은 멈추지 않는다 */
 export function writeLog(level: LogLevel, ...args: unknown[]): void {
+  const now = new Date();
+  enqueueForReport(level, args.map(formatLogArg).join(' '), now);
   try {
     const file = logFilePath();
     rotateIfLarge(file);
-    appendFileSync(file, formatLogLine(level, args), 'utf8');
+    appendFileSync(file, formatLogLine(level, args, now), 'utf8');
   } catch {
     // 디스크가 꽉 찼거나 권한이 없다 — 콘솔에는 이미 나갔다
   }

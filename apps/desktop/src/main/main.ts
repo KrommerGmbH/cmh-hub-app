@@ -4,6 +4,7 @@ import { assertNoRemoteDebugging } from './cdp-guard.js';
 import { installAppLogger } from './logging/app-logger.js';
 import { AppSession } from './identity/app-session.js';
 import { ensureInstallationIdentity } from './identity/installation-identity.js';
+import { startErrorReporter } from './worker/error-reporter.js';
 import { startHeartbeat } from './worker/heartbeat.js';
 import { LocalLlmEngine } from './worker/local-llm-engine.js';
 import { installedLocalModels } from './worker/installed-models.js';
@@ -30,6 +31,10 @@ app.whenReady().then(async () => {
   // H01 · H03 — 설치 ID 와 서명은 창보다 먼저(첫 요청부터 서명이 붙게)
   const appSession = new AppSession(ensureInstallationIdentity());
   appSession.start();
+  // 오류 보내기 — 로그인 전에 쌓인 것도 로그인 뒤 첫 틱에 간다
+  startErrorReporter(appSession);
+  // 끝-끝 시험용(개발판만) — 서버 var/log/cmh_hub_app_errors-<날짜>.log 에 이 줄이 오면 길이 다 이어진 것이다
+  if (process.env['CMH_HUB_TEST_ERROR'] && !app.isPackaged) console.error('[test] 오류 보내기 끝-끝 시험', new Date().toISOString());
   const w = await createShellWindow();
   startHeartbeat(appSession, w.window, () => {
     console.warn('[heartbeat] 사장님이 이 설치를 차단했습니다 — 창을 닫습니다');
