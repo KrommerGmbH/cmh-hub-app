@@ -53,14 +53,17 @@ button:disabled { opacity: .35; cursor: default; }
 /* ── pane 스트립(절대 좌표 · 좌표는 창 기준 px) ── */
 .panes { position: absolute; inset: 0; }
 .strip { position: absolute; display: flex; align-items: flex-end; height: var(--strip-h); padding: 0 6px 0 8px; gap: 2px; background: var(--frame); overflow: hidden; }
-.strip-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow: hidden; }
+.strip-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow: hidden; flex: 0 1 auto; width: 100%; max-width: max-content; }
 .strip-spacer { flex: 1 1 auto; min-width: 8px; height: 100%; }
 .ico { width: 28px; height: 28px; margin-bottom: 3px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); flex: 0 0 auto; }
 .ico:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .ico:active:not(:disabled) { background: var(--pressed); }
 
 .tab { display: flex; align-items: center; gap: 8px; height: var(--tab-h); padding: 0 8px 0 12px; border-radius: var(--tab-radius) var(--tab-radius) 0 0;
-  color: var(--muted); font-weight: 500; white-space: nowrap; max-width: 220px; min-width: 72px; cursor: default; position: relative; }
+  color: var(--muted); font-weight: 500; white-space: nowrap; max-width: 220px; min-width: 72px; cursor: default; position: relative;
+  flex: 1 1 0; /* 탭이 많으면 크롬처럼 같이 줄어든다(최소 72px · 그보다 많으면 끝이 잘린다 · 디자인 검토 2026-10-03) */ }
+/* 비활성 탭 사이 가는 구분선 */
+.tab:not(.active):not(:hover) + .tab:not(.active):not(:hover)::before { content: ''; position: absolute; left: -1px; top: 9px; width: 1px; height: 16px; background: var(--border); }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active { background: var(--tab-active); color: var(--tab-active-text); }
 .tab.active:hover { background: var(--tab-active); }

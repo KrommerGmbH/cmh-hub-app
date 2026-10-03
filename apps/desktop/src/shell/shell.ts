@@ -58,7 +58,9 @@ function escapeHtml(s: string): string {
 
 function renderTitle(state: ShellState): void {
   $<HTMLElement>('#server-host').textContent = `· ${state.serverHost}`;
-  $<HTMLElement>('#pane-count').textContent = `pane ${state.paneCount} / ${state.maxPanes}`;
+  // «pane 2 / 4» 글은 숨기고 레이아웃 단추 툴팁으로(디자인 검토 2026-10-03 · 개발 낱말을 화면에 덜 드러냄)
+  $<HTMLElement>('#pane-count').hidden = true;
+  layoutButtonEl.title = `레이아웃 · 화면 ${state.paneCount} / ${state.maxPanes}`;
   $<HTMLElement>('#update-dot').hidden = !(state.update.state === 'available' || state.update.state === 'ready' || state.update.state === 'required');
   $<HTMLElement>('#window-controls').hidden = state.platform !== 'linux';
 }
@@ -86,6 +88,18 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number]): HTMLElemen
   const el = (tabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
   el.dataset['tabId'] = tab.id;
   el.classList.toggle('active', tab.active);
+  // 키보드 — 활성 탭만 Tab 키로 들어오고 ← → 로 이웃 탭(디자인 검토 2026-10-03 · WAI-ARIA tabs 꼴)
+  el.tabIndex = tab.active ? 0 : -1;
+  el.setAttribute('aria-selected', String(tab.active));
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const sibling = (e.key === 'ArrowLeft' ? el.previousElementSibling : el.nextElementSibling) as HTMLElement | null;
+    const id = sibling?.dataset['tabId'];
+    if (!id) return;
+    e.preventDefault();
+    sibling.focus({ preventScroll: true }); // 새 상태가 오면 upsertStrip 이 같은 id 탭에 포커스를 되돌린다
+    send({ cmd: 'activateTab', tabId: id, keepShellFocus: true });
+  });
   el.title = tab.title;
   el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : '불러오는 중');
   const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
@@ -105,6 +119,14 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number]): HTMLElemen
     if ((e.target as HTMLElement).closest('.tab-close')) return;
     send({ cmd: 'activateTab', tabId: tab.id });
   });
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Delete') {
+      e.preventDefault();
+      send({ cmd: 'closeTab', tabId: tab.id, keepShellFocus: true });
+    }
+  });
+  // 닫기 단추는 Tab 순서에서 뺀다(탭 하나만 Tab 으로 들어오는 roving tabindex · 키보드는 Delete 로 닫는다)
+  el.querySelector<HTMLButtonElement>('.tab-close')!.tabIndex = -1;
   el.querySelector<HTMLButtonElement>('.tab-close')!.addEventListener('click', (e) => {
     e.stopPropagation();
     send({ cmd: 'closeTab', tabId: tab.id });
@@ -116,8 +138,14 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   const strip = stripEls.get(pane.id) ?? createStrip(pane.id);
   strip.classList.toggle('pane-focused', pane.focused);
   place(strip, pane.stripRect);
-  // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다
-  strip.querySelector<HTMLElement>('.strip-tabs')!.replaceChildren(...pane.tabs.map(renderTab));
+  // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다. 다만 키보드 포커스가 그 안에 있었으면 같은 탭(없으면 활성 탭)에 되돌린다
+  // (제목 · 로딩 상태가 올 때마다 다시 그려 포커스가 body 로 빠지던 결함 · 검수 2026-10-03)
+  const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
+  const focusedTabId = tabsEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.tab')?.dataset['tabId'] : undefined;
+  tabsEl.replaceChildren(...pane.tabs.map(renderTab));
+  if (focusedTabId !== undefined) {
+    (tabsEl.querySelector<HTMLElement>(`.tab[data-tab-id="${focusedTabId}"]`) ?? tabsEl.querySelector<HTMLElement>('.tab.active'))?.focus({ preventScroll: true });
+  }
 }
 
 // ───────────────────────── sash(id 로 재사용 · 드래그) ─────────────────────────
@@ -225,7 +253,7 @@ function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): voi
     // 아이콘 · 이름 · (네이버만) 꼬리표 — 옛 «어드민» 꼬리표는 AI 채팅에도 붙어 틀렸다(디자인 검토 2026-10-03)
     item.innerHTML = `<span class="menu-ico">${choice.kind === 'naver' ? NAVER_ICON : ADMIN_ICON}</span><span>${escapeHtml(choice.label)}</span>${choice.kind === 'naver' ? '<span class="kind">네이버</span>' : ''}`;
     item.addEventListener('click', () => {
-      closeMenu();
+      closeMenu('pick');
       send({ cmd: 'newTab', paneId, kind: choice.kind, url: choice.url });
     });
     menuEl.appendChild(item);
@@ -234,7 +262,9 @@ function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): voi
   menuEl.style.left = px(Math.min(anchor.left, window.innerWidth - 240));
   menuEl.style.top = px(anchor.bottom + 4);
   menuEl.hidden = false;
+  popupOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   setPopupOpen(true);
+  menuEl.querySelector<HTMLButtonElement>('.menu-item')?.focus();
 }
 
 // ───────────────────────── 레이아웃 고르기(제목줄 단추 하나) ─────────────────────────
@@ -247,18 +277,20 @@ function openLayoutMenu(): void {
   const current = lastState?.paneCount ?? 1;
   layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => b.classList.toggle('current-count', Number(b.dataset['count']) === current));
   layoutMenuEl.hidden = false;
+  popupOpener = layoutButtonEl;
   layoutButtonEl.setAttribute('aria-expanded', 'true');
   setPopupOpen(true);
+  (layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item.current-count') ?? layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item'))?.focus();
 }
 
 layoutButtonEl.addEventListener('click', (e) => {
   e.stopPropagation();
   if (layoutMenuEl.hidden) openLayoutMenu();
-  else closeMenu();
+  else closeMenu('toggle');
 });
 layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
   b.addEventListener('click', () => {
-    closeMenu();
+    closeMenu('pick');
     send({ cmd: 'applyLayout', preset: b.dataset['preset'] as Extract<ShellCommand, { cmd: 'applyLayout' }>['preset'] });
   });
 });
@@ -269,17 +301,28 @@ layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => 
  * 셸 바탕은 투명이라 올려도 아래 페이지가 보인다.
  */
 let popupOpen = false;
-function setPopupOpen(open: boolean): void {
+/** 메뉴를 연 단추 — Esc · 같은 단추로 닫으면 포커스를 여기로 돌려준다(검수 2026-10-03) */
+let popupOpener: HTMLElement | null = null;
+function setPopupOpen(open: boolean, refocusPage = false): void {
   if (popupOpen === open) return;
   popupOpen = open;
-  send({ cmd: 'shell.popup', open });
+  send({ cmd: 'shell.popup', open, refocusPage });
 }
 
-function closeMenu(): void {
+/**
+ * 닫는 까닭에 따라 포커스가 갈 곳이 다르다:
+ * 'pick'(항목 고름) · 'outside'(페이지 자리를 누름) → 페이지 view 로(main 이 돌려준다)
+ * 'escape' · 'toggle'(같은 단추) → 메뉴를 연 단추로(키보드로 열고 닫은 사람이 제자리에 남게)
+ */
+function closeMenu(how: 'pick' | 'outside' | 'escape' | 'toggle' = 'outside'): void {
+  const wasOpen = popupOpen;
   menuEl.hidden = true;
   layoutMenuEl.hidden = true;
   layoutButtonEl.setAttribute('aria-expanded', 'false');
-  setPopupOpen(false);
+  const backToOpener = how === 'escape' || how === 'toggle';
+  setPopupOpen(false, !backToOpener);
+  if (wasOpen && backToOpener) popupOpener?.focus();
+  popupOpener = null;
 }
 
 // ───────────────────────── 업데이트 모달(G03) ─────────────────────────
@@ -343,6 +386,7 @@ function renderUpdate(state: ShellState): void {
 
 function render(state: ShellState): void {
   lastState = state;
+  const hadTabFocus = !!(document.activeElement as HTMLElement | null)?.closest?.('.tab');
   renderTitle(state);
 
   const paneIds = new Set(state.panes.map((p) => p.id));
@@ -365,6 +409,10 @@ function render(state: ShellState): void {
   for (const sash of state.sashes) upsertSash(sash);
 
   renderUpdate(state);
+  // Delete 로 pane 의 마지막 탭을 닫으면 그 스트립째 사라진다 — 포커스 pane 의 활성 탭으로 옮긴다
+  if (hadTabFocus && !(document.activeElement as HTMLElement | null)?.closest?.('.tab')) {
+    document.querySelector<HTMLElement>('.strip.pane-focused .tab.active')?.focus({ preventScroll: true });
+  }
 }
 
 document.addEventListener('click', (e) => {
@@ -376,10 +424,22 @@ document.addEventListener('click', (e) => {
 });
 // 메뉴가 열린 채 창 크기가 바뀌면 메뉴는 옛 좌표에 남는다 — 닫는다
 window.addEventListener('resize', () => {
-  if (popupOpen) closeMenu();
+  if (popupOpen) closeMenu('toggle'); // 창 크기 바뀜은 사람이 페이지를 고른 것이 아니다 — 연 단추로 돌려준다
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeMenu();
+  // 열린 메뉴 안 ↑ ↓ Home End(디자인 검토 2026-10-03 · 키보드만으로 고르기)
+  const openMenu = !menuEl.hidden ? menuEl : !layoutMenuEl.hidden ? layoutMenuEl : null;
+  if (openMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+    const items = [...openMenu.querySelectorAll<HTMLButtonElement>('.menu-item')];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+      : at < 0 ? (e.key === 'ArrowDown' ? 0 : items.length - 1)
+      : e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length;
+    items[next]?.focus();
+    e.preventDefault();
+    return;
+  }
+  if (e.key === 'Escape' && popupOpen) closeMenu('escape');
 });
 document.querySelectorAll<HTMLButtonElement>('#window-controls .wc').forEach((b) => {
   b.addEventListener('click', () => send({ cmd: b.dataset['cmd'] as ShellCommand['cmd'] } as ShellCommand));

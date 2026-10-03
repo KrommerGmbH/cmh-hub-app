@@ -107,6 +107,36 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   await wait(800);
   log('click tab ✕(마지막 pane)', w.engine.paneCount() === before - 1 ? 'OK' : `FAIL(pane ${before}→${w.engine.paneCount()})`);
 
+  // ⑦b 키보드 — 탭에 포커스를 둔 채 상태가 다시 오면(다시 그리기) 포커스가 탭에 남나 · Esc 로 메뉴를 닫으면 레이아웃 단추로 돌아오나
+  {
+    const activeTab = w.activeTabOfFocusedPane()?.activeTabId;
+    await shellJs(`document.querySelector('.strip.pane-focused .tab.active')?.focus()`);
+    if (activeTab) w.handleCommand({ cmd: 'activateTab', tabId: activeTab }); // 같은 탭 — 상태만 다시 간다
+    await wait(400);
+    const kept = await shellJs<boolean>(`!!document.activeElement?.closest('.tab')`);
+    log('키보드: 다시 그려도 탭 포커스', kept ? 'OK' : 'FAIL(포커스가 빠짐)');
+    // 셸에서 → 를 «셸 안 keydown» 으로 눌렀을 때 OS 키보드 포커스(셸 webContents)가 페이지로 안 넘어가나
+    // 탭이 하나면 ← 가 아무 명령도 안 보낸다 — 새 탭을 열어(맨 오른쪽 · 활성) ← 가 진짜 activateTab 을 보내게
+    const fp = w.focusedPaneId();
+    if (fp) w.handleCommand({ cmd: 'newTab', paneId: fp });
+    await wait(600);
+    const activeBefore = w.activeTabOfFocusedPane()?.activeTabId;
+    w.shellView.webContents.focus();
+    await shellJs(`document.querySelector('.strip.pane-focused .tab.active')?.focus()`);
+    const before = w.shellView.webContents.isFocused();
+    await shellJs(`document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })) || document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
+    await wait(500);
+    const after = w.shellView.webContents.isFocused();
+    const moved = w.activeTabOfFocusedPane()?.activeTabId !== activeBefore;
+    log('키보드: ← 탭 이동 · 셸 포커스 유지', `${moved ? '이동 OK' : 'FAIL(안 옮겨짐)'} · ${before === after ? `포커스 OK(${String(after)})` : `FAIL(${String(before)}→${String(after)})`}`);
+    await shellJs(`document.querySelector('#layout-button').focus(); document.querySelector('#layout-button').click()`);
+    await wait(300);
+    await shellJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await wait(300);
+    const back = await shellJs<string>(`document.activeElement?.id ?? ''`);
+    log('키보드: Esc → 레이아웃 단추', `${back === 'layout-button' ? 'OK' : `FAIL(${back})`} · 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

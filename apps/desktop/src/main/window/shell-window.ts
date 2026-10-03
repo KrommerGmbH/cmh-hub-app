@@ -134,7 +134,7 @@ export class ShellWindow {
         console.info('[ai] 1차에서는 상태만 — W02 뒤에', cmd.paneId);
         return;
       case 'shell.popup':
-        this.setShellOnTop(cmd.open);
+        this.setShellOnTop(cmd.open, cmd.refocusPage ?? true);
         return;
       default:
         break;
@@ -157,7 +157,8 @@ export class ShellWindow {
     if (change.geometryChanged || change.createdTabIds.length > 0 || change.activeChangedPaneIds.length > 0) {
       this.relayout();
     }
-    if (change.focusedPaneId) this.focusActiveViewOf(change.focusedPaneId);
+    const keepShellFocus = (cmd.cmd === 'activateTab' || cmd.cmd === 'closeTab') && cmd.keepShellFocus === true;
+    if (change.focusedPaneId && !keepShellFocus) this.focusActiveViewOf(change.focusedPaneId);
     this.store.save(this.engine.getTree());
     this.sendState();
   }
@@ -167,7 +168,7 @@ export class ShellWindow {
    * (Electron View 문서 «If the same View is added to a parent which already contains it, it will be reordered»).
    * 닫히면 다시 맨 아래(index 0). 셸 바탕은 투명(setBackgroundColor #00000000 · shell.css)이라 올려도 아래 페이지가 보인다.
    */
-  private setShellOnTop(on: boolean): void {
+  private setShellOnTop(on: boolean, refocusPage = true): void {
     if (this.window.isDestroyed()) return;
     this.shellOnTop = on;
     if (on) {
@@ -175,9 +176,9 @@ export class ShellWindow {
       return;
     }
     this.window.contentView.addChildView(this.shellView, 0);
-    // 페이지 자리를 눌러 메뉴를 닫으면 그 클릭은 셸이 먹는다 — 키보드 포커스를 포커스 pane 의 페이지로 돌려준다
+    // 페이지 자리를 눌러 메뉴를 닫으면 그 클릭은 셸이 먹는다 — 키보드 포커스를 포커스 pane 의 페이지로 돌려준다(Esc 로 닫으면 셸 단추에 남긴다)
     const paneId = this.focusedPaneId();
-    if (paneId) this.focusActiveViewOf(paneId);
+    if (refocusPage && paneId) this.focusActiveViewOf(paneId);
   }
 
   /** smoke — 셸 view 가 지금 맨 위 층인가 */

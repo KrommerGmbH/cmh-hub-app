@@ -22,15 +22,16 @@ export type ShellCommand =
   | { cmd: 'split'; paneId: string; orientation: Orientation }
   | { cmd: 'applyLayout'; preset: LayoutPreset }
   /** 셸 팝오버(«+» · 레이아웃 메뉴)가 열린 동안 셸 view 를 맨 위로 — 아니면 어드민 view 가 메뉴를 덮는다(2026-10-03 «탭추가 버튼 작동 안됨») */
-  | { cmd: 'shell.popup'; open: boolean }
+  | { cmd: 'shell.popup'; open: boolean; /** 닫을 때 키보드 포커스를 페이지 view 로 돌려줄까(Esc 로 닫으면 false · 셸 단추에 남는다) */ refocusPage?: boolean }
   | { cmd: 'closePane'; paneId: string }
   | { cmd: 'moveTab'; tabId: string; toPaneId: string; index?: number }
   | { cmd: 'reorderTab'; tabId: string; index: number }
   | { cmd: 'focusPane'; paneId: string }
   | { cmd: 'resize'; sashId: string; ratio: number }
   | { cmd: 'newTab'; paneId: string; kind?: TabKind; url?: string }
-  | { cmd: 'closeTab'; tabId: string }
-  | { cmd: 'activateTab'; tabId: string }
+  /** keepShellFocus — 셸 키보드(← → · Delete)로 보낸 것. main 이 키보드 포커스를 페이지로 옮기지 않는다(검수 2026-10-03) */
+  | { cmd: 'closeTab'; tabId: string; keepShellFocus?: boolean }
+  | { cmd: 'activateTab'; tabId: string; keepShellFocus?: boolean }
   | { cmd: 'reloadTab'; tabId: string }
   | { cmd: 'aiTaskStop'; paneId: string }
   | { cmd: 'update.download' }
