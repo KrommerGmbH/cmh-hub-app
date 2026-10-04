@@ -2,6 +2,7 @@
 import { shell, WebContentsView } from 'electron';
 import type { TabRecord } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../config.js';
+import { attachContextMenu } from './context-menu.js';
 import { isAllowedUrl } from './url-policy.js';
 
 export interface TabViewEvents {
@@ -53,6 +54,7 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   wc.on('did-navigate-in-page', (_e, url) => events.onUrl(tab.id, url));
   wc.on('focus', () => events.onFocus(tab.id));
 
+  attachContextMenu(wc); // 오른쪽 클릭 메뉴(2026-10-04)
   void wc.loadURL(tab.url);
   return view;
 }

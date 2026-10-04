@@ -11,8 +11,9 @@ const fakeWindow = {
   paneIdByOrder: (i: number) => (i === 0 ? 'p1' : undefined),
 } as unknown as ShellWindow;
 
-function key(code: string, mods: { control?: boolean; shift?: boolean; alt?: boolean } = {}): Input {
-  return { type: 'keyDown', code, key: '', control: mods.control ?? true, shift: mods.shift ?? false, alt: mods.alt ?? false, meta: false } as unknown as Input;
+function key(code: string, mods: { control?: boolean; shift?: boolean; alt?: boolean; key?: string; numLock?: boolean } = {}): Input {
+  const modifiers = [mods.control ?? true ? 'control' : '', mods.shift ? 'shift' : '', mods.numLock ?? true ? 'numLock' : ''].filter(Boolean);
+  return { type: 'keyDown', code, key: mods.key ?? '', control: mods.control ?? true, shift: mods.shift ?? false, alt: mods.alt ?? false, meta: false, modifiers } as unknown as Input;
 }
 
 describe('레이아웃 단축키 Ctrl+Shift+1..8(2026-10-04)', () => {
@@ -21,6 +22,20 @@ describe('레이아웃 단축키 Ctrl+Shift+1..8(2026-10-04)', () => {
       expect(commandForInput(key(`Digit${i + 1}`, { shift: true }), fakeWindow)).toEqual({ cmd: 'applyLayout', preset });
       expect(commandForInput(key(`Numpad${i + 1}`, { shift: true }), fakeWindow)).toEqual({ cmd: 'applyLayout', preset });
     });
+  });
+
+  it('숫자 패드: NumLock 켜짐 + Shift 를 떼고 이동 키로 온 것(Windows) = 레이아웃', () => {
+    expect(commandForInput(key('Numpad3', { key: 'PageDown' }), fakeWindow)).toEqual({ cmd: 'applyLayout', preset: LAYOUT_PRESET_ORDER[2] });
+    expect(commandForInput(key('Numpad9', { key: 'PageUp' }), fakeWindow)).toBeNull();
+  });
+
+  it('숫자 패드: NumLock 꺼짐 = 이동 키(Ctrl+End 등) — 가로채지 않는다', () => {
+    expect(commandForInput(key('Numpad1', { key: 'End', numLock: false }), fakeWindow)).toBeNull();
+    expect(commandForInput(key('Numpad7', { key: 'Home', numLock: false, shift: true }), fakeWindow)).toBeNull();
+  });
+
+  it('숫자 패드: NumLock 켜짐 · Shift 없이 숫자 = 레이아웃 아님(메뉴 글씨 Ctrl+Shift 와 맞춤)', () => {
+    expect(commandForInput(key('Numpad2', { key: '2' }), fakeWindow)).toBeNull();
   });
 
   it('9 · Alt 섞임 · Ctrl 없음은 레이아웃이 아니다', () => {

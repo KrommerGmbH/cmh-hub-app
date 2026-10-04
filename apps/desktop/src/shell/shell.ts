@@ -270,24 +270,38 @@ function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): voi
 
 // ───────────────────────── 레이아웃 고르기(제목줄 단추 하나) ─────────────────────────
 
+/**
+ * 메뉴의 «현재»(파란 점) · 끔/켬을 지금 상태에 맞춘다. 메뉴를 열 때만 맞추면 단축키로 바꾼 뒤 열려 있던 메뉴가 옛 표시로 남았다
+ * (2026-10-04 사장님 «단축키로 변경하면 메뉴의 파랑 동그라미가 같이 변경이 안됨») — 상태가 올 때마다 render() 에서도 부른다.
+ */
+function syncLayoutMenu(): void {
+  if (layoutMenuEl.hidden) return; // 닫혀 있으면 열 때(openLayoutMenu) 맞춘다 — 상태가 올 때마다 숨은 요소를 고치지 않는다(제미나이 검수)
+  const focusedPreset = (document.activeElement as HTMLElement | null)?.dataset?.['preset'];
+  // «현재» 표시는 pane 수가 아니라 모양 이름으로 — 수로 보면 2단 좌우 · 2단 상하가 둘 다 켜졌다(2026-10-04 사장님 버그 3)
+  const current = lastState?.layoutPreset ?? null;
+  const tabCount = (lastState?.panes ?? []).reduce((n, p) => n + p.tabs.length, 0);
+  layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
+    const on = b.dataset['preset'] === current;
+    b.classList.toggle('current-preset', on);
+    b.setAttribute('aria-checked', String(on));
+    // 탭 수보다 창이 많은 모양은 끈다(엔진도 거절한다) — 툴팁으로 까닭
+    const need = Number(b.dataset['count']);
+    b.disabled = need > tabCount;
+    b.title = b.disabled ? `탭이 ${need}개 있어야 합니다(지금 ${tabCount}개 · «+» 로 탭을 더 여세요)` : '';
+  });
+  // 포커스가 있던 항목이 꺼지면 포커스가 body 로 빠진다 — 켜진 «현재» 항목으로 옮긴다
+  if (focusedPreset && layoutMenuEl.querySelector<HTMLButtonElement>(`.layout-item[data-preset="${focusedPreset}"]`)?.disabled) {
+    layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item.current-preset:not(:disabled), .layout-item:not(:disabled)')?.focus();
+  }
+}
+
 function openLayoutMenu(): void {
   menuEl.hidden = true;
   const r = layoutButtonEl.getBoundingClientRect();
   layoutMenuEl.style.left = px(Math.max(8, Math.min(r.right - 220, window.innerWidth - 228)));
   layoutMenuEl.style.top = px(r.bottom + 6);
-  // «현재» 표시는 pane 수가 아니라 모양 이름으로 — 수로 보면 2단 좌우 · 2단 상하가 둘 다 켜졌다(2026-10-04 사장님 버그 3)
-  const current = lastState?.layoutPreset ?? null;
-  layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
-    const on = b.dataset['preset'] === current;
-    b.classList.toggle('current-preset', on);
-    // 탭 수보다 창이 많은 모양은 끈다(엔진도 거절한다) — 툴팁으로 까닭
-    const need = Number(b.dataset['count']);
-    const tabCount = (lastState?.panes ?? []).reduce((n, p) => n + p.tabs.length, 0);
-    b.disabled = need > tabCount;
-    b.title = b.disabled ? `탭이 ${need}개 있어야 합니다(지금 ${tabCount}개 · «+» 로 탭을 더 여세요)` : '';
-    b.setAttribute('aria-checked', String(on));
-  });
   layoutMenuEl.hidden = false;
+  syncLayoutMenu(); // 연 «뒤에» — syncLayoutMenu 는 닫힌 메뉴를 건너뛴다
   popupOpener = layoutButtonEl;
   layoutButtonEl.setAttribute('aria-expanded', 'true');
   setPopupOpen(true);
@@ -553,6 +567,7 @@ function render(state: ShellState): void {
   lastState = state;
   const hadTabFocus = !!(document.activeElement as HTMLElement | null)?.closest?.('.tab');
   renderTitle(state);
+  syncLayoutMenu();
 
   const paneIds = new Set(state.panes.map((p) => p.id));
   for (const [id, el] of stripEls) {
@@ -595,7 +610,7 @@ document.addEventListener('keydown', (e) => {
   // 열린 메뉴 안 ↑ ↓ Home End(디자인 검토 2026-10-03 · 키보드만으로 고르기)
   const openMenu = !menuEl.hidden ? menuEl : !layoutMenuEl.hidden ? layoutMenuEl : null;
   if (openMenu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
-    const items = [...openMenu.querySelectorAll<HTMLButtonElement>('.menu-item')];
+    const items = [...openMenu.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)')]; // 꺼진 항목은 건너뛴다(제미나이 검수)
     const at = items.indexOf(document.activeElement as HTMLButtonElement);
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
       : at < 0 ? (e.key === 'ArrowDown' ? 0 : items.length - 1)

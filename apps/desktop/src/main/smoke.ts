@@ -205,6 +205,27 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     }
   }
 
+  // ⑦e 레이아웃 메뉴가 열린 채 단축키로 바꾸면 파란 점이 따라오나 · 숫자 패드(Ctrl 만 · Shift 없이) — 2026-10-04 사장님 버그 둘
+  {
+    await shellJs(`document.querySelector('#layout-button').click()`);
+    await waitFor(() => w.isShellOnTop());
+    // 메뉴가 열려 있으면 셸이 키를 받는다 — 셸 webContents 에 숫자 패드 2(= 2단 좌우)
+    w.shellView.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'num2', modifiers: ['control', 'shift', 'numlock'] });
+    w.shellView.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'num2', modifiers: ['control', 'shift', 'numlock'] });
+    const changed = await waitFor(() => w.engine.paneCount() === 2);
+    const dot = await waitFor(async () => (await shellJs<string>(`document.querySelector('.layout-item.current-preset')?.dataset.preset ?? ''`)) === 'columns2');
+    log('숫자 패드 2 → 2단 · 메뉴 점 따라옴', `${changed ? '레이아웃 OK' : 'FAIL(레이아웃 안 바뀜)'} · ${dot ? '점 OK' : 'FAIL(점이 옛 자리)'}`);
+    await shellJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await waitFor(() => !w.isShellOnTop());
+  }
+
+  // ⑦f 오른쪽 클릭 메뉴 — 페이지 view 마다 context-menu 처리기가 붙어 있나(메뉴 자체는 OS 그림이라 눈으로 본다)
+  {
+    const tabIds = Object.keys(w.engine.getTree().tabs);
+    const attached = tabIds.filter((id) => (w.views.get(id)?.webContents.listenerCount('context-menu') ?? 0) > 0).length;
+    log('오른쪽 클릭 메뉴 붙음', `${attached === tabIds.length && attached > 0 ? 'OK' : 'FAIL'} ${attached}/${tabIds.length}`);
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
