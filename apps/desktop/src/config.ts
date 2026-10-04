@@ -13,7 +13,8 @@ export const APP_CONFIG = {
   /** «+» 메뉴 — 서버 어드민 라우트(U06 챗봇 = admin 탭) */
   newTabChoices: [
     { label: '대시보드', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/sw/dashboard/index' },
-    { label: 'AI 채팅', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/ai/chat/index' },
+    // 메뉴 없는 챗봇 길(CmhAiAgent cmh.ai.chat.solo · coreRoute) — 어드민 안 챗봇(#/cmh/ai/chat/index)과 화면 부품 하나를 같이 쓴다
+    { label: 'AI 채팅', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/ai/chat-solo' },
     { label: '네이버 스마트스토어센터', kind: 'naver', url: 'https://sell.smartstore.naver.com/' },
   ] as const,
   /** 네이버 pane 세션 — 우리 어드민 쿠키와 한 바구니에 두지 않는다 */
