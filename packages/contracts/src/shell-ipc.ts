@@ -73,6 +73,8 @@ export interface ShellState {
   panes: ShellPaneView[];
   sashes: SashGeometry[];
   paneCount: number;
+  /** 지금 트리가 어느 레이아웃 고르기 모양인가(sash 비율은 안 본다) · 손으로 만든 다른 모양이면 null — 셸 메뉴의 «현재» 표시(2026-10-04 «2단 좌우 · 상하 둘 다 표시됨») */
+  layoutPreset: LayoutPreset | null;
   maxPanes: number;
   focusedPaneId: string | null;
   update: UpdateState;

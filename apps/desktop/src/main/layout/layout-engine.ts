@@ -17,6 +17,22 @@ import type {
 import { LAYOUT_LIMITS, LAYOUT_PRESET_PANES, type LayoutPreset } from '@cmh-hub-app/contracts';
 import { computeGeometry, subtreeMinSize } from './layout-rect.js';
 
+/** 트리 모양 → 레이아웃 고르기 이름(비율은 안 본다) · 메뉴 밖 모양이면 null */
+export function detectLayoutPreset(root: LayoutNode): LayoutPreset | null {
+  const isPane = (n: LayoutNode): boolean => n.type === 'pane';
+  const isSplitOfPanes = (n: LayoutNode, o: Orientation): boolean => n.type === 'split' && n.orientation === o && isPane(n.children[0]) && isPane(n.children[1]);
+  if (isPane(root)) return 'single';
+  if (root.type !== 'split') return null;
+  const [a, b] = root.children;
+  if (isSplitOfPanes(root, 'horizontal')) return 'columns2';
+  if (isSplitOfPanes(root, 'vertical')) return 'rows2';
+  if (root.orientation !== 'vertical') return null;
+  if (isSplitOfPanes(a, 'horizontal') && isPane(b)) return 'top2bottom1';
+  if (isPane(a) && isSplitOfPanes(b, 'horizontal')) return 'top1bottom2';
+  if (isSplitOfPanes(a, 'horizontal') && isSplitOfPanes(b, 'horizontal')) return 'grid4';
+  return null;
+}
+
 interface ParentRef {
   parent: SplitNode;
   index: 0 | 1;
@@ -439,6 +455,16 @@ export class LayoutEngine implements LayoutEngineApi {
       }
     }
     while (kept.length < want) {
+      // 탭이 둘 이상인 pane 이 있으면 그 pane 의 «활성이 아닌 마지막 탭»을 새 pane 으로 옮긴다 — 새 어드민을 또 열지 않는다
+      // (2026-10-04 사장님 «1번 창에 어드민 · 네이버 두 개 있고 2단 좌우 → 우측에 새로운 어드민이 열림»)
+      const donor = kept.find((p) => p.tabIds.length > 1);
+      if (donor) {
+        const movable = [...donor.tabIds].reverse().find((id) => id !== donor.activeTabId);
+        if (movable === undefined) break;
+        donor.tabIds = donor.tabIds.filter((id) => id !== movable);
+        kept.push({ type: 'pane', id: randomUUID(), tabIds: [movable], activeTabId: movable });
+        continue;
+      }
       const tab = this.makeTab(spec);
       this.tree.tabs[tab.id] = tab;
       const pane: PaneNode = { type: 'pane', id: randomUUID(), tabIds: [tab.id], activeTabId: tab.id };
@@ -461,6 +487,9 @@ export class LayoutEngine implements LayoutEngineApi {
         break;
       case 'top2bottom1':
         this.tree.root = split('vertical', split('horizontal', p0, p1 as PaneNode), p2 as PaneNode);
+        break;
+      case 'top1bottom2':
+        this.tree.root = split('vertical', p0, split('horizontal', p1 as PaneNode, p2 as PaneNode));
         break;
       case 'grid4':
         this.tree.root = split('vertical', split('horizontal', p0, p1 as PaneNode), split('horizontal', p2 as PaneNode, p3 as PaneNode));

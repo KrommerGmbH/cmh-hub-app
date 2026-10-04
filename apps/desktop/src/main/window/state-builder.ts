@@ -9,6 +9,7 @@ import {
   type UpdateState,
 } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../../config.js';
+import { detectLayoutPreset } from '../layout/layout-engine.js';
 
 export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState): ShellState {
   const tree = engine.getTree();
@@ -35,6 +36,7 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
     panes,
     sashes: geometry.sashes,
     paneCount,
+    layoutPreset: detectLayoutPreset(tree.root),
     maxPanes: LAYOUT_LIMITS.maxPanes,
     focusedPaneId: tree.focusedPaneId,
     update,

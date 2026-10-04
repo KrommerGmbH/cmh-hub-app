@@ -84,7 +84,7 @@ function createStrip(paneId: string): HTMLElement {
   return strip;
 }
 
-function renderTab(tab: ShellState['panes'][number]['tabs'][number]): HTMLElement {
+function renderTab(tab: ShellState['panes'][number]['tabs'][number], paneId: string): HTMLElement {
   const el = (tabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
   el.dataset['tabId'] = tab.id;
   el.classList.toggle('active', tab.active);
@@ -127,6 +127,7 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number]): HTMLElemen
   });
   // 닫기 단추는 Tab 순서에서 뺀다(탭 하나만 Tab 으로 들어오는 roving tabindex · 키보드는 Delete 로 닫는다)
   el.querySelector<HTMLButtonElement>('.tab-close')!.tabIndex = -1;
+  el.addEventListener('pointerdown', (e) => beginTabDrag(e, tab.id, paneId));
   el.querySelector<HTMLButtonElement>('.tab-close')!.addEventListener('click', (e) => {
     e.stopPropagation();
     send({ cmd: 'closeTab', tabId: tab.id });
@@ -142,7 +143,7 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   // (제목 · 로딩 상태가 올 때마다 다시 그려 포커스가 body 로 빠지던 결함 · 검수 2026-10-03)
   const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
   const focusedTabId = tabsEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.tab')?.dataset['tabId'] : undefined;
-  tabsEl.replaceChildren(...pane.tabs.map(renderTab));
+  tabsEl.replaceChildren(...pane.tabs.map((t) => renderTab(t, pane.id)));
   if (focusedTabId !== undefined) {
     (tabsEl.querySelector<HTMLElement>(`.tab[data-tab-id="${focusedTabId}"]`) ?? tabsEl.querySelector<HTMLElement>('.tab.active'))?.focus({ preventScroll: true });
   }
@@ -274,13 +275,18 @@ function openLayoutMenu(): void {
   const r = layoutButtonEl.getBoundingClientRect();
   layoutMenuEl.style.left = px(Math.max(8, Math.min(r.right - 220, window.innerWidth - 228)));
   layoutMenuEl.style.top = px(r.bottom + 6);
-  const current = lastState?.paneCount ?? 1;
-  layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => b.classList.toggle('current-count', Number(b.dataset['count']) === current));
+  // «현재» 표시는 pane 수가 아니라 모양 이름으로 — 수로 보면 2단 좌우 · 2단 상하가 둘 다 켜졌다(2026-10-04 사장님 버그 3)
+  const current = lastState?.layoutPreset ?? null;
+  layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
+    const on = b.dataset['preset'] === current;
+    b.classList.toggle('current-preset', on);
+    b.setAttribute('aria-checked', String(on));
+  });
   layoutMenuEl.hidden = false;
   popupOpener = layoutButtonEl;
   layoutButtonEl.setAttribute('aria-expanded', 'true');
   setPopupOpen(true);
-  (layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item.current-count') ?? layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item'))?.focus();
+  (layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item.current-preset') ?? layoutMenuEl.querySelector<HTMLButtonElement>('.layout-item'))?.focus();
 }
 
 layoutButtonEl.addEventListener('click', (e) => {
@@ -384,6 +390,128 @@ function renderUpdate(state: ShellState): void {
 
 // ───────────────────────── 그리기(id 로 재사용 · 없어진 것만 지움) ─────────────────────────
 
+// ───────────────────────── 탭 끌기(U04 · 2026-10-04 사장님 «창 사이 탭 드래그 이동이 안됨») ─────────────────────────
+// 끌기가 시작되면 셸 view 를 맨 위로 올린다(팝오버와 같은 길 · 셸 바탕은 투명) — 안 올리면 포인터가 페이지 view 위로 가는 순간
+// 셸이 이벤트를 못 받는다. 놓을 곳: 다른(또는 같은) pane 의 탭 줄 → 그 자리 · pane 의 화면 → 그 pane 맨 끝.
+// 마지막 탭을 옮기면 빈 pane 은 닫힌다(LayoutEngine.moveTab → removePane).
+
+interface TabDrag {
+  tabId: string;
+  fromPaneId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  active: boolean;
+  title: string;
+}
+const TAB_DRAG_THRESHOLD = 6;
+let tabDrag: TabDrag | null = null;
+const dragGhostEl = document.createElement('div');
+dragGhostEl.className = 'tab-drag-ghost';
+dragGhostEl.hidden = true;
+const dropMarkerEl = document.createElement('div');
+dropMarkerEl.className = 'tab-drop-marker';
+dropMarkerEl.hidden = true;
+document.body.append(dropMarkerEl, dragGhostEl);
+
+interface DropTarget {
+  paneId: string;
+  index: number | undefined;
+  /** 표시 자리 — 탭 줄이면 세로 막대, 화면이면 pane 화면 전체 */
+  rect: { x: number; y: number; width: number; height: number };
+}
+
+function beginTabDrag(e: PointerEvent, tabId: string, paneId: string): void {
+  if (e.button !== 0 || (e.target as HTMLElement).closest('.tab-close')) return;
+  // 브라우저 자체의 끌어다 놓기(네이티브 drag)를 막는다 — 안 막으면 움직이자마자 pointercancel 이 와서 끌기가 끊겼다(2026-10-04 smoke 실측)
+  e.preventDefault();
+  const title = (e.currentTarget as HTMLElement).querySelector('.tab-title')?.textContent ?? '';
+  tabDrag = { tabId, fromPaneId: paneId, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false, title };
+}
+
+function findDropTarget(x: number, y: number, tabId: string): DropTarget | null {
+  for (const pane of lastState?.panes ?? []) {
+    const s = pane.stripRect;
+    if (x >= s.x && x < s.x + s.width && y >= s.y && y < s.y + s.height) {
+      // 끄는 탭을 뺀 나머지 탭의 가운데 점보다 오른쪽에 있으면 그 뒤로
+      const tabs = [...(stripEls.get(pane.id)?.querySelectorAll<HTMLElement>('.tab') ?? [])].filter((t) => t.dataset['tabId'] !== tabId);
+      let index = 0;
+      let barX = s.x + 8;
+      for (const t of tabs) {
+        const r = t.getBoundingClientRect();
+        if (x > r.left + r.width / 2) {
+          index += 1;
+          barX = r.right;
+        } else {
+          if (index === 0 || barX === s.x + 8) barX = r.left;
+          break;
+        }
+      }
+      return { paneId: pane.id, index, rect: { x: barX - 1, y: s.y + 6, width: 3, height: s.height - 6 } };
+    }
+    const c = pane.contentRect;
+    if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) {
+      return { paneId: pane.id, index: undefined, rect: c };
+    }
+  }
+  return null;
+}
+
+function onTabDragMove(e: PointerEvent): void {
+  const d = tabDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  if (!d.active) {
+    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < TAB_DRAG_THRESHOLD) return;
+    d.active = true;
+    dragGhostEl.textContent = d.title;
+    dragGhostEl.hidden = false;
+    document.body.classList.add('dragging-tab');
+    // 메뉴가 열린 채 끌면 메뉴 요소가 화면에 남아 닫을 길이 없었다(검수 2026-10-04) — 요소만 닫는다(IPC 는 바로 아래 한 번)
+    menuEl.hidden = true;
+    layoutMenuEl.hidden = true;
+    layoutButtonEl.setAttribute('aria-expanded', 'false');
+    popupOpener = null;
+    setPopupOpen(true); // 셸을 맨 위로 — 페이지 위에서도 포인터를 받고, 놓을 자리 표시가 페이지 위에 보인다
+  }
+  dragGhostEl.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 8}px)`;
+  const target = findDropTarget(e.clientX, e.clientY, d.tabId);
+  dropMarkerEl.hidden = target === null;
+  if (target) {
+    place(dropMarkerEl, target.rect);
+    dropMarkerEl.classList.toggle('tab-drop-marker--content', target.index === undefined);
+  }
+}
+
+function endTabDrag(e: PointerEvent | null, cancel: boolean): void {
+  const d = tabDrag;
+  if (!d || (e && e.pointerId !== d.pointerId)) return;
+  tabDrag = null;
+  if (!d.active) return; // 끌지 않은 클릭 — 평소 click(activateTab) 그대로
+  dragGhostEl.hidden = true;
+  dropMarkerEl.hidden = true;
+  document.body.classList.remove('dragging-tab');
+  const target = !cancel && e ? findDropTarget(e.clientX, e.clientY, d.tabId) : null;
+  // moveTab 을 먼저 — 그래야 셸을 내릴 때 돌려주는 포커스가 «옮겨 간» pane 으로 간다(검수 2026-10-04)
+  if (target) {
+    send(target.index === undefined
+      ? { cmd: 'moveTab', tabId: d.tabId, toPaneId: target.paneId }
+      : { cmd: 'moveTab', tabId: d.tabId, toPaneId: target.paneId, index: target.index });
+  }
+  setPopupOpen(false, target !== null);
+  // 끈 뒤 따라오는 click 이 원래 탭을 다시 고르지 않게 한 번 막는다
+  // (같은 이벤트 차례의 click 만 — 다음 틱에 풀어 다른 click 을 삼키지 않는다)
+  const swallow = (ev: MouseEvent): void => ev.stopPropagation();
+  window.addEventListener('click', swallow, { capture: true });
+  setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0);
+}
+
+window.addEventListener('pointermove', onTabDragMove);
+window.addEventListener('pointerup', (e) => endTabDrag(e, false));
+window.addEventListener('pointercancel', (e) => endTabDrag(e, true));
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && tabDrag?.active) endTabDrag(null, true);
+}, { capture: true });
+
 function render(state: ShellState): void {
   lastState = state;
   const hadTabFocus = !!(document.activeElement as HTMLElement | null)?.closest?.('.tab');
@@ -469,7 +597,7 @@ function renderDemo(): void {
       },
     ],
     sashes: [{ id: 's1', splitId: 's1', orientation: 'horizontal', rect: { x: left, y: 40, width: 4, height: h - 40 }, splitRect: { x: 0, y: 40, width: w, height: h - 40 } }],
-    paneCount: 2, maxPanes: 4, focusedPaneId: 'p1',
+    paneCount: 2, layoutPreset: 'columns2', maxPanes: 4, focusedPaneId: 'p1',
     update: { state: 'none' }, serverHost: 'demo.local', platform: 'win32',
     window: { width: w, height: h, maximized: false },
     newTabChoices: [{ label: '대시보드', kind: 'admin', url: 'about:blank' }],

@@ -137,6 +137,39 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     log('키보드: Esc → 레이아웃 단추', `${back === 'layout-button' ? 'OK' : `FAIL(${back})`} · 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
   }
 
+  // ⑦c 탭 끌기(U04) — 첫 pane 의 활성 탭을 «마우스로» 끌어 마지막 pane 의 탭 줄에 놓는다(셸 view 에 입력 이벤트)
+  {
+    const panes = w.engine.listPanes();
+    const from = panes[0];
+    const to = panes[panes.length - 1];
+    if (from && to && from.id !== to.id && from.activeTabId) {
+      const movingTab = from.activeTabId;
+      const p = await shellJs<{ x: number; y: number; tx: number; ty: number }>(`(() => {
+        const t = document.querySelector('.tab[data-tab-id="${movingTab}"]').getBoundingClientRect();
+        const s = document.querySelector('.strip[data-pane-id="${to.id}"] .strip-tabs').getBoundingClientRect();
+        return { x: t.x + 20, y: t.y + t.height / 2, tx: s.right - 4, ty: s.y + s.height / 2 };
+      })()`);
+      const wc = w.shellView.webContents;
+      const sx = Math.round(p.x);
+      const sy = Math.round(p.y);
+      wc.sendInputEvent({ type: 'mouseMove', x: sx, y: sy });
+      wc.sendInputEvent({ type: 'mouseDown', x: sx, y: sy, button: 'left', clickCount: 1 });
+      for (let i = 1; i <= 12; i++) {
+        const x = Math.round(sx + ((p.tx - sx) * i) / 12);
+        const y = Math.round(sy + ((p.ty - sy) * i) / 12);
+        wc.sendInputEvent({ type: 'mouseMove', x, y, button: 'left', modifiers: ['leftbuttondown'] });
+        await wait(30);
+      }
+      wc.sendInputEvent({ type: 'mouseUp', x: Math.round(p.tx), y: Math.round(p.ty), button: 'left', clickCount: 1 });
+      await wait(800);
+      const nowIn = w.engine.getPaneOfTab(movingTab)?.id;
+      log('탭 끌기 → 다른 창', `${nowIn === to.id ? 'OK' : `FAIL(탭이 ${nowIn?.slice(0, 8)} 에 있음)`} · from ${from.id.slice(0, 8)} → to ${to.id.slice(0, 8)} · 놓은 점 ${Math.round(p.tx)},${Math.round(p.ty)} · 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
+      console.info('[smoke] strips', JSON.stringify(w.engine.listPanes().map((x) => x.id.slice(0, 8))), await shellJs<string>(`JSON.stringify([...document.querySelectorAll('.strip')].map(s => [s.dataset.paneId.slice(0,8), Math.round(s.getBoundingClientRect().x), Math.round(s.getBoundingClientRect().y), Math.round(s.getBoundingClientRect().width)]))`));
+    } else {
+      log('탭 끌기 → 다른 창', '판정 보류(pane 이 하나뿐)');
+    }
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

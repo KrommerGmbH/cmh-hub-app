@@ -96,8 +96,8 @@ body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 .menu-item .menu-ico { color: var(--muted); display: flex; }
 .layout-menu { min-width: 236px; }
 .layout-item .layout-ico { color: var(--muted); }
-.layout-item.current-count .layout-ico { color: var(--accent); }
-.layout-item.current-count::after { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); justify-self: end; }
+.layout-item.current-preset .layout-ico { color: var(--accent); }
+.layout-item.current-preset::after { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); justify-self: end; }
 
 /* ── 업데이트 모달 ── */
 .modal { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
@@ -116,4 +116,12 @@ body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 .ico:focus-visible, .menu-item:focus-visible, .btn:focus-visible, .wc:focus-visible, .tab-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .tab:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
 @media (prefers-reduced-motion: reduce) { .menu { animation: none; } .tab, .ico, .menu-item, .btn, .wc { transition: none; } }
+/* 탭 끌기(U04) — 따라오는 이름표 · 놓을 자리 표시 */
+.tab-drag-ghost { position: fixed; left: 0; top: 0; z-index: 30; pointer-events: none; max-width: 240px; padding: 6px 12px; border-radius: var(--radius-s);
+  background: var(--tab-active); color: var(--tab-active-text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35); opacity: .95; }
+.tab-drop-marker { position: absolute; z-index: 25; pointer-events: none; background: var(--accent); border-radius: 2px; }
+.tab-drop-marker--content { background: rgba(76, 141, 255, .18); border: 2px solid var(--accent); border-radius: 6px; }
+body.dragging-tab, body.dragging-tab * { cursor: grabbing !important; }
+.tab, .tab * { -webkit-user-drag: none; }
 [hidden] { display: none !important; }

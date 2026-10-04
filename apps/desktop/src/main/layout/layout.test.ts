@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { LAYOUT_LIMITS, type LayoutGeometry, type LayoutTree, type NewTabSpec, type Rect } from '@cmh-hub-app/contracts';
-import { LayoutEngine } from './layout-engine.js';
+import { detectLayoutPreset, LayoutEngine } from './layout-engine.js';
 import { computeGeometry } from './layout-rect.js';
 import { LayoutStore } from './layout-store.js';
 
@@ -247,5 +247,45 @@ describe('applyLayout — 모르는 preset(검수 2026-10-03)', () => {
     const c = e.apply({ cmd: 'applyLayout', preset: 'grid9' as never }, { newTab: ADMIN });
     expect(c.rejected).toContain('없는 preset');
     expect(JSON.stringify(e.getTree())).toBe(before);
+  });
+});
+
+describe('applyLayout — 2026-10-04 사장님 버그', () => {
+  it('탭 둘(어드민 · 네이버)인 pane 에서 2단 좌우 → 새 어드민을 안 열고 네이버를 오른쪽으로 옮긴다', () => {
+    const e = engineWithOnePane();
+    const pane = e.listPanes()[0]!;
+    e.apply({ cmd: 'newTab', paneId: pane.id, kind: 'naver', url: 'https://sell.smartstore.naver.com/' }, { newTab: ADMIN });
+    const adminTab = pane.tabIds[0]!;
+    e.apply({ cmd: 'activateTab', tabId: adminTab }, { newTab: ADMIN });
+    const c = e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    expect(c.createdTabIds).toHaveLength(0);
+    const [left, right] = e.listPanes();
+    expect(left!.tabIds).toEqual([adminTab]);
+    expect(e.getTab(right!.tabIds[0]!)!.kind).toBe('naver');
+  });
+
+  it('top1bottom2: 위 하나 + 아래 좌우 둘 · 모양 이름을 되찾는다', () => {
+    const e = engineWithOnePane();
+    e.apply({ cmd: 'applyLayout', preset: 'top1bottom2' }, { newTab: ADMIN });
+    const root = e.getTree().root;
+    expect(root.type === 'split' && root.orientation).toBe('vertical');
+    if (root.type !== 'split') return;
+    expect(root.children[0].type).toBe('pane');
+    expect(root.children[1].type === 'split' && root.children[1].orientation).toBe('horizontal');
+    expect(detectLayoutPreset(root)).toBe('top1bottom2');
+  });
+
+  it('detectLayoutPreset — 2단 좌우와 2단 상하를 가른다 · 손으로 만든 모양은 null', () => {
+    const e = engineWithOnePane();
+    expect(detectLayoutPreset(e.getTree().root)).toBe('single');
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBe('columns2');
+    e.apply({ cmd: 'applyLayout', preset: 'rows2' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBe('rows2');
+    e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBe('grid4');
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    e.apply({ cmd: 'split', paneId: e.listPanes()[1]!.id, orientation: 'horizontal' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBeNull();
   });
 });

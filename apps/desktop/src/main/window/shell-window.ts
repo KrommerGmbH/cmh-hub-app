@@ -97,8 +97,9 @@ export class ShellWindow {
 
   static async create(): Promise<ShellWindow> {
     const w = new ShellWindow();
-    const saved = await w.store.load();
-    if (saved === null || !w.engine.loadTree(saved)) w.engine.resetToDefault(DEFAULT_TAB);
+    // 시작은 늘 1단 · 어드민 탭 하나(2026-10-04 사장님 «default 는 1개 창, 어드민만»). 지난 레이아웃(layout.json)은 되살리지 않는다
+    // — 옛 U05 복원은 smoke 시험이 남긴 3단 · 탭 여럿까지 되살렸다. 저장(store.save)은 그대로 둔다(나중에 «마지막 배치로 열기» 설정을 붙일 자리)
+    w.engine.resetToDefault(DEFAULT_TAB);
     w.views.ensureAll();
     // 기본 = 모니터 100%(최대화 · 2026-10-02 사장님 지시). 1440×900 은 «이전 크기로» 눌렀을 때의 크기다
     w.window.maximize();
