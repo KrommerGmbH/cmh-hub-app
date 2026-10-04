@@ -4,6 +4,15 @@ import { app } from 'electron';
 import type { ShellWindow } from './window/shell-window.js';
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** 정해진 시간 대신 조건이 맞을 때까지(최대 timeoutMs) — PC 가 바쁘면 셸 다시 그리기가 300ms 를 넘겨 판정이 흔들렸다(2026-10-04) */
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 4000): Promise<boolean> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await cond()) return true;
+    await wait(100);
+  }
+  return cond();
+}
 
 export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   if (!process.env['CMH_HUB_SMOKE'] || app.isPackaged) return; // 배포판에서는 환경값으로 셸을 움직이지 못하게
@@ -25,18 +34,27 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   await wait(800);
   log('reset', w.engine.paneCount() === 1 && Object.keys(w.engine.getTree().tabs).length === 1 ? 'OK' : 'FAIL');
 
-  // ① 제목줄 레이아웃 단추 → 메뉴가 뜨는 동안 셸이 맨 위인가(아니면 어드민 view 가 메뉴를 덮는다 · 2026-10-03 결함) → «2단 좌우»
+  // ⓪b 탭 1개 — 레이아웃 메뉴의 2단 이상은 꺼져 있어야 한다(2026-10-04 «탭이 3개인데 4단 분할이 가능»)
   await shellJs(`document.querySelector('#layout-button').click()`);
   await wait(300);
-  log('layout 메뉴 · 셸 맨 위?', w.isShellOnTop() ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
+  const disabledAtOne = await shellJs<string>(`[...document.querySelectorAll('.layout-item')].map(b => b.dataset.preset + ':' + (b.disabled ? 'off' : 'on')).join(' ')`);
+  log('탭 1 → 2단 이상 꺼짐', `${/^single:on( \w+:off)+$/.test(disabledAtOne) ? 'OK' : 'FAIL'} ${disabledAtOne}`);
+  await shellJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await wait(300);
+  // 2단을 고르려면 탭이 둘 있어야 한다 — 새 탭 하나
+  if (firstPane) w.handleCommand({ cmd: 'newTab', paneId: firstPane.id });
+  await wait(600);
+
+  // ① 제목줄 레이아웃 단추 → 메뉴가 뜨는 동안 셸이 맨 위인가(아니면 어드민 view 가 메뉴를 덮는다 · 2026-10-03 결함) → «2단 좌우»
+  await shellJs(`document.querySelector('#layout-button').click()`);
+  log('layout 메뉴 · 셸 맨 위?', (await waitFor(() => w.isShellOnTop())) ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
   await shellJs(`document.querySelector('.layout-item[data-preset="columns2"]').click()`);
   await wait(800);
   log('layout 2단 좌우', `${w.engine.paneCount() === 2 ? 'OK' : 'FAIL(pane≠2)'} · 닫은 뒤 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
 
   // ② 포커스 pane 의 «+» → 메뉴 «네이버 스마트스토어센터»
   await shellJs(`[...document.querySelectorAll('.strip')].find(s => s.classList.contains('pane-focused')).querySelector('.strip-newtab').click()`);
-  await wait(300);
-  log('+ 메뉴 · 셸 맨 위?', w.isShellOnTop() ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
+  log('+ 메뉴 · 셸 맨 위?', (await waitFor(() => w.isShellOnTop())) ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
   const menuCount = await shellJs<number>(`document.querySelectorAll('#newtab-menu .menu-item').length`);
   await shellJs(`[...document.querySelectorAll('#newtab-menu .menu-item')].find(b => b.textContent.includes('네이버')).click()`);
   await wait(1500);
@@ -58,6 +76,8 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     const geo = w.engine.computeGeometry({ x: 0, y: 40, width: w.window.getContentSize()[0] ?? 0, height: (w.window.getContentSize()[1] ?? 0) - 40 });
     const sash = geo.sashes[0];
     if (sash) {
+      // 셸이 resize 0.35 를 다시 그려 sash 가 계산한 자리에 왔을 때 누른다
+      await waitFor(async () => Math.abs((await shellJs<number>(`document.querySelector('.sash')?.getBoundingClientRect().x ?? -1`)) - sash.rect.x) < 2);
       const before = (() => { const r = w.engine.getTree().root; return r.type === 'split' ? r.ratio : NaN; })();
       const y = sash.rect.y + Math.round(sash.rect.height / 2);
       const x0 = sash.rect.x + 2;
@@ -70,7 +90,7 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
         await wait(30);
       }
       wc.sendInputEvent({ type: 'mouseUp', x: x0 + 200, y, button: 'left', clickCount: 1 });
-      await wait(600);
+      await waitFor(() => { const r = w.engine.getTree().root; return r.type === 'split' && r.ratio > before + 0.05; }, 3000);
       const after = (() => { const r = w.engine.getTree().root; return r.type === 'split' ? r.ratio : NaN; })();
       log('drag sash +200px', `ratio ${before.toFixed(3)} → ${after.toFixed(3)} ${after > before + 0.05 ? 'OK' : 'FAIL(드래그가 안 따라옴)'}`);
     }
@@ -124,7 +144,8 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     w.shellView.webContents.focus();
     await shellJs(`document.querySelector('.strip.pane-focused .tab.active')?.focus()`);
     const before = w.shellView.webContents.isFocused();
-    await shellJs(`document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })) || document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
+    // 새 탭이 맨 오른쪽 · 활성이라 ← 만 누른다(옛 `a || b` 는 ← 가 preventDefault 되면 → 까지 눌러 제자리로 돌아갈 수 있었다 · 제미나이 검수 2026-10-04)
+    await shellJs(`document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))`);
     await wait(500);
     const after = w.shellView.webContents.isFocused();
     const moved = w.activeTabOfFocusedPane()?.activeTabId !== activeBefore;
@@ -163,10 +184,24 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       wc.sendInputEvent({ type: 'mouseUp', x: Math.round(p.tx), y: Math.round(p.ty), button: 'left', clickCount: 1 });
       await wait(800);
       const nowIn = w.engine.getPaneOfTab(movingTab)?.id;
+      if (nowIn !== to.id) console.info('[smoke] tabDragLog', await shellJs<string>('JSON.stringify(window.__tabDragLog)'));
       log('탭 끌기 → 다른 창', `${nowIn === to.id ? 'OK' : `FAIL(탭이 ${nowIn?.slice(0, 8)} 에 있음)`} · from ${from.id.slice(0, 8)} → to ${to.id.slice(0, 8)} · 놓은 점 ${Math.round(p.tx)},${Math.round(p.ty)} · 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
       console.info('[smoke] strips', JSON.stringify(w.engine.listPanes().map((x) => x.id.slice(0, 8))), await shellJs<string>(`JSON.stringify([...document.querySelectorAll('.strip')].map(s => [s.dataset.paneId.slice(0,8), Math.round(s.getBoundingClientRect().x), Math.round(s.getBoundingClientRect().y), Math.round(s.getBoundingClientRect().width)]))`));
     } else {
       log('탭 끌기 → 다른 창', '판정 보류(pane 이 하나뿐)');
+    }
+  }
+
+  // ⑦d 레이아웃 단축키 Ctrl+Shift+1(1단 · 탭 수와 상관없이 늘 된다) — 포커스 pane 페이지에 진짜 키 입력
+  {
+    const pageTab = w.activeTabOfFocusedPane()?.activeTabId;
+    const pageView = pageTab ? w.views.get(pageTab) : undefined;
+    // 이미 1단이면 단축키가 안 돌아도 통과한다 — 먼저 2단 이상인지 본다(제미나이 재검수)
+    if (w.engine.paneCount() < 2) log('Ctrl+Shift+1 → 1단', 'FAIL(시험 전 pane 이 이미 1개 — 판정 불가)');
+    if (pageView && w.engine.paneCount() >= 2) {
+      pageView.webContents.sendInputEvent({ type: 'keyDown', keyCode: '1', modifiers: ['control', 'shift'] });
+      pageView.webContents.sendInputEvent({ type: 'keyUp', keyCode: '1', modifiers: ['control', 'shift'] });
+      log('Ctrl+Shift+1 → 1단', (await waitFor(() => w.engine.paneCount() === 1)) ? 'OK' : `FAIL(pane ${w.engine.paneCount()})`);
     }
   }
 

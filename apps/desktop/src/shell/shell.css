@@ -94,7 +94,11 @@ body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 .menu-item:active { background: var(--pressed); }
 .menu-item .kind { color: var(--muted); font-size: 11px; }
 .menu-item .menu-ico { color: var(--muted); display: flex; }
-.layout-menu { min-width: 236px; }
+.layout-menu { min-width: 340px; }
+.layout-item { grid-template-columns: 22px 1fr auto 10px; }
+.kbd { font: 11px/1 "Segoe UI", sans-serif; color: var(--muted); padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--frame); }
+.layout-item:disabled { opacity: .4; cursor: not-allowed; }
+.layout-item:disabled:hover { background: none; }
 .layout-item .layout-ico { color: var(--muted); }
 .layout-item.current-preset .layout-ico { color: var(--accent); }
 .layout-item.current-preset::after { content: ''; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); justify-self: end; }

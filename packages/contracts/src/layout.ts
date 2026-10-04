@@ -4,11 +4,17 @@ export type Orientation = 'horizontal' | 'vertical'; // horizontal = 좌우로 �
 
 /**
  * 레이아웃 고르기(2026-10-03 사장님 «split 아이콘 하나로 · 2단 가로 · 2단 세로 · 3단 위 가로 아래 솔로 · 4단»).
- * single = pane 1 · columns2 = 좌우 2 · rows2 = 상하 2 · top2bottom1 = 위 좌우 2 + 아래 1 · top1bottom2 = 위 1 + 아래 좌우 2(2026-10-04) · grid4 = 2×2
+ * single = pane 1 · columns2 = 좌우 2 · rows2 = 상하 2 · top2bottom1 = 위 좌우 2 + 아래 1 · top1bottom2 = 위 1 + 아래 좌우 2(2026-10-04) · left2right1 = 왼쪽 위아래 2 + 오른쪽 1 · left1right2 = 왼쪽 1 + 오른쪽 위아래 2(2026-10-04) · grid4 = 2×2
  */
-export type LayoutPreset = 'single' | 'columns2' | 'rows2' | 'top2bottom1' | 'top1bottom2' | 'grid4';
+export type LayoutPreset = 'single' | 'columns2' | 'rows2' | 'top2bottom1' | 'top1bottom2' | 'left2right1' | 'left1right2' | 'grid4';
 
-export const LAYOUT_PRESET_PANES: Readonly<Record<LayoutPreset, number>> = { single: 1, columns2: 2, rows2: 2, top2bottom1: 3, top1bottom2: 3, grid4: 4 };
+/**
+ * 메뉴 차례 = 단축키 숫자(Ctrl+Shift+1 … 8 · 2026-10-04 사장님 «모든 split view 단축키 · 아이콘 옆에»).
+ * 셸 index.html 의 메뉴 항목 차례와 같아야 한다(layout.test.ts 가 맞춘다).
+ */
+export const LAYOUT_PRESET_ORDER: readonly LayoutPreset[] = ['single', 'columns2', 'rows2', 'top2bottom1', 'top1bottom2', 'left2right1', 'left1right2', 'grid4'];
+
+export const LAYOUT_PRESET_PANES: Readonly<Record<LayoutPreset, number>> = { single: 1, columns2: 2, rows2: 2, top2bottom1: 3, top1bottom2: 3, left2right1: 3, left1right2: 3, grid4: 4 };
 
 /** 탭 종류 — 둘 다 서버·네이버 페이지(preload 0). 챗봇은 admin 탭(cmh-ai-chat 라우트). PLAN U02 · U06 */
 export type TabKind = 'admin' | 'naver';

@@ -1,7 +1,7 @@
 // U03 — 단축키. 서버 페이지에 preload 가 없어도 main 의 before-input-event 로 잡는다(Electron 공식 문서 keyboard-shortcuts.md).
-// Ctrl+\ 오른쪽 split · Ctrl+Shift+\ 아래 split(계획의 Ctrl+K Ctrl+\ 는 실측 뒤) · Ctrl+1..9 pane · Ctrl+T 새 탭 · Ctrl+W 탭 닫기 · Ctrl+PageUp/Down 이웃 탭
+// Ctrl+Shift+1..8 레이아웃 고르기(메뉴 차례 · LAYOUT_PRESET_ORDER) · Ctrl+\ 오른쪽 split · Ctrl+Shift+\ 아래 split(계획의 Ctrl+K Ctrl+\ 는 실측 뒤) · Ctrl+1..9 pane · Ctrl+T 새 탭 · Ctrl+W 탭 닫기 · Ctrl+PageUp/Down 이웃 탭
 import type { Input, WebContents } from 'electron';
-import type { ShellCommand } from '@cmh-hub-app/contracts';
+import { LAYOUT_PRESET_ORDER, type ShellCommand } from '@cmh-hub-app/contracts';
 import type { ShellWindow } from './window/shell-window.js';
 
 export function commandForInput(input: Input, w: ShellWindow): ShellCommand | null {
@@ -13,7 +13,12 @@ export function commandForInput(input: Input, w: ShellWindow): ShellCommand | nu
     if (!focused) return null;
     return { cmd: 'split', paneId: focused, orientation: input.shift ? 'vertical' : 'horizontal' };
   }
-  if (input.shift) return null;
+  if (input.shift) {
+    // 레이아웃 고르기 — 탭이 모자라면 엔진이 거절한다(메뉴에서도 꺼져 있다)
+    const layoutDigit = /^(?:Digit|Numpad)([1-8])$/.exec(input.code); // 숫자 패드도(제미나이 검수 2026-10-04)
+    const preset = layoutDigit ? LAYOUT_PRESET_ORDER[Number(layoutDigit[1]) - 1] : undefined;
+    return preset ? { cmd: 'applyLayout', preset } : null;
+  }
 
   const digit = /^Digit([1-9])$/.exec(input.code);
   if (digit) {

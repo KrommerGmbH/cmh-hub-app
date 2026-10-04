@@ -26,7 +26,13 @@ export function detectLayoutPreset(root: LayoutNode): LayoutPreset | null {
   const [a, b] = root.children;
   if (isSplitOfPanes(root, 'horizontal')) return 'columns2';
   if (isSplitOfPanes(root, 'vertical')) return 'rows2';
-  if (root.orientation !== 'vertical') return null;
+  if (root.orientation === 'horizontal') {
+    // 좌우로 먼저 나눈 뒤 양쪽을 위아래로 나눈 2×2 도 4단이다(제미나이 검수 2026-10-04)
+    if (isSplitOfPanes(a, 'vertical') && isSplitOfPanes(b, 'vertical')) return 'grid4';
+    if (isSplitOfPanes(a, 'vertical') && isPane(b)) return 'left2right1';
+    if (isPane(a) && isSplitOfPanes(b, 'vertical')) return 'left1right2';
+    return null;
+  }
   if (isSplitOfPanes(a, 'horizontal') && isPane(b)) return 'top2bottom1';
   if (isPane(a) && isSplitOfPanes(b, 'horizontal')) return 'top1bottom2';
   if (isSplitOfPanes(a, 'horizontal') && isSplitOfPanes(b, 'horizontal')) return 'grid4';
@@ -444,6 +450,11 @@ export class LayoutEngine implements LayoutEngineApi {
     // IPC 로 온 값은 검사 전 문자열이다 — 모르는 preset 이면 slice(undefined) 가 전체를 돌려 탭이 두 pane 에 들어간다(검수 2026-10-03)
     if (!Object.hasOwn(LAYOUT_PRESET_PANES, preset)) return { ...change, rejected: `없는 preset: ${String(preset)}` };
     const want = LAYOUT_PRESET_PANES[preset];
+    // 창 하나에 탭 하나 이상 — 탭 수보다 창이 많은 모양은 고를 수 없다(빈 창을 새 어드민으로 채우지 않는다 · 2026-10-04 사장님 «탭이 3개인데 4단 분할이 가능»)
+    const tabCount = Object.keys(this.tree.tabs).length;
+    if (want > tabCount) return { ...change, rejected: `탭 ${tabCount}개로는 창 ${want}개를 못 채운다` };
+    // 실패하면 트리를 되돌린다(아래 옮기기는 단계마다 트리를 바꾼다 · 제미나이 검수 2026-10-04)
+    const snapshot = structuredClone(this.tree);
     const panes = this.collectPanes(this.tree.root);
     const kept = panes.slice(0, want);
     const merged = panes.slice(want);
@@ -460,16 +471,17 @@ export class LayoutEngine implements LayoutEngineApi {
       const donor = kept.find((p) => p.tabIds.length > 1);
       if (donor) {
         const movable = [...donor.tabIds].reverse().find((id) => id !== donor.activeTabId);
-        if (movable === undefined) break;
+        if (movable === undefined) {
+          this.tree = snapshot;
+          return { ...change, rejected: `applyLayout: 옮길 탭이 없다(탭 ${tabCount} · 창 ${want})` };
+        }
         donor.tabIds = donor.tabIds.filter((id) => id !== movable);
         kept.push({ type: 'pane', id: randomUUID(), tabIds: [movable], activeTabId: movable });
         continue;
       }
-      const tab = this.makeTab(spec);
-      this.tree.tabs[tab.id] = tab;
-      const pane: PaneNode = { type: 'pane', id: randomUUID(), tabIds: [tab.id], activeTabId: tab.id };
-      kept.push(pane);
-      change.createdTabIds.push(tab.id);
+      // 탭 수 검사(want ≤ 탭 수) 때문에 여기 오면 트리가 깨진 것이다 — 새 탭으로 채우지 않고 되돌린다(2026-10-04 «빈 창을 새 어드민으로 채우지 않는다»)
+      this.tree = snapshot;
+      return { ...change, rejected: `applyLayout: 탭이 둘 이상인 창이 없다(탭 ${tabCount} · 창 ${want})` };
     }
     const split = (orientation: Orientation, a: LayoutNode, b: LayoutNode): SplitNode => ({
       type: 'split', id: randomUUID(), orientation, ratio: 0.5, children: [a, b],
@@ -490,6 +502,12 @@ export class LayoutEngine implements LayoutEngineApi {
         break;
       case 'top1bottom2':
         this.tree.root = split('vertical', p0, split('horizontal', p1 as PaneNode, p2 as PaneNode));
+        break;
+      case 'left2right1':
+        this.tree.root = split('horizontal', split('vertical', p0, p1 as PaneNode), p2 as PaneNode);
+        break;
+      case 'left1right2':
+        this.tree.root = split('horizontal', p0, split('vertical', p1 as PaneNode, p2 as PaneNode));
         break;
       case 'grid4':
         this.tree.root = split('vertical', split('horizontal', p0, p1 as PaneNode), split('horizontal', p2 as PaneNode, p3 as PaneNode));

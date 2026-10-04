@@ -16,6 +16,14 @@ function engineWithOnePane(): LayoutEngine {
   return e;
 }
 
+/** 탭 n 개(모두 첫 pane) — 레이아웃 고르기는 탭 수만큼만 창을 만든다(2026-10-04) */
+function engineWithTabs(n: number): LayoutEngine {
+  const e = engineWithOnePane();
+  const paneId = rootPaneId(e);
+  for (let i = 1; i < n; i++) e.apply({ cmd: 'newTab', paneId }, { newTab: ADMIN });
+  return e;
+}
+
 function rootPaneId(e: LayoutEngine): string {
   return e.listPanes()[0]!.id;
 }
@@ -197,19 +205,18 @@ describe('LayoutStore', () => {
 });
 
 describe('applyLayout — 레이아웃 고르기(2026-10-03)', () => {
-  it('1 → grid4: pane 4 · 새 탭 3 · 처음 탭은 첫 자리에 그대로', () => {
-    const e = engineWithOnePane();
-    const firstTab = e.listPanes()[0]!.tabIds[0]!;
+  it('탭 4 → grid4: pane 4 · 새 탭 0(있는 탭을 나눠 앉힌다) · 창마다 탭 하나', () => {
+    const e = engineWithTabs(4);
     const c = e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
     expect(c.rejected).toBeNull();
     expect(e.paneCount()).toBe(4);
-    expect(c.createdTabIds).toHaveLength(3);
-    expect(e.listPanes()[0]!.tabIds).toEqual([firstTab]);
+    expect(c.createdTabIds).toHaveLength(0);
+    expect(e.listPanes().every((p) => p.tabIds.length === 1)).toBe(true);
     assertNoGaps(e.getTree(), e.computeGeometry(VIEWPORT));
   });
 
   it('top2bottom1: 위 좌우 둘 + 아래 하나', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(3);
     e.apply({ cmd: 'applyLayout', preset: 'top2bottom1' }, { newTab: ADMIN });
     const root = e.getTree().root;
     expect(root.type === 'split' && root.orientation).toBe('vertical');
@@ -219,7 +226,7 @@ describe('applyLayout — 레이아웃 고르기(2026-10-03)', () => {
   });
 
   it('grid4 → columns2: 남는 pane 의 탭은 닫지 않고 둘째 pane 뒤에 붙는다 · 탭 수 그대로', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(4);
     e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
     const tabsBefore = Object.keys(e.getTree().tabs).length;
     const c = e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
@@ -231,7 +238,7 @@ describe('applyLayout — 레이아웃 고르기(2026-10-03)', () => {
   });
 
   it('single: pane 1 · 포커스는 남은 pane', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(2);
     e.apply({ cmd: 'applyLayout', preset: 'rows2' }, { newTab: ADMIN });
     e.apply({ cmd: 'applyLayout', preset: 'single' }, { newTab: ADMIN });
     expect(e.paneCount()).toBe(1);
@@ -241,7 +248,7 @@ describe('applyLayout — 레이아웃 고르기(2026-10-03)', () => {
 
 describe('applyLayout — 모르는 preset(검수 2026-10-03)', () => {
   it('거절하고 트리는 그대로', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(2);
     e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
     const before = JSON.stringify(e.getTree());
     const c = e.apply({ cmd: 'applyLayout', preset: 'grid9' as never }, { newTab: ADMIN });
@@ -265,7 +272,7 @@ describe('applyLayout — 2026-10-04 사장님 버그', () => {
   });
 
   it('top1bottom2: 위 하나 + 아래 좌우 둘 · 모양 이름을 되찾는다', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(3);
     e.apply({ cmd: 'applyLayout', preset: 'top1bottom2' }, { newTab: ADMIN });
     const root = e.getTree().root;
     expect(root.type === 'split' && root.orientation).toBe('vertical');
@@ -276,7 +283,7 @@ describe('applyLayout — 2026-10-04 사장님 버그', () => {
   });
 
   it('detectLayoutPreset — 2단 좌우와 2단 상하를 가른다 · 손으로 만든 모양은 null', () => {
-    const e = engineWithOnePane();
+    const e = engineWithTabs(4);
     expect(detectLayoutPreset(e.getTree().root)).toBe('single');
     e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
     expect(detectLayoutPreset(e.getTree().root)).toBe('columns2');
@@ -287,5 +294,74 @@ describe('applyLayout — 2026-10-04 사장님 버그', () => {
     e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
     e.apply({ cmd: 'split', paneId: e.listPanes()[1]!.id, orientation: 'horizontal' }, { newTab: ADMIN });
     expect(detectLayoutPreset(e.getTree().root)).toBeNull();
+  });
+});
+
+describe('applyLayout — 탭 수보다 창이 많은 모양은 거절(2026-10-04 «탭이 3개인데 4단 분할이 가능»)', () => {
+  it('탭 3 → grid4 거절 · 트리 그대로 · top2bottom1 은 된다', () => {
+    const e = engineWithTabs(3);
+    const before = JSON.stringify(e.getTree());
+    const c = e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
+    expect(c.rejected).toContain('탭 3개');
+    expect(JSON.stringify(e.getTree())).toBe(before);
+    expect(e.apply({ cmd: 'applyLayout', preset: 'top2bottom1' }, { newTab: ADMIN }).rejected).toBeNull();
+  });
+  it('탭 1 → 2단 거절 · 1단은 된다', () => {
+    const e = engineWithOnePane();
+    expect(e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN }).rejected).not.toBeNull();
+    expect(e.apply({ cmd: 'applyLayout', preset: 'single' }, { newTab: ADMIN }).rejected).toBeNull();
+  });
+});
+
+describe('applyLayout — 3단 좌우형(2026-10-04 «왼쪽 상하 + 오른쪽 하나 · 반대로»)', () => {
+  it('left2right1: 왼쪽 위아래 둘 + 오른쪽 하나 · 모양 이름', () => {
+    const e = engineWithTabs(3);
+    expect(e.apply({ cmd: 'applyLayout', preset: 'left2right1' }, { newTab: ADMIN }).rejected).toBeNull();
+    const root = e.getTree().root;
+    expect(root.type === 'split' && root.orientation).toBe('horizontal');
+    if (root.type !== 'split') return;
+    expect(root.children[0].type === 'split' && root.children[0].orientation).toBe('vertical');
+    expect(root.children[1].type).toBe('pane');
+    expect(detectLayoutPreset(root)).toBe('left2right1');
+    assertNoGaps(e.getTree(), e.computeGeometry(VIEWPORT));
+  });
+  it('left1right2: 왼쪽 하나 + 오른쪽 위아래 둘 · 모양 이름', () => {
+    const e = engineWithTabs(3);
+    e.apply({ cmd: 'applyLayout', preset: 'left1right2' }, { newTab: ADMIN });
+    const root = e.getTree().root;
+    if (root.type !== 'split') throw new Error('split 아님');
+    expect(root.orientation).toBe('horizontal');
+    expect(root.children[0].type).toBe('pane');
+    expect(root.children[1].type === 'split' && root.children[1].orientation).toBe('vertical');
+    expect(detectLayoutPreset(root)).toBe('left1right2');
+  });
+  it('columns2 뒤 오른쪽을 세로로 나눈 모양(split 명령) = left1right2 로 알아본다', () => {
+    const e = engineWithTabs(2);
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    e.apply({ cmd: 'split', paneId: e.listPanes()[1]!.id, orientation: 'vertical' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBe('left1right2');
+  });
+});
+
+describe('레이아웃 단축키 · 메뉴 차례(2026-10-04 «모든 split view 단축키 · 아이콘 옆에»)', () => {
+  it('index.html 메뉴 차례 = LAYOUT_PRESET_ORDER · 옆 글씨 Ctrl+Shift+N · data-count = LAYOUT_PRESET_PANES', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { LAYOUT_PRESET_ORDER, LAYOUT_PRESET_PANES } = await import('@cmh-hub-app/contracts');
+    const html = readFileSync(new URL('../../shell/index.html', import.meta.url), 'utf8');
+    const items = [...html.matchAll(/data-preset="([a-z0-9]+)" data-count="(\d)"[\s\S]*?<kbd class="kbd">Ctrl\+Shift\+(\d)<\/kbd>/g)];
+    expect(items.map((m) => m[1])).toEqual([...LAYOUT_PRESET_ORDER]);
+    items.forEach((m, i) => {
+      expect(Number(m[3])).toBe(i + 1);
+      expect(Number(m[2])).toBe(LAYOUT_PRESET_PANES[m[1] as keyof typeof LAYOUT_PRESET_PANES]);
+    });
+  });
+
+  it('좌우로 먼저 나눈 뒤 양쪽을 위아래로 나눈 2×2 도 grid4', () => {
+    const e = engineWithTabs(2);
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    const [l, r] = e.listPanes();
+    e.apply({ cmd: 'split', paneId: l!.id, orientation: 'vertical' }, { newTab: ADMIN });
+    e.apply({ cmd: 'split', paneId: r!.id, orientation: 'vertical' }, { newTab: ADMIN });
+    expect(detectLayoutPreset(e.getTree().root)).toBe('grid4');
   });
 });

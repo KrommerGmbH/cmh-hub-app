@@ -280,6 +280,11 @@ function openLayoutMenu(): void {
   layoutMenuEl.querySelectorAll<HTMLButtonElement>('.layout-item').forEach((b) => {
     const on = b.dataset['preset'] === current;
     b.classList.toggle('current-preset', on);
+    // 탭 수보다 창이 많은 모양은 끈다(엔진도 거절한다) — 툴팁으로 까닭
+    const need = Number(b.dataset['count']);
+    const tabCount = (lastState?.panes ?? []).reduce((n, p) => n + p.tabs.length, 0);
+    b.disabled = need > tabCount;
+    b.title = b.disabled ? `탭이 ${need}개 있어야 합니다(지금 ${tabCount}개 · «+» 로 탭을 더 여세요)` : '';
     b.setAttribute('aria-checked', String(on));
   });
   layoutMenuEl.hidden = false;
@@ -406,6 +411,13 @@ interface TabDrag {
 }
 const TAB_DRAG_THRESHOLD = 6;
 let tabDrag: TabDrag | null = null;
+/** 끌기 기록(최근 30) — smoke 가 실패할 때만 읽는다(진단) */
+const tabDragLog: string[] = [];
+(window as unknown as { __tabDragLog: string[] }).__tabDragLog = tabDragLog;
+function noteDrag(s: string): void {
+  tabDragLog.push(s);
+  if (tabDragLog.length > 30) tabDragLog.shift();
+}
 const dragGhostEl = document.createElement('div');
 dragGhostEl.className = 'tab-drag-ghost';
 dragGhostEl.hidden = true;
@@ -427,6 +439,7 @@ function beginTabDrag(e: PointerEvent, tabId: string, paneId: string): void {
   e.preventDefault();
   const title = (e.currentTarget as HTMLElement).querySelector('.tab-title')?.textContent ?? '';
   tabDrag = { tabId, fromPaneId: paneId, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false, title };
+  noteDrag(`down ${tabId.slice(0, 6)} ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
 }
 
 function findDropTarget(x: number, y: number, tabId: string): DropTarget | null {
@@ -434,7 +447,15 @@ function findDropTarget(x: number, y: number, tabId: string): DropTarget | null 
     const s = pane.stripRect;
     if (x >= s.x && x < s.x + s.width && y >= s.y && y < s.y + s.height) {
       // 끄는 탭을 뺀 나머지 탭의 가운데 점보다 오른쪽에 있으면 그 뒤로
-      const tabs = [...(stripEls.get(pane.id)?.querySelectorAll<HTMLElement>('.tab') ?? [])].filter((t) => t.dataset['tabId'] !== tabId);
+      const all = [...(stripEls.get(pane.id)?.querySelectorAll<HTMLElement>('.tab') ?? [])];
+      // 끄는 탭의 원래 자리 위면 «제자리» — 표시도 그 탭 왼쪽에(제미나이 검수 2026-10-04 · 표시가 마우스를 안 따라오던 것)
+      const own = all.find((t) => t.dataset['tabId'] === tabId);
+      if (own) {
+        const r = own.getBoundingClientRect();
+        // 표시 막대는 탭 가운데를 기준으로 왼쪽/오른쪽 끝에(마우스를 따라오게 · 제미나이 재검수) — 놓으면 어느 쪽이든 제자리
+        if (x >= r.left && x < r.right) return { paneId: pane.id, index: all.indexOf(own), rect: { x: (x < r.left + r.width / 2 ? r.left : r.right) - 1, y: s.y + 6, width: 3, height: s.height - 6 } };
+      }
+      const tabs = all.filter((t) => t.dataset['tabId'] !== tabId);
       let index = 0;
       let barX = s.x + 8;
       for (const t of tabs) {
@@ -463,6 +484,13 @@ function onTabDragMove(e: PointerEvent): void {
   if (!d.active) {
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < TAB_DRAG_THRESHOLD) return;
     d.active = true;
+    // 포인터를 탭 줄(다시 그려도 그대로인 요소)에 묶는다 — 빠르게 끌어 페이지 위로 나가도 셸이 이벤트를 받게(제미나이 검수 2026-10-04)
+    try {
+      stripEls.get(d.fromPaneId)?.querySelector<HTMLElement>('.strip-tabs')?.setPointerCapture(d.pointerId);
+    } catch {
+      // 캡처가 안 되어도 셸이 맨 위로 올라가 window 가 받는다
+    }
+    noteDrag(`active ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
     dragGhostEl.textContent = d.title;
     dragGhostEl.hidden = false;
     document.body.classList.add('dragging-tab');
@@ -484,13 +512,22 @@ function onTabDragMove(e: PointerEvent): void {
 
 function endTabDrag(e: PointerEvent | null, cancel: boolean): void {
   const d = tabDrag;
+  noteDrag(`end ${e?.type ?? 'esc'} d=${d ? String(d.active) : 'none'}${e ? ` ${Math.round(e.clientX)},${Math.round(e.clientY)}` : ''}`);
   if (!d || (e && e.pointerId !== d.pointerId)) return;
   tabDrag = null;
   if (!d.active) return; // 끌지 않은 클릭 — 평소 click(activateTab) 그대로
+  // Esc 로 취소하면 pointerup 이 아직 안 왔다 — 탭 줄에 걸어 둔 포인터 캡처를 풀어 준다(제미나이 재검수 2026-10-04)
+  const captureEl = stripEls.get(d.fromPaneId)?.querySelector<HTMLElement>('.strip-tabs');
+  try {
+    if (captureEl?.hasPointerCapture(d.pointerId)) captureEl.releasePointerCapture(d.pointerId);
+  } catch {
+    // 이미 풀렸으면 그만
+  }
   dragGhostEl.hidden = true;
   dropMarkerEl.hidden = true;
   document.body.classList.remove('dragging-tab');
   const target = !cancel && e ? findDropTarget(e.clientX, e.clientY, d.tabId) : null;
+  noteDrag(`target ${target ? target.paneId.slice(0, 8) + ' i=' + String(target.index) : 'none'}`);
   // moveTab 을 먼저 — 그래야 셸을 내릴 때 돌려주는 포커스가 «옮겨 간» pane 으로 간다(검수 2026-10-04)
   if (target) {
     send(target.index === undefined
