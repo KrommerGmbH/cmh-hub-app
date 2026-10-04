@@ -13,7 +13,6 @@ export const APP_CONFIG = {
   /** «+» 메뉴 — 서버 어드민 라우트(U06 챗봇 = admin 탭) */
   newTabChoices: [
     { label: '대시보드', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/sw/dashboard/index' },
-    { label: 'Marktplatz-Produkte', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/hub/listing/index' },
     { label: 'AI 채팅', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/ai/chat/index' },
     { label: '네이버 스마트스토어센터', kind: 'naver', url: 'https://sell.smartstore.naver.com/' },
   ] as const,
