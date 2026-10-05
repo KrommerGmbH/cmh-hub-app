@@ -302,6 +302,44 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     }
   }
 
+  // ⑫ 탭 ✕ 를 «진짜 마우스»로 한 번 누르면 닫히나(2026-10-05 사장님 «탭 닫기 x 두 번 눌러야 닫힘») — JS .click() 은 이 결함을 못 잡는다
+  {
+    const paneId = w.focusedPaneId();
+    if (paneId) {
+      w.handleCommand({ cmd: 'newTab', paneId, kind: 'web', url: 'about:blank' });
+      w.handleCommand({ cmd: 'newTab', paneId, kind: 'web', url: 'about:blank' });
+      await wait(800);
+      const realClickClose = async (which: 'active' | 'inactive' | 'other-pane'): Promise<string> => {
+        const sel = which === 'active' ? '.strip.pane-focused .tab.active .tab-close' : which === 'inactive' ? '.strip.pane-focused .tab:not(.active) .tab-close' : '.strip:not(.pane-focused) .tab .tab-close';
+        const pt = await shellJs<{ x: number; y: number } | null>(`(() => { const b = document.querySelector('${sel}'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`);
+        if (!pt) return `${which}: ✕ 없음`;
+        const tabsBefore = Object.keys(w.engine.getTree().tabs).length;
+        const rendersBefore = await shellJs<string>('document.body.dataset.renders');
+        const sw = w.shellView.webContents;
+        // 사장님 실제 상황 — 키보드 포커스가 페이지(활성 탭)에 있고 셸은 포커스가 없다
+        const activeId = w.activeTabOfFocusedPane()?.activeTabId;
+        if (activeId) w.views.get(activeId)?.webContents.focus();
+        await wait(200);
+        const shellFocusedBefore = sw.isFocused();
+        sw.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
+        await wait(150);
+        sw.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        await wait(120);
+        const rendersMid = await shellJs<string>('document.body.dataset.renders');
+        sw.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+        await wait(600);
+        const tabsAfter = Object.keys(w.engine.getTree().tabs).length;
+        return `${which}: ${tabsAfter === tabsBefore - 1 ? '한 번에 닫힘' : `안 닫힘(${tabsBefore}→${tabsAfter})`} · 누르기 전 셸 포커스 ${String(shellFocusedBefore)} · 누르는 사이 다시 그림 ${Number(rendersMid) - Number(rendersBefore)}번`;
+      };
+      const inactive = await realClickClose('inactive');
+      const active = await realClickClose('active');
+      // 포커스 없는 pane 의 ✕ — 누르는 순간 focusPane → 다시 그리기로 ✕ 가 사라져 click 이 안 나던 결함(사장님 2단에서)
+      const otherPane = w.engine.paneCount() > 1 ? await realClickClose('other-pane') : 'other-pane: pane 하나라 건너뜀(한 번에)';
+      const ok = inactive.includes('한 번에') && active.includes('한 번에') && otherPane.includes('한 번에');
+      log('탭 ✕ 진짜 마우스 한 번', `${ok ? 'OK' : 'FAIL'} ${inactive} | ${active} | ${otherPane}`);
+    }
+  }
+
   // ⑪ 빈 탭 · 주소창(2026-10-05 «빈 탭 · url 넣고 크롬처럼 검색») — «+» 메뉴와 같은 명령 → 주소창 포커스 → 주소 · 검색
   {
     const paneId = w.focusedPaneId();

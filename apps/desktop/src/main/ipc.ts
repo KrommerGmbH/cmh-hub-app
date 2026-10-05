@@ -2,6 +2,7 @@
 import { ipcMain } from 'electron';
 import { OVERLAY_IPC, SHELL_IPC, type ShellCommand } from '@cmh-hub-app/contracts';
 import { getShellWindow } from './window/shell-window.js';
+import { stopParallelCheck } from './parallel-check.js';
 
 function isShellCommand(v: unknown): v is ShellCommand {
   return typeof v === 'object' && v !== null && typeof (v as { cmd?: unknown }).cmd === 'string';
@@ -20,7 +21,8 @@ export function registerIpc(): void {
   });
 
   ipcMain.on(OVERLAY_IPC.cmd, (_event, raw: unknown) => {
-    // 1차: 덮개 view 가 아직 없다 — 로그만(U07 ⑥ · W02 뒤)
+    // 덮개는 지금 병렬 시험(CMH_HUB_PARALLEL · 개발판)에서만 뜬다 — «멈추기» = 시험 끝(U07 ⑥ · W02 뒤에 작업 큐 released 로)
     console.info('[overlay] cmd', raw);
+    if (typeof raw === 'object' && raw !== null && (raw as { cmd?: unknown }).cmd === 'aiTaskStop') stopParallelCheck();
   });
 }

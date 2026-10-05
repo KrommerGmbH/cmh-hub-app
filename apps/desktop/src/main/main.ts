@@ -16,6 +16,7 @@ import { prepareSessions } from './naver/naver-session.js';
 import { runFingerprintProbeIfRequested } from './fingerprint-probe.js';
 import { runSmokeIfRequested } from './smoke.js';
 import { runCredentialCheckIfRequested } from './credentials/credential-check.js';
+import { runParallelCheckIfRequested } from './parallel-check.js';
 import { createShellWindow } from './window/shell-window.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
@@ -46,13 +47,14 @@ app.whenReady().then(async () => {
   // W01 · W04 — 이미 내려받은 로컬 모델이 있을 때만 작업을 집는다(내려받기는 W03 동의 뒤)
   const engine = new LocalLlmEngine(join(app.getPath('userData'), 'models'));
   // 지문 비교 실행(CMH_HUB_FP_URL)은 곧 강제로 꺼지므로 작업을 집지 않는다 — 집은 채로 꺼지면 lease 가 10분 묶인다
-  if (!process.env['CMH_HUB_FP_URL'] && !process.env['CMH_HUB_CRED_CHECK']) {
+  if (!process.env['CMH_HUB_FP_URL'] && !process.env['CMH_HUB_CRED_CHECK'] && !process.env['CMH_HUB_PARALLEL']) {
     startTaskWorker(appSession, engine, { models: () => installedLocalModels(join(app.getPath('userData'), 'models')) });
   }
   app.on('before-quit', () => void engine.dispose());
   void runSmokeIfRequested(w);
   runFingerprintProbeIfRequested(w);
   runCredentialCheckIfRequested(w.window);
+  runParallelCheckIfRequested(w); // U07 ⑥⑦ 병렬 시험(개발판 · CMH_HUB_PARALLEL=1)
 });
 
 app.on('window-all-closed', () => {

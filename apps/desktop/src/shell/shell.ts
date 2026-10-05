@@ -113,13 +113,16 @@ function createStrip(paneId: string): HTMLElement {
   return strip;
 }
 
-function renderTab(tab: ShellState['panes'][number]['tabs'][number], paneId: string): HTMLElement {
+type ShellTab = ShellState['panes'][number]['tabs'][number];
+
+/**
+ * 탭 요소를 만든다(모양 · 처리기). 보이는 값은 updateTabElement 가 채운다 — 상태가 올 때마다 요소를 새로 만들지 않고 탭 id 로 재사용한다.
+ * 새로 만들면 누르는 사이(mousedown → click) 요소가 바뀌어 click 이 사라진다: 포커스 없는 pane 의 ✕ 를 누르면 mousedown 의 focusPane 으로
+ * 다시 그려져 두 번 눌러야 닫혔다(2026-10-05 사장님 «탭 닫기 x 두 번 눌러야 닫힘» · smoke ⑫ 재현 4→4).
+ */
+function createTabElement(tab: ShellTab, paneId: string): HTMLElement {
   const el = (tabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
   el.dataset['tabId'] = tab.id;
-  el.classList.toggle('active', tab.active);
-  // 키보드 — 활성 탭만 Tab 키로 들어오고 ← → 로 이웃 탭(디자인 검토 2026-10-03 · WAI-ARIA tabs 꼴)
-  el.tabIndex = tab.active ? 0 : -1;
-  el.setAttribute('aria-selected', String(tab.active));
   el.addEventListener('keydown', (e) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     const sibling = (e.key === 'ArrowLeft' ? el.previousElementSibling : el.nextElementSibling) as HTMLElement | null;
@@ -129,15 +132,6 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number], paneId: str
     sibling.focus({ preventScroll: true }); // 새 상태가 오면 upsertStrip 이 같은 id 탭에 포커스를 되돌린다
     send({ cmd: 'activateTab', tabId: id, keepShellFocus: true });
   });
-  el.title = tab.title;
-  el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? '새 탭' : '불러오는 중');
-  const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
-  const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
-  if (tab.loading) spinner.hidden = false;
-  else if (tab.favicon) {
-    favicon.src = tab.favicon;
-    favicon.hidden = false;
-  }
   el.addEventListener('mousedown', (e) => {
     if (e.button === 1) {
       e.preventDefault();
@@ -164,6 +158,25 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number], paneId: str
   return el;
 }
 
+/** 보이는 값만 고친다 — 같은 값이면 DOM 을 건드리지 않는다 */
+function updateTabElement(el: HTMLElement, tab: ShellTab): void {
+  el.classList.toggle('active', tab.active);
+  // 키보드 — 활성 탭만 Tab 키로 들어오고 ← → 로 이웃 탭(디자인 검토 2026-10-03 · WAI-ARIA tabs 꼴)
+  el.tabIndex = tab.active ? 0 : -1;
+  el.setAttribute('aria-selected', String(tab.active));
+  if (el.title !== tab.title) el.title = tab.title;
+  const titleText = tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? '새 탭' : '불러오는 중');
+  const titleEl = el.querySelector<HTMLElement>('.tab-title')!;
+  if (titleEl.textContent !== titleText) titleEl.textContent = titleText;
+  const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
+  const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
+  spinner.hidden = !tab.loading;
+  const showFavicon = !tab.loading && !!tab.favicon;
+  if (showFavicon && favicon.getAttribute('src') !== tab.favicon) favicon.src = tab.favicon ?? '';
+  else if (!tab.favicon && favicon.hasAttribute('src')) favicon.removeAttribute('src'); // 파비콘 없는 페이지로 가면 옛 주소를 지운다
+  favicon.hidden = !showFavicon;
+}
+
 function upsertStrip(pane: ShellState['panes'][number]): void {
   const strip = stripEls.get(pane.id) ?? createStrip(pane.id);
   strip.classList.toggle('pane-focused', pane.focused);
@@ -180,7 +193,20 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   // (제목 · 로딩 상태가 올 때마다 다시 그려 포커스가 body 로 빠지던 결함 · 검수 2026-10-03)
   const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
   const focusedTabId = tabsEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.tab')?.dataset['tabId'] : undefined;
-  tabsEl.replaceChildren(...pane.tabs.map((t) => renderTab(t, pane.id)));
+  const existing = new Map<string, HTMLElement>();
+  for (const child of Array.from(tabsEl.children) as HTMLElement[]) {
+    const id = child.dataset['tabId'];
+    if (id) existing.set(id, child);
+  }
+  const ordered = pane.tabs.map((t) => {
+    const el = existing.get(t.id) ?? createTabElement(t, pane.id);
+    updateTabElement(el, t);
+    return el;
+  });
+  const current = Array.from(tabsEl.children);
+  const sameOrder = current.length === ordered.length && current.every((c, i) => c === ordered[i]);
+  if (sameOrder) return; // 요소 · 차례가 그대로 — 누르던 단추 · 키보드 포커스가 그대로 산다
+  tabsEl.replaceChildren(...ordered);
   if (focusedTabId !== undefined) {
     (tabsEl.querySelector<HTMLElement>(`.tab[data-tab-id="${focusedTabId}"]`) ?? tabsEl.querySelector<HTMLElement>('.tab.active'))?.focus({ preventScroll: true });
   }
@@ -603,7 +629,11 @@ window.addEventListener('keydown', (e) => {
 
 function render(state: ShellState): void {
   lastState = state;
+  // smoke 진단 — 누르는 사이 다시 그렸는지 센다(탭 줄을 통째로 다시 그리면 누르던 단추가 사라진다)
+  document.body.dataset['renders'] = String(Number(document.body.dataset['renders'] ?? '0') + 1);
   const hadTabFocus = !!(document.activeElement as HTMLElement | null)?.closest?.('.tab');
+  // 포커스가 있던 탭의 pane — 다른 pane 탭을 키보드로 다니던 중이면 그 pane 으로 되돌린다(제미나이 검수 2026-10-05)
+  const focusedStripPaneId = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>('.strip')?.dataset['paneId'];
   renderTitle(state);
   syncLayoutMenu();
 
@@ -615,8 +645,6 @@ function render(state: ShellState): void {
     }
   }
   for (const pane of state.panes) upsertStrip(pane);
-  // 빈 탭을 막 열었으면 크롬처럼 그 주소창에 포커스(main 이 셸 view 에 키보드 포커스를 이미 줬다)
-  if (state.focusOmniboxPaneId) stripEls.get(state.focusOmniboxPaneId)?.querySelector<HTMLInputElement>('.strip-omnibox')?.focus();
 
   const sashIds = new Set(state.sashes.map((s) => s.id));
   for (const [id, el] of sashEls) {
@@ -631,8 +659,12 @@ function render(state: ShellState): void {
   renderUpdate(state);
   // Delete 로 pane 의 마지막 탭을 닫으면 그 스트립째 사라진다 — 포커스 pane 의 활성 탭으로 옮긴다
   if (hadTabFocus && !(document.activeElement as HTMLElement | null)?.closest?.('.tab')) {
-    document.querySelector<HTMLElement>('.strip.pane-focused .tab.active')?.focus({ preventScroll: true });
+    const home = focusedStripPaneId ? stripEls.get(focusedStripPaneId) : undefined;
+    (home?.querySelector<HTMLElement>('.tab.active') ?? document.querySelector<HTMLElement>('.strip.pane-focused .tab.active'))?.focus({ preventScroll: true });
   }
+  // 빈 탭을 막 열었으면 크롬처럼 그 주소창에 포커스(main 이 셸 view 에 키보드 포커스를 이미 줬다).
+  // 맨 끝에 — 위의 «탭 포커스 되돌리기»가 막 준 주소창 포커스를 빼앗았다(✕ 를 누른 뒤 빈 탭을 열 때 · smoke ⑪ 2026-10-05)
+  if (state.focusOmniboxPaneId) stripEls.get(state.focusOmniboxPaneId)?.querySelector<HTMLInputElement>('.strip-omnibox')?.focus();
 }
 
 document.addEventListener('click', (e) => {
