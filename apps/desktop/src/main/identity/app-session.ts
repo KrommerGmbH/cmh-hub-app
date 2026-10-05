@@ -22,6 +22,8 @@ export class AppSession {
     this.admin.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
       const headers = { ...details.requestHeaders };
       if (!headers[APP_HEADERS.signature]) Object.assign(headers, this.sign(details.method, details.url));
+      // 챗봇이 «어디서 열렸나»(cmh_ai_run.opened_from)를 서버가 알게 한다 — 브라우저 도구가 필요한 하네스는 hub 에서만 돈다.
+      headers['X-Cmh-Channel'] = 'hub';
       callback({ requestHeaders: headers });
     });
     this.admin.webRequest.onCompleted(filter, (details) => {
