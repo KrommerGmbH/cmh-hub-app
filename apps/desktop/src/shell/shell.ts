@@ -75,6 +75,15 @@ function createStrip(paneId: string): HTMLElement {
     if (!lastState) return;
     openNewTabMenu(lastState, paneId, (e.currentTarget as HTMLElement).getBoundingClientRect());
   });
+  // 뒤로 · 앞으로 · 새로고침 — 이 pane 의 활성 탭에(2026-10-05 «크롬처럼 refresh, 앞으로, 뒤로 버튼»)
+  const navButtons: Array<[string, 'back' | 'forward' | 'reload']> = [['.strip-back', 'back'], ['.strip-forward', 'forward'], ['.strip-reload', 'reload']];
+  for (const [selector, action] of navButtons) {
+    strip.querySelector<HTMLButtonElement>(selector)!.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tabId = lastState?.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.active)?.id;
+      if (tabId) send({ cmd: 'navigate', tabId, action });
+    });
+  }
   strip.addEventListener('mousedown', () => {
     const pane = lastState?.panes.find((p) => p.id === paneId);
     if (pane && !pane.focused) send({ cmd: 'focusPane', paneId });
@@ -139,6 +148,9 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   const strip = stripEls.get(pane.id) ?? createStrip(pane.id);
   strip.classList.toggle('pane-focused', pane.focused);
   place(strip, pane.stripRect);
+  strip.querySelector<HTMLButtonElement>('.strip-back')!.disabled = !pane.canGoBack;
+  strip.querySelector<HTMLButtonElement>('.strip-forward')!.disabled = !pane.canGoForward;
+  strip.querySelector<HTMLButtonElement>('.strip-reload')!.disabled = !pane.tabs.some((t) => t.active);
   // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다. 다만 키보드 포커스가 그 안에 있었으면 같은 탭(없으면 활성 탭)에 되돌린다
   // (제목 · 로딩 상태가 올 때마다 다시 그려 포커스가 body 로 빠지던 결함 · 검수 2026-10-03)
   const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
@@ -633,7 +645,7 @@ function renderDemo(): void {
   const demo: ShellState = {
     panes: [
       {
-        id: 'p1', focused: true, aiTask: null, splitAllowed: true,
+        id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false,
         stripRect: { x: 0, y: 40, width: left, height: 40 },
         contentRect: { x: 0, y: 80, width: left, height: h - 80 },
         tabs: [
@@ -642,7 +654,7 @@ function renderDemo(): void {
         ],
       },
       {
-        id: 'p2', focused: false, aiTask: null, splitAllowed: true,
+        id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false,
         stripRect: { x: left + 4, y: 40, width: w - left - 4, height: 40 },
         contentRect: { x: left + 4, y: 80, width: w - left - 4, height: h - 80 },
         tabs: [{ id: 't3', kind: 'naver', title: '스마트스토어센터 · 상품 목록', favicon: null, loading: true, active: true }],

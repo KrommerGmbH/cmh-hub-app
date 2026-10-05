@@ -55,6 +55,9 @@ button:disabled { opacity: .35; cursor: default; }
 .strip { position: absolute; display: flex; align-items: flex-end; height: var(--strip-h); padding: 0 6px 0 8px; gap: 2px; background: var(--frame); overflow: hidden; }
 .strip-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; overflow: hidden; flex: 0 1 auto; width: 100%; max-width: max-content; }
 .strip-spacer { flex: 1 1 auto; min-width: 8px; height: 100%; }
+/* 뒤로 · 앞으로 · 새로고침(2026-10-05) — 탭 줄 맨 왼쪽 · 기록이 없으면 흐리게 */
+.strip-nav { display: flex; align-items: flex-end; gap: 0; margin-right: 6px; flex: 0 0 auto; }
+.strip-nav .ico:disabled { opacity: 0.35; cursor: default; }
 .ico { width: 28px; height: 28px; margin-bottom: 3px; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--muted); flex: 0 0 auto; }
 .ico:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .ico:active:not(:disabled) { background: var(--pressed); }

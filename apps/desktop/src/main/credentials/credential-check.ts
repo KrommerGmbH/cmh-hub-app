@@ -2,11 +2,12 @@
 // ①칸 찾기 ②오른쪽 클릭 메뉴 이벤트 ③가짜 계정 넣기 ④safeStorage 저장 왕복을 재서 `[cred-check]` 줄로 찍고 앱을 끈다.
 // 로그인 단추는 누르지 않는다. 사람 앱의 persist:admin · persist:naver · credentials.json 은 건드리지 않는다.
 import { app, safeStorage, WebContentsView, type BaseWindow, type WebContents } from 'electron';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TabKind } from '@cmh-hub-app/contracts';
 import { fillSavedCredential, readFieldState } from './credential-filler.js';
+import { watchLoginFieldFocus } from './credential-focus-watch.js';
 import { CredentialStore } from './credential-store.js';
 import { findLoginPage, matchLoginFieldClick } from './login-pages.js';
 
@@ -44,6 +45,21 @@ async function checkPage(window: BaseWindow, kind: TabKind, url: string): Promis
 
     // 오른쪽 클릭 — 페이지가 contextmenu 를 막으면 이 이벤트가 안 온다(결정서 D7-4)
     const first = await readFieldState(wc, page);
+    // 진단 — 아이디 칸 가운데 점에 실제로 무엇이 있나(덮개 · 다른 칸) · 화면 사진(tmp)
+    if (first?.username) {
+      const pt = first.username;
+      out['elementAtUsernamePoint'] = await wc.executeJavaScriptInIsolatedWorld(1207, [{ code: `(() => { const e = document.elementFromPoint(${pt.x}, ${pt.y}); return e ? e.tagName + '#' + e.id + '.' + String(e.className).slice(0, 60) + ' placeholder=' + (e.getAttribute('placeholder') || '') : null; })()` }]);
+      out['usernamePoint'] = pt;
+    }
+    try {
+      const shotFile = join(tmpdir(), `cred-check-${kind}.png`);
+      writeFileSync(shotFile, (await wc.capturePage()).toPNG());
+      out['screenshot'] = shotFile;
+    } catch (error) {
+      // 창이 화면에 안 그려지면(가려짐 · 화면 꺼짐) 사진을 못 찍는다 — 그때 클릭 시험도 믿기 어렵다는 표시로 남긴다
+      out['screenshot'] = `못 찍음: ${error instanceof Error ? error.message : 'unknown'}`;
+    }
+    out['windowVisible'] = window.isVisible() && !window.isMinimized();
     const menu = new Promise<Electron.ContextMenuParams | null>((resolve) => {
       const timer = setTimeout(() => resolve(null), 3000);
       wc.once('context-menu', (_e, params) => { clearTimeout(timer); resolve(params); });
@@ -69,9 +85,43 @@ async function checkPage(window: BaseWindow, kind: TabKind, url: string): Promis
     }
     await sleep(1000); // React · Vue 가 다시 그린 뒤에도 값이 남는지
     const after = await readFieldState(wc, page, true);
+    // 진단 — 비밀번호 칸 점에 무엇이 있나 · 지금 포커스는 어디인가
+    if (after?.password) {
+      const pp = after.password;
+      out['passwordPoint'] = pp;
+      out['elementAtPasswordPoint'] = await wc.executeJavaScriptInIsolatedWorld(1207, [{ code: `(() => { const e = document.elementFromPoint(${pp.x}, ${pp.y}); const a = document.activeElement; return { at: e ? e.tagName + '#' + e.id + '.' + String(e.className).slice(0, 50) : null, active: a ? a.tagName + '#' + a.id : null, inner: [innerWidth, innerHeight] }; })()` }]);
+    }
     out['usernameInField'] = after?.usernameValue === FAKE_USERNAME;
     out['passwordInField'] = after?.passwordValue === FAKE_PASSWORD;
     out['passwordFieldIsPasswordType'] = after?.passwordIsPasswordType ?? null;
+
+    // 왼쪽 클릭 계정 목록(U08b) — 칸을 비우고(새로고침) 진짜 클릭 → before-mouse-event → 목록 → 첫 계정 고름 → 넣기.
+    // 계정 목록은 사람의 credentials.json 이 아니라 가짜 한 줄을 준다 — «클릭 → 목록이 떴나» 까지 본다(넣기는 위에서 쟀다)
+    {
+      wc.reload();
+      await sleep(500);
+      await waitForFields(wc, kind, 25_000);
+      let offered: string[] | null = null;
+      const listed = new Promise<void>((resolve) => {
+        watchLoginFieldFocus(wc, kind, () => view.getBounds(), {
+          accountsOf: () => [{ username: FAKE_USERNAME, lastUsedAt: '' }],
+          showList: (items) => {
+            offered = items.map((i) => i.label);
+            resolve();
+          },
+        });
+        setTimeout(resolve, 3000);
+      });
+      const empty = await readFieldState(wc, page);
+      if (empty?.username) {
+        wc.focus();
+        wc.sendInputEvent({ type: 'mouseDown', x: empty.username.x, y: empty.username.y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x: empty.username.x, y: empty.username.y, button: 'left', clickCount: 1 });
+      }
+      await listed;
+      out['leftClickListShown'] = offered !== null;
+      out['leftClickListItems'] = offered === null ? 0 : (offered as string[]).length;
+    }
 
     // 줌 125%(Ctrl+휠) — CSS px 좌표에 배율을 곱해 클릭하는지(제미나이 검수 2026-10-05)
     if (kind === 'admin') {

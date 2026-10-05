@@ -28,6 +28,16 @@ function notify(body: string): void {
   if (Notification.isSupported()) new Notification({ title: 'CMH Hub', body, silent: true }).show();
 }
 
+/** 왼쪽 클릭 계정 목록(credential-focus-watch)이 쓴다 — 암호화를 못 쓰면 빈 목록 */
+export function listSavedAccounts(kind: TabKind): SavedAccount[] {
+  return credentialStore().available() ? credentialStore().list(kind) : [];
+}
+
+/** 넣기 — 오른쪽 클릭 메뉴와 왼쪽 클릭 목록이 같이 쓴다. throw 하지 않는다(오류 글만 적는다 · 값 0) */
+export function fillSavedAccount(wc: WebContents, page: LoginPage, kind: TabKind, username: string): void {
+  fill(wc, page, kind, username).catch((error: unknown) => console.warn(`[credential] 넣기 실패 kind=${kind}`, error instanceof Error ? error.message : 'unknown'));
+}
+
 async function fill(wc: WebContents, page: LoginPage, kind: TabKind, username: string): Promise<void> {
   if (wc.isDestroyed()) return;
   const password = credentialStore().takePasswordForFill(kind, username);
@@ -66,9 +76,7 @@ export function credentialMenuFor(wc: WebContents, kind: TabKind, params: Electr
   return {
     accounts: credentialStore().list(kind),
     // 탭이 닫히는 등으로 넣기 · 저장이 throw 하면 여기서 끝낸다 — 오류 글만 적고(값 0) unhandledRejection 으로 새지 않게(제미나이 검수 2026-10-05)
-    onFill: (username) => {
-      fill(wc, page, kind, username).catch((error: unknown) => console.warn(`[credential] 넣기 실패 kind=${kind}`, error instanceof Error ? error.message : 'unknown'));
-    },
+    onFill: (username) => fillSavedAccount(wc, page, kind, username),
     onSave: () => {
       save(wc, page, kind).catch((error: unknown) => console.warn(`[credential] 저장 실패 kind=${kind}`, error instanceof Error ? error.message : 'unknown'));
     },

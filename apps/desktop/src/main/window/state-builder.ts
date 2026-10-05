@@ -11,13 +11,17 @@ import {
 import { APP_CONFIG } from '../../config.js';
 import { detectLayoutPreset } from '../layout/layout-engine.js';
 
-export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState): ShellState {
+/** 탭 view 의 방문 기록 — view 가 없거나 닫혔으면 undefined */
+export type TabHistoryOf = (tabId: string) => { canGoBack: boolean; canGoForward: boolean } | undefined;
+
+export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState, historyOf: TabHistoryOf): ShellState {
   const tree = engine.getTree();
   const paneCount = engine.paneCount();
   const panes: ShellPaneView[] = [];
   for (const g of geometry.panes) {
     const pane = engine.getPane(g.paneId);
     if (!pane) continue;
+    const history = pane.activeTabId ? historyOf(pane.activeTabId) : undefined;
     panes.push({
       id: pane.id,
       stripRect: g.stripRect,
@@ -29,6 +33,8 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
       focused: tree.focusedPaneId === pane.id,
       aiTask: null,
       splitAllowed: paneCount < LAYOUT_LIMITS.maxPanes,
+      canGoBack: history?.canGoBack ?? false,
+      canGoForward: history?.canGoForward ?? false,
     });
   }
   const [width, height] = window.getContentSize();

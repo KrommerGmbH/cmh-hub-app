@@ -226,6 +226,45 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     log('오른쪽 클릭 메뉴 붙음', `${attached === tabIds.length && attached > 0 ? 'OK' : 'FAIL'} ${attached}/${tabIds.length}`);
   }
 
+  // ⑨ 뒤로 · 앞으로 · 새로고침 단추(2026-10-05 «크롬처럼 refresh, 앞으로, 뒤로 버튼») — 셸 단추를 눌러 탭 기록이 움직이는지
+  {
+    const focused = w.activeTabOfFocusedPane();
+    const tabWc = focused?.activeTabId ? w.views.get(focused.activeTabId)?.webContents : undefined;
+    if (!tabWc) {
+      log('뒤로 · 앞으로 · 새로고침', 'FAIL 포커스 탭 없음');
+    } else {
+      const btn = (cls: string): string => `document.querySelector('.strip.pane-focused .${cls}')`;
+      const first = tabWc.getURL();
+      await tabWc.loadURL(`${first.split('#')[0]}#/sw/settings/index`).catch(() => undefined); // 같은 문서 안 해시 이동 = 기록 하나
+      const backOn = await waitFor(() => shellJs<boolean>(`!${btn('strip-back')}.disabled`), 8000);
+      const beforeBack = tabWc.navigationHistory.getActiveIndex();
+      const urlBeforeBack = tabWc.getURL();
+      // 뒤로를 누르면 탭이 움직였는가 — 어드민이 그 주소를 다시 다른 주소로 보내면(로그인 만료 등) 기록 번호는 다시 늘 수 있어
+      // «이동 이벤트가 났나»로 본다
+      const navigated = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000);
+        const done = (): void => { clearTimeout(timer); resolve(true); };
+        tabWc.once('did-navigate-in-page', done);
+        tabWc.once('did-navigate', done);
+      });
+      await shellJs(`${btn('strip-back')}.click()`);
+      const wentBack = await navigated;
+      const indexAfterBack = tabWc.navigationHistory.getActiveIndex();
+      const forwardOn = await waitFor(() => shellJs<boolean>(`!${btn('strip-forward')}.disabled`), 3000);
+      console.info(`[smoke] 뒤로 진단 index ${beforeBack} → ${indexAfterBack} · ${urlBeforeBack.split('#')[1] ?? ''} → ${tabWc.getURL().split('#')[1] ?? ''} · 앞으로 켜짐 ${forwardOn}`);
+      const reloaded = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000);
+        tabWc.once('did-start-loading', () => { clearTimeout(timer); resolve(true); });
+      });
+      await shellJs(`${btn('strip-reload')}.click()`);
+      const reloadOk = await reloaded;
+      // 앞으로는 «뒤로 간 자리에 머물렀을 때»만 켜진다 — 어드민이 다시 보내면 앞 기록이 지워진다(그때는 판정에서 뺀다)
+      const stayed = indexAfterBack < beforeBack;
+      const ok = backOn && wentBack && reloadOk && (!stayed || forwardOn);
+      log('뒤로 · 앞으로 · 새로고침', `${ok ? 'OK' : 'FAIL'} 뒤로 켜짐 ${backOn} · 뒤로 이동 ${wentBack} · 앞으로 켜짐 ${forwardOn}${stayed ? '' : '(어드민이 주소를 다시 보내 판정 제외)'} · 새로고침 ${reloadOk}`);
+    }
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

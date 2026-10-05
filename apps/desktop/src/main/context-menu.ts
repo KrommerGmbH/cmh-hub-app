@@ -1,6 +1,7 @@
 // 페이지 오른쪽 클릭 메뉴 — Electron 은 기본 메뉴를 주지 않는다(2026-10-04 사장님 «마우스 오른쪽 키 → 메뉴가 랜더링 안됨»).
 // 어드민 · 네이버 view(A02)에 붙인다. 페이지에 아무것도 넣지 않는다(preload 0 그대로) — main 의 `context-menu` 이벤트와 Menu.popup 만 쓴다.
-// 개발자 도구(검사)는 넣지 않는다 — 자동화 통로 흔적(U07 8-3)이고 업체 직원에게 필요 없다.
+// 맨 끝 «검사»(개발자 도구 · 2026-10-05 사장님 «"검사" 추가해줘»). 옛 결정(«넣지 않는다» · U07 8-3)을 사장님 지시가 바꿨다.
+// 개발자 도구는 원격 디버깅 포트(CDP 가드 대상)를 열지 않는다. 다만 네이버 페이지에서 열어 두면 창 크기 · 시간 차로 «열림»이 보일 수 있다.
 import { clipboard, Menu, type MenuItemConstructorOptions, type WebContents } from 'electron';
 import type { TabKind } from '@cmh-hub-app/contracts';
 import { credentialMenuFor, type CredentialMenu } from './credentials/credential-menu.js';
@@ -15,7 +16,7 @@ function menuText(text: string): string {
 
 export function buildContextMenuTemplate(
   params: Electron.ContextMenuParams,
-  wc: Pick<WebContents, 'navigationHistory' | 'reload' | 'replaceMisspelling' | 'copyImageAt' | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll'>,
+  wc: Pick<WebContents, 'navigationHistory' | 'reload' | 'replaceMisspelling' | 'copyImageAt' | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll' | 'inspectElement'>,
   credential: CredentialMenu | null = null,
 ): MenuItemConstructorOptions[] {
   const items: MenuItemConstructorOptions[] = [];
@@ -78,6 +79,8 @@ export function buildContextMenuTemplate(
     { label: '뒤로', accelerator: 'Alt+Left', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
     { label: '앞으로', accelerator: 'Alt+Right', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
     { label: '새로고침', accelerator: 'F5', click: () => wc.reload() },
+    { type: 'separator' },
+    { label: '검사', click: () => wc.inspectElement(params.x, params.y) },
   );
   return items;
 }

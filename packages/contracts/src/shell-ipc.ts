@@ -33,6 +33,8 @@ export type ShellCommand =
   | { cmd: 'closeTab'; tabId: string; keepShellFocus?: boolean }
   | { cmd: 'activateTab'; tabId: string; keepShellFocus?: boolean }
   | { cmd: 'reloadTab'; tabId: string }
+  /** 탭 줄 왼쪽 뒤로 · 앞으로 · 새로고침 단추(2026-10-05 사장님 «크롬처럼 refresh, 앞으로, 뒤로 버튼이 없어») */
+  | { cmd: 'navigate'; tabId: string; action: 'back' | 'forward' | 'reload' }
   | { cmd: 'aiTaskStop'; paneId: string }
   | { cmd: 'update.download' }
   | { cmd: 'update.install' }
@@ -67,6 +69,9 @@ export interface ShellPaneView {
   aiTask: AiTaskBand | null;
   /** pane 수가 상한이면 false — 셸이 split 단추를 끈다 */
   splitAllowed: boolean;
+  /** 활성 탭의 방문 기록 — 뒤로 · 앞으로 단추를 켜고 끈다 */
+  canGoBack: boolean;
+  canGoForward: boolean;
 }
 
 export interface ShellState {

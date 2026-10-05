@@ -245,6 +245,7 @@ export class LayoutEngine implements LayoutEngineApi {
       // 아래는 트리를 바꾸지 않는다 — window 쪽이 처리한다
       case 'shell.popup':
       case 'reloadTab':
+      case 'navigate':
       case 'aiTaskStop':
       case 'update.download':
       case 'update.install':

@@ -3,6 +3,7 @@ import { shell, WebContentsView } from 'electron';
 import type { TabRecord } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../config.js';
 import { attachContextMenu } from './context-menu.js';
+import { watchLoginFieldFocus } from './credentials/credential-focus-watch.js';
 import { isAllowedUrl } from './url-policy.js';
 
 export interface TabViewEvents {
@@ -55,6 +56,7 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   wc.on('focus', () => events.onFocus(tab.id));
 
   attachContextMenu(wc, tab.kind); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
+  watchLoginFieldFocus(wc, tab.kind, () => view.getBounds()); // 로그인 칸 왼쪽 클릭 → 계정 목록(U08b · 2026-10-05)
   void wc.loadURL(tab.url);
   return view;
 }

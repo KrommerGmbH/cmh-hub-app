@@ -126,6 +126,15 @@ export class ShellWindow {
       case 'reloadTab':
         this.views.get(cmd.tabId)?.webContents.reload();
         return;
+      case 'navigate': {
+        // 탭 줄 뒤로 · 앞으로 · 새로고침(2026-10-05) — 기록이 없으면 아무것도 안 한다(셸 단추도 꺼져 있다)
+        const tabWc = this.views.get(cmd.tabId)?.webContents;
+        if (!tabWc || tabWc.isDestroyed()) return;
+        if (cmd.action === 'reload') tabWc.reload();
+        else if (cmd.action === 'back' && tabWc.navigationHistory.canGoBack()) tabWc.navigationHistory.goBack();
+        else if (cmd.action === 'forward' && tabWc.navigationHistory.canGoForward()) tabWc.navigationHistory.goForward();
+        return;
+      }
       case 'update.download':
       case 'update.install':
       case 'update.later':
@@ -250,7 +259,13 @@ export class ShellWindow {
   private sendState(): void {
     const wc = this.shellView.webContents;
     if (wc.isDestroyed()) return;
-    wc.send(SHELL_IPC.state, buildState(this.engine, this.geometry, this.window, this.update));
+    wc.send(SHELL_IPC.state, buildState(this.engine, this.geometry, this.window, this.update, (tabId) => this.historyOf(tabId)));
+  }
+
+  private historyOf(tabId: string): { canGoBack: boolean; canGoForward: boolean } | undefined {
+    const tabWc = this.views.get(tabId)?.webContents;
+    if (!tabWc || tabWc.isDestroyed()) return undefined;
+    return { canGoBack: tabWc.navigationHistory.canGoBack(), canGoForward: tabWc.navigationHistory.canGoForward() };
   }
 }
 
