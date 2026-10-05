@@ -25,4 +25,28 @@ export const APP_CONFIG = {
     small: 'hf:unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL',
   },
   adminPartition: 'persist:admin',
+  /**
+   * U08 저장된 계정 자동입력(2026-10-05 사장님 «크롬처럼 아이디 · 비밀번호 넣게») — 로그인 페이지 표. 빌드 고정(A02 · 앱은 DB 를 안 읽는다).
+   * admin 선택자 = 2026-10-04 Playwright 로그인 실측 · naver = DB `cmh_ai_platform.login_flow`(accounts.commerce.naver.com · loginUrl 경로 /login).
+   * 호스트 + 경로 + (admin) 해시로 로그인 화면만 가른다 — 같은 호스트의 회원가입 · 비밀번호 변경 화면에서는 안 뜬다(제미나이 검수 2026-10-05).
+   * nid.naver.com(네이버 아이디 로그인)은 경로 · 칸을 재지 않아 넣지 않았다 — 재면 한 줄 더한다.
+   */
+  loginPages: [
+    {
+      kind: 'admin',
+      hosts: ['testumgebung.my-mik.de'],
+      pathPrefix: '/admin',
+      hashPrefix: '#/login',
+      usernameSelectors: ['#sw-field--username'],
+      passwordSelectors: ['#sw-field--password'],
+    },
+    {
+      kind: 'naver',
+      hosts: ['accounts.commerce.naver.com'],
+      pathPrefix: '/login',
+      hashPrefix: null,
+      usernameSelectors: ['input[placeholder="아이디 또는 이메일 주소"]', '#id'],
+      passwordSelectors: ['input[type="password"]', '#pw'],
+    },
+  ],
 } as const;

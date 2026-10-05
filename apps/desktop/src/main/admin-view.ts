@@ -54,7 +54,7 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   wc.on('did-navigate-in-page', (_e, url) => events.onUrl(tab.id, url));
   wc.on('focus', () => events.onFocus(tab.id));
 
-  attachContextMenu(wc); // 오른쪽 클릭 메뉴(2026-10-04)
+  attachContextMenu(wc, tab.kind); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
   void wc.loadURL(tab.url);
   return view;
 }

@@ -1,0 +1,127 @@
+// U08 검증 — CMH_HUB_CRED_CHECK=1 (개발판만). 쓰고 버리는 메모리 세션(persist: 없음)에서 어드민 · 네이버 로그인 화면을 열고
+// ①칸 찾기 ②오른쪽 클릭 메뉴 이벤트 ③가짜 계정 넣기 ④safeStorage 저장 왕복을 재서 `[cred-check]` 줄로 찍고 앱을 끈다.
+// 로그인 단추는 누르지 않는다. 사람 앱의 persist:admin · persist:naver · credentials.json 은 건드리지 않는다.
+import { app, safeStorage, WebContentsView, type BaseWindow, type WebContents } from 'electron';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { TabKind } from '@cmh-hub-app/contracts';
+import { fillSavedCredential, readFieldState } from './credential-filler.js';
+import { CredentialStore } from './credential-store.js';
+import { findLoginPage, matchLoginFieldClick } from './login-pages.js';
+
+const FAKE_USERNAME = 'cred-check-user';
+const FAKE_PASSWORD = 'NotReal-0000';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForFields(wc: WebContents, kind: TabKind, timeoutMs: number): Promise<boolean> {
+  const page = findLoginPage(kind, wc.getURL());
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const s = page ? await readFieldState(wc, page) : null;
+    if (s?.username && s.password) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+async function checkPage(window: BaseWindow, kind: TabKind, url: string): Promise<Record<string, unknown>> {
+  const view = new WebContentsView({ webPreferences: { partition: `cred-check-${kind}`, sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  window.contentView.addChildView(view);
+  view.setBounds({ x: 0, y: 40, width: 1100, height: 760 });
+  const wc = view.webContents;
+  const out: Record<string, unknown> = { kind };
+  try {
+    await wc.loadURL(url).catch(() => undefined); // SPA 리다이렉트로 reject 될 수 있다 — 칸이 뜨는지로 본다
+    out['url'] = wc.getURL();
+    out['fieldsFound'] = await waitForFields(wc, kind, 25_000);
+    const page = findLoginPage(kind, wc.getURL());
+    out['loginPageMatched'] = page !== null;
+    if (!page || out['fieldsFound'] !== true) return out;
+
+    // 오른쪽 클릭 — 페이지가 contextmenu 를 막으면 이 이벤트가 안 온다(결정서 D7-4)
+    const first = await readFieldState(wc, page);
+    const menu = new Promise<Electron.ContextMenuParams | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), 3000);
+      wc.once('context-menu', (_e, params) => { clearTimeout(timer); resolve(params); });
+    });
+    wc.focus();
+    const p = first?.username ?? { x: 0, y: 0 };
+    wc.sendInputEvent({ type: 'mouseDown', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'right', clickCount: 1 });
+    const params = await menu;
+    out['contextMenuFired'] = params !== null;
+    out['formControlType'] = params?.formControlType ?? null;
+    out['menuWouldShowAccounts'] = params ? matchLoginFieldClick(kind, params) !== null : false;
+
+    // 우리 서버(어드민)에서만 — Vue v-model 이 듣는 input 이벤트가 «신뢰된» 것으로 났는지 본다. 네이버 페이지에는 안 넣는다
+    if (kind === 'admin') {
+      await wc.executeJavaScript("window.__credCheckInputs = []; document.addEventListener('input', (e) => window.__credCheckInputs.push({ id: e.target && e.target.id, trusted: e.isTrusted }), true); 0");
+    }
+    out['fillResult'] = await fillSavedCredential(wc, page, FAKE_USERNAME, FAKE_PASSWORD);
+    if (kind === 'admin') {
+      const inputs = (await wc.executeJavaScript('window.__credCheckInputs')) as Array<{ id: string; trusted: boolean }>;
+      out['trustedInputEvents'] = [...new Set(inputs.filter((i) => i.trusted).map((i) => i.id))];
+      out['untrustedInputEvents'] = inputs.filter((i) => !i.trusted).length;
+    }
+    await sleep(1000); // React · Vue 가 다시 그린 뒤에도 값이 남는지
+    const after = await readFieldState(wc, page, true);
+    out['usernameInField'] = after?.usernameValue === FAKE_USERNAME;
+    out['passwordInField'] = after?.passwordValue === FAKE_PASSWORD;
+    out['passwordFieldIsPasswordType'] = after?.passwordIsPasswordType ?? null;
+
+    // 줌 125%(Ctrl+휠) — CSS px 좌표에 배율을 곱해 클릭하는지(제미나이 검수 2026-10-05)
+    if (kind === 'admin') {
+      wc.setZoomFactor(1.25);
+      await sleep(800);
+      const zoomFill = await fillSavedCredential(wc, page, 'zoom-user', 'Zoom-1111');
+      await sleep(500);
+      const z = await readFieldState(wc, page, true);
+      out['zoom125'] = { fillResult: zoomFill, usernameInField: z?.usernameValue === 'zoom-user', passwordInField: z?.passwordValue === 'Zoom-1111' };
+      wc.setZoomFactor(1);
+    }
+    return out;
+  } finally {
+    window.contentView.removeChildView(view);
+    if (!wc.isDestroyed()) wc.close();
+  }
+}
+
+function checkStore(): Record<string, unknown> {
+  const dir = mkdtempSync(join(tmpdir(), 'cred-check-'));
+  try {
+    const file = join(dir, 'credentials.json');
+    const store = new CredentialStore(file, safeStorage);
+    const saved = store.save('admin', FAKE_USERNAME, FAKE_PASSWORD);
+    const raw = readFileSync(file, 'utf8');
+    return {
+      encryptionAvailable: safeStorage.isEncryptionAvailable(),
+      saved,
+      roundTrip: store.takePasswordForFill('admin', FAKE_USERNAME) === FAKE_PASSWORD,
+      plaintextInFile: raw.includes(FAKE_USERNAME) || raw.includes(FAKE_PASSWORD),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export function runCredentialCheckIfRequested(window: BaseWindow): void {
+  if (!process.env['CMH_HUB_CRED_CHECK'] || app.isPackaged) return;
+  void (async () => {
+    try {
+      console.info('[cred-check] store', JSON.stringify(checkStore()));
+      console.info('[cred-check] admin', JSON.stringify(await checkPage(window, 'admin', 'https://testumgebung.my-mik.de/admin#/login/')));
+      if (process.env['CMH_HUB_CRED_CHECK'] === 'all') {
+        const naverLogin = 'https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback';
+        console.info('[cred-check] naver', JSON.stringify(await checkPage(window, 'naver', naverLogin)));
+      }
+    } catch (error) {
+      console.error('[cred-check] 실패', error);
+    } finally {
+      setTimeout(() => app.quit(), 500);
+    }
+  })();
+}

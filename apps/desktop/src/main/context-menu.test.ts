@@ -32,6 +32,23 @@ describe('오른쪽 클릭 메뉴(2026-10-04 «마우스 오른쪽 키 → 메�
     expect(labels(buildContextMenuTemplate(params({ linkURL: 'javascript:void(0)' }), fakeWc()))).not.toContain('링크 주소 복사');
   });
 
+  it('로그인 칸: 계정 넣기(5개까지) · 이 계정 저장 · 지우기 하위 메뉴가 맨 위 · & 는 그대로 보이게', () => {
+    const accounts = ['a&b', 'u2', 'u3', 'u4', 'u5', 'u6'].map((username) => ({ username, lastUsedAt: '' }));
+    const filled: string[] = [];
+    const credential = { accounts, onFill: (u: string) => filled.push(u), onSave: noop, onRemove: noop };
+    const items = buildContextMenuTemplate(params({ isEditable: true }), fakeWc(), credential);
+    const l = labels(items);
+    expect(l.slice(0, 8)).toEqual(['계정 넣기: a&&b', '계정 넣기: u2', '계정 넣기: u3', '계정 넣기: u4', '계정 넣기: u5', '이 계정 저장', '저장된 계정 지우기', '-separator-']);
+    expect((items[6]?.submenu as unknown[]).length).toBe(6);
+    (items[0]?.click as () => void)();
+    expect(filled).toEqual(['a&b']);
+  });
+
+  it('로그인 칸: 저장된 계정이 없으면 «이 계정 저장»만', () => {
+    const credential = { accounts: [], onFill: noop, onSave: noop, onRemove: noop };
+    expect(labels(buildContextMenuTemplate(params({ isEditable: true }), fakeWc(), credential)).slice(0, 2)).toEqual(['이 계정 저장', '-separator-']);
+  });
+
   it('이미지 · 맞춤법 고칠 말', () => {
     const l = labels(buildContextMenuTemplate(params({ mediaType: 'image', srcURL: 'https://x.test/i.png', misspelledWord: 'teh', dictionarySuggestions: ['the', 'ten'] }), fakeWc()));
     expect(l.slice(0, 2)).toEqual(['the', 'ten']);
