@@ -11,6 +11,8 @@ export function isAllowedUrl(kind: TabKind, raw: string): boolean {
     return false;
   }
   if (u.protocol === 'about:') return true;
+  // 빈 탭은 아무 http(s) — 사람이 주소창에 친 곳(2026-10-05). 어드민 · 네이버 탭은 아래처럼 고정 호스트만(A02)
+  if (kind === 'web') return u.protocol === 'https:' || u.protocol === 'http:';
   if (u.protocol !== 'https:') return false;
   const host = u.hostname.toLowerCase();
   if (kind === 'admin') return (APP_CONFIG.adminHosts as readonly string[]).includes(host);

@@ -14,7 +14,7 @@ import { detectLayoutPreset } from '../layout/layout-engine.js';
 /** 탭 view 의 방문 기록 — view 가 없거나 닫혔으면 undefined */
 export type TabHistoryOf = (tabId: string) => { canGoBack: boolean; canGoForward: boolean } | undefined;
 
-export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState, historyOf: TabHistoryOf): ShellState {
+export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState, historyOf: TabHistoryOf, focusOmniboxPaneId: string | null = null): ShellState {
   const tree = engine.getTree();
   const paneCount = engine.paneCount();
   const panes: ShellPaneView[] = [];
@@ -22,6 +22,7 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
     const pane = engine.getPane(g.paneId);
     if (!pane) continue;
     const history = pane.activeTabId ? historyOf(pane.activeTabId) : undefined;
+    const activeTab = pane.activeTabId ? engine.getTab(pane.activeTabId) : undefined;
     panes.push({
       id: pane.id,
       stripRect: g.stripRect,
@@ -35,6 +36,8 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
       splitAllowed: paneCount < LAYOUT_LIMITS.maxPanes,
       canGoBack: history?.canGoBack ?? false,
       canGoForward: history?.canGoForward ?? false,
+      // 빈 탭만 주소창 — about:blank 은 빈 칸으로
+      omniboxUrl: activeTab?.kind === 'web' ? (activeTab.url === 'about:blank' ? '' : activeTab.url) : null,
     });
   }
   const [width, height] = window.getContentSize();
@@ -50,5 +53,6 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
     platform: process.platform === 'darwin' ? 'darwin' : process.platform === 'linux' ? 'linux' : 'win32',
     window: { width: width ?? 0, height: height ?? 0, maximized: window.isMaximized() },
     newTabChoices: APP_CONFIG.newTabChoices.map((c) => ({ label: c.label, kind: c.kind, url: c.url })),
+    focusOmniboxPaneId,
   };
 }

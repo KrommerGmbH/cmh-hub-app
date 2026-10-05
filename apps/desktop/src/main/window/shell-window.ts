@@ -18,6 +18,7 @@ import { LayoutStore } from '../layout/layout-store.js';
 import { attachShortcuts } from '../shortcuts.js';
 import { buildState } from './state-builder.js';
 import { ViewManager } from './view-manager.js';
+import { resolveOmniboxInput } from '../omnibox.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -41,6 +42,8 @@ export class ShellWindow {
   private relayoutTimer: NodeJS.Timeout | null = null;
   /** 셸 팝오버가 열려 셸이 맨 위인가 — 그동안 새 탭 view 가 생기면(단축키) 셸을 다시 올린다 */
   private shellOnTop = false;
+  /** 다음 상태 한 번에만 실어 보낼 «주소창에 포커스» pane(빈 탭을 막 연 때) */
+  private focusOmniboxPaneId: string | null = null;
 
   private constructor() {
     this.store = new LayoutStore(join(app.getPath('userData'), 'layout.json'));
@@ -84,6 +87,10 @@ export class ShellWindow {
         },
         onCloseInspector: (tabId) => this.views.closeInspector(tabId, () => this.relayout()),
         isInspecting: (tabId) => this.views.isInspecting(tabId),
+        onOpenWebTab: (tabId, url) => {
+          const pane = this.engine.getPaneOfTab(tabId);
+          if (pane) this.handleCommand({ cmd: 'newTab', paneId: pane.id, kind: 'web', url });
+        },
         onFocus: (tabId) => {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane && pane.id !== this.engine.getTree().focusedPaneId) this.handleCommand({ cmd: 'focusPane', paneId: pane.id });
@@ -143,6 +150,16 @@ export class ShellWindow {
         else if (cmd.action === 'forward' && tabWc.navigationHistory.canGoForward()) tabWc.navigationHistory.goForward();
         return;
       }
+      case 'omnibox': {
+        // 빈 탭 주소창 Enter(2026-10-05) — 빈 탭만 · 주소면 그리로 · 아니면 Google 검색. 어드민 · 네이버 탭은 주소를 안 받는다(A02)
+        const tab = this.engine.getTab(cmd.tabId);
+        const tabWc = this.views.get(cmd.tabId)?.webContents;
+        const url = resolveOmniboxInput(cmd.text);
+        if (tab?.kind !== 'web' || !tabWc || tabWc.isDestroyed() || !url) return;
+        void tabWc.loadURL(url).catch(() => undefined); // 못 여는 주소는 페이지가 오류 화면을 보인다
+        tabWc.focus();
+        return;
+      }
       case 'update.download':
       case 'update.install':
       case 'update.later':
@@ -175,8 +192,13 @@ export class ShellWindow {
     if (change.geometryChanged || change.createdTabIds.length > 0 || change.activeChangedPaneIds.length > 0) {
       this.relayout();
     }
-    const keepShellFocus = (cmd.cmd === 'activateTab' || cmd.cmd === 'closeTab') && cmd.keepShellFocus === true;
-    if (change.focusedPaneId && !keepShellFocus) this.focusActiveViewOf(change.focusedPaneId);
+    const keepShellFocus = (cmd.cmd === 'activateTab' || cmd.cmd === 'closeTab' || cmd.cmd === 'focusPane') && cmd.keepShellFocus === true;
+    // 빈 탭을 «+» 로 새로 열면 크롬처럼 주소창에 키보드 포커스 — 페이지가 아니라 셸에
+    const blankWebTab = cmd.cmd === 'newTab' && command.cmd === 'newTab' && command.kind === 'web' && (command.url ?? 'about:blank') === 'about:blank';
+    if (blankWebTab && change.focusedPaneId) {
+      this.focusOmniboxPaneId = change.focusedPaneId;
+      this.shellView.webContents.focus();
+    } else if (change.focusedPaneId && !keepShellFocus) this.focusActiveViewOf(change.focusedPaneId);
     this.store.save(this.engine.getTree());
     this.sendState();
   }
@@ -276,7 +298,8 @@ export class ShellWindow {
   private sendState(): void {
     const wc = this.shellView.webContents;
     if (wc.isDestroyed()) return;
-    wc.send(SHELL_IPC.state, buildState(this.engine, this.geometry, this.window, this.update, (tabId) => this.historyOf(tabId)));
+    wc.send(SHELL_IPC.state, buildState(this.engine, this.geometry, this.window, this.update, (tabId) => this.historyOf(tabId), this.focusOmniboxPaneId));
+    this.focusOmniboxPaneId = null;
   }
 
   private historyOf(tabId: string): { canGoBack: boolean; canGoForward: boolean } | undefined {

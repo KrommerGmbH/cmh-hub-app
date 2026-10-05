@@ -147,7 +147,7 @@ export class LayoutEngine implements LayoutEngineApi {
       if (!isRecord(raw)) return false;
       const { id, kind, url, title, favicon } = raw;
       if (id !== key) return false;
-      if (kind !== 'admin' && kind !== 'naver') return false;
+      if (kind !== 'admin' && kind !== 'naver' && kind !== 'web') return false;
       if (typeof url !== 'string' || typeof title !== 'string') return false;
       if (favicon !== null && typeof favicon !== 'string') return false;
       // loading 은 지난 실행의 값이라 버린다(복원 직후엔 아직 안 불렀다)
@@ -246,6 +246,7 @@ export class LayoutEngine implements LayoutEngineApi {
       case 'shell.popup':
       case 'reloadTab':
       case 'navigate':
+      case 'omnibox':
       case 'aiTaskStop':
       case 'update.download':
       case 'update.install':

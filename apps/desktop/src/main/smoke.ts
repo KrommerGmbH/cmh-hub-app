@@ -302,6 +302,30 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     }
   }
 
+  // ⑪ 빈 탭 · 주소창(2026-10-05 «빈 탭 · url 넣고 크롬처럼 검색») — «+» 메뉴와 같은 명령 → 주소창 포커스 → 주소 · 검색
+  {
+    const paneId = w.focusedPaneId();
+    if (!paneId) {
+      log('빈 탭 · 주소창', 'FAIL 포커스 pane 없음');
+    } else {
+      w.handleCommand({ cmd: 'newTab', paneId, kind: 'web', url: 'about:blank' });
+      const omnibox = `document.querySelector('.strip.pane-focused .strip-omnibox')`;
+      const shown = await waitFor(() => shellJs<boolean>(`!!${omnibox} && !${omnibox}.hidden`), 4000);
+      const focused = await waitFor(() => shellJs<boolean>(`document.activeElement === ${omnibox}`), 4000);
+      const webTabId = w.activeTabOfFocusedPane()?.activeTabId;
+      const webWc = webTabId ? w.views.get(webTabId)?.webContents : undefined;
+      const enter = (text: string): Promise<unknown> => shellJs(`(() => { const i = ${omnibox}; i.focus(); i.value = ${JSON.stringify(text)}; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+      await enter('example.com');
+      const wentToUrl = await waitFor(() => (webWc?.getURL() ?? '') === 'https://example.com/', 15000);
+      await enter('electron devtools');
+      const searched = await waitFor(() => (webWc?.getURL() ?? '').startsWith('https://www.google.com/search?q=electron') || (webWc?.getURL() ?? '').includes('google.'), 15000);
+      const omniboxShowsUrl = await waitFor(() => shellJs<boolean>(`${omnibox}.value.includes('google.')`), 6000);
+      const ok = shown && focused && wentToUrl && searched && omniboxShowsUrl;
+      log('빈 탭 · 주소창', `${ok ? 'OK' : 'FAIL'} 주소창 보임 ${shown} · 포커스 ${focused} · example.com → ${wentToUrl} · 검색 → ${searched} · 주소창에 지금 주소 ${omniboxShowsUrl} · ${(webWc?.getURL() ?? '').slice(0, 50)}`);
+      if (webTabId) w.handleCommand({ cmd: 'closeTab', tabId: webTabId });
+    }
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

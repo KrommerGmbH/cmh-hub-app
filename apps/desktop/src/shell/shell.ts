@@ -84,9 +84,29 @@ function createStrip(paneId: string): HTMLElement {
       if (tabId) send({ cmd: 'navigate', tabId, action });
     });
   }
-  strip.addEventListener('mousedown', () => {
+  // 빈 탭 주소창(2026-10-05) — Enter = 주소면 그리로 · 아니면 검색(main 이 가른다) · Esc = 원래 주소로 되돌리고 페이지로
+  const omnibox = strip.querySelector<HTMLInputElement>('.strip-omnibox')!;
+  omnibox.addEventListener('keydown', (e) => {
+    const tabId = lastState?.panes.find((p) => p.id === paneId)?.tabs.find((t) => t.active)?.id;
+    if (e.key === 'Enter' && tabId) {
+      e.preventDefault();
+      send({ cmd: 'omnibox', tabId, text: omnibox.value });
+      omnibox.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      omnibox.value = lastState?.panes.find((p) => p.id === paneId)?.omniboxUrl ?? '';
+      omnibox.blur();
+    }
+  });
+  omnibox.addEventListener('focus', () => omnibox.select());
+  // 치다가 페이지 등을 눌러 포커스가 빠지면 지금 주소로 되돌린다 — 친 글이 남아 실제 주소와 달라 보이지 않게(제미나이 검수 2026-10-05)
+  omnibox.addEventListener('blur', () => {
+    omnibox.value = lastState?.panes.find((p) => p.id === paneId)?.omniboxUrl ?? '';
+  });
+  strip.addEventListener('mousedown', (e) => {
     const pane = lastState?.panes.find((p) => p.id === paneId);
-    if (pane && !pane.focused) send({ cmd: 'focusPane', paneId });
+    // 주소창을 누른 것이면 키보드 포커스를 셸(주소창)에 남긴다 — 안 그러면 main 이 페이지로 옮겨 글자가 안 들어간다
+    if (pane && !pane.focused) send({ cmd: 'focusPane', paneId, keepShellFocus: e.target === omnibox });
   });
   panesEl.appendChild(strip);
   stripEls.set(paneId, strip);
@@ -110,7 +130,7 @@ function renderTab(tab: ShellState['panes'][number]['tabs'][number], paneId: str
     send({ cmd: 'activateTab', tabId: id, keepShellFocus: true });
   });
   el.title = tab.title;
-  el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : '불러오는 중');
+  el.querySelector<HTMLElement>('.tab-title')!.textContent = tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? '새 탭' : '불러오는 중');
   const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
   const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
   if (tab.loading) spinner.hidden = false;
@@ -151,6 +171,11 @@ function upsertStrip(pane: ShellState['panes'][number]): void {
   strip.querySelector<HTMLButtonElement>('.strip-back')!.disabled = !pane.canGoBack;
   strip.querySelector<HTMLButtonElement>('.strip-forward')!.disabled = !pane.canGoForward;
   strip.querySelector<HTMLButtonElement>('.strip-reload')!.disabled = !pane.tabs.some((t) => t.active);
+  const omnibox = strip.querySelector<HTMLInputElement>('.strip-omnibox')!;
+  omnibox.hidden = pane.omniboxUrl === null;
+  strip.classList.toggle('has-omnibox', pane.omniboxUrl !== null);
+  // 치는 중(포커스)에는 덮어쓰지 않는다 — 페이지 이동 · 제목 상태가 와도 친 글이 지워지지 않게
+  if (pane.omniboxUrl !== null && document.activeElement !== omnibox) omnibox.value = pane.omniboxUrl;
   // 탭 목록은 통째로 — 드래그와 무관하고 수가 적다. 다만 키보드 포커스가 그 안에 있었으면 같은 탭(없으면 활성 탭)에 되돌린다
   // (제목 · 로딩 상태가 올 때마다 다시 그려 포커스가 body 로 빠지던 결함 · 검수 2026-10-03)
   const tabsEl = strip.querySelector<HTMLElement>('.strip-tabs')!;
@@ -254,6 +279,7 @@ window.addEventListener('pointercancel', onWindowPointerEnd);
 // ───────────────────────── «+» 메뉴 ─────────────────────────
 
 const ADMIN_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>';
+const WEB_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/></svg>';
 const NAVER_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 6.5 3.5 2.5h9l1 4M2.5 6.5h11v7h-11z"/><path d="M6.5 13.5v-4h3v4"/></svg>';
 
 
@@ -264,7 +290,7 @@ function openNewTabMenu(state: ShellState, paneId: string, anchor: DOMRect): voi
     item.className = 'menu-item';
     item.setAttribute('role', 'menuitem');
     // 아이콘 · 이름 · (네이버만) 꼬리표 — 옛 «어드민» 꼬리표는 AI 채팅에도 붙어 틀렸다(디자인 검토 2026-10-03)
-    item.innerHTML = `<span class="menu-ico">${choice.kind === 'naver' ? NAVER_ICON : ADMIN_ICON}</span><span>${escapeHtml(choice.label)}</span>${choice.kind === 'naver' ? '<span class="kind">네이버</span>' : ''}`;
+    item.innerHTML = `<span class="menu-ico">${choice.kind === 'naver' ? NAVER_ICON : choice.kind === 'web' ? WEB_ICON : ADMIN_ICON}</span><span>${escapeHtml(choice.label)}</span>${choice.kind === 'naver' ? '<span class="kind">네이버</span>' : ''}`;
     item.addEventListener('click', () => {
       closeMenu('pick');
       send({ cmd: 'newTab', paneId, kind: choice.kind, url: choice.url });
@@ -589,6 +615,8 @@ function render(state: ShellState): void {
     }
   }
   for (const pane of state.panes) upsertStrip(pane);
+  // 빈 탭을 막 열었으면 크롬처럼 그 주소창에 포커스(main 이 셸 view 에 키보드 포커스를 이미 줬다)
+  if (state.focusOmniboxPaneId) stripEls.get(state.focusOmniboxPaneId)?.querySelector<HTMLInputElement>('.strip-omnibox')?.focus();
 
   const sashIds = new Set(state.sashes.map((s) => s.id));
   for (const [id, el] of sashEls) {
@@ -645,7 +673,7 @@ function renderDemo(): void {
   const demo: ShellState = {
     panes: [
       {
-        id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false,
+        id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false, omniboxUrl: null,
         stripRect: { x: 0, y: 40, width: left, height: 40 },
         contentRect: { x: 0, y: 80, width: left, height: h - 80 },
         tabs: [
@@ -654,7 +682,7 @@ function renderDemo(): void {
         ],
       },
       {
-        id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false,
+        id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false, omniboxUrl: null,
         stripRect: { x: left + 4, y: 40, width: w - left - 4, height: 40 },
         contentRect: { x: left + 4, y: 80, width: w - left - 4, height: h - 80 },
         tabs: [{ id: 't3', kind: 'naver', title: '스마트스토어센터 · 상품 목록', favicon: null, loading: true, active: true }],
@@ -665,6 +693,7 @@ function renderDemo(): void {
     update: { state: 'none' }, serverHost: 'demo.local', platform: 'win32',
     window: { width: w, height: h, maximized: false },
     newTabChoices: [{ label: '대시보드', kind: 'admin', url: 'about:blank' }],
+    focusOmniboxPaneId: null,
   };
   render(demo);
 }

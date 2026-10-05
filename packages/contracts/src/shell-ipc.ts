@@ -26,7 +26,8 @@ export type ShellCommand =
   | { cmd: 'closePane'; paneId: string }
   | { cmd: 'moveTab'; tabId: string; toPaneId: string; index?: number }
   | { cmd: 'reorderTab'; tabId: string; index: number }
-  | { cmd: 'focusPane'; paneId: string }
+  /** keepShellFocus — 빈 탭 주소창을 눌러 pane 을 바꿀 때 키보드 포커스를 셸(주소창)에 둔다 */
+  | { cmd: 'focusPane'; paneId: string; keepShellFocus?: boolean }
   | { cmd: 'resize'; sashId: string; ratio: number }
   | { cmd: 'newTab'; paneId: string; kind?: TabKind; url?: string }
   /** keepShellFocus — 셸 키보드(← → · Delete)로 보낸 것. main 이 키보드 포커스를 페이지로 옮기지 않는다(검수 2026-10-03) */
@@ -35,6 +36,8 @@ export type ShellCommand =
   | { cmd: 'reloadTab'; tabId: string }
   /** 탭 줄 왼쪽 뒤로 · 앞으로 · 새로고침 단추(2026-10-05 사장님 «크롬처럼 refresh, 앞으로, 뒤로 버튼이 없어») */
   | { cmd: 'navigate'; tabId: string; action: 'back' | 'forward' | 'reload' }
+  /** 빈 탭 주소창에서 Enter — 주소면 그리로 · 아니면 검색(main 의 resolveOmniboxInput 이 가른다) */
+  | { cmd: 'omnibox'; tabId: string; text: string }
   | { cmd: 'aiTaskStop'; paneId: string }
   | { cmd: 'update.download' }
   | { cmd: 'update.install' }
@@ -72,6 +75,8 @@ export interface ShellPaneView {
   /** 활성 탭의 방문 기록 — 뒤로 · 앞으로 단추를 켜고 끈다 */
   canGoBack: boolean;
   canGoForward: boolean;
+  /** 활성 탭이 빈 탭(web)일 때 그 주소 — 셸이 주소창을 보이고 채운다 · 다른 종류면 null(주소창 없음) */
+  omniboxUrl: string | null;
 }
 
 export interface ShellState {
@@ -88,6 +93,8 @@ export interface ShellState {
   window: { width: number; height: number; maximized: boolean };
   /** «+» 메뉴 항목 — 서버 어드민 라우트(대시보드 · AI 채팅 · 네이버 등) */
   newTabChoices: Array<{ label: string; kind: TabKind; url: string }>;
+  /** 방금 만든 빈 탭의 pane — 셸이 그 주소창에 키보드 포커스를 준다(한 번만 · 다음 상태에서는 null) */
+  focusOmniboxPaneId: string | null;
 }
 
 /** 셸 preload 가 contextBridge 로 노출하는 것 — 이 둘뿐(U01) */

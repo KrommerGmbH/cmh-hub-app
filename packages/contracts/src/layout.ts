@@ -16,8 +16,11 @@ export const LAYOUT_PRESET_ORDER: readonly LayoutPreset[] = ['single', 'columns2
 
 export const LAYOUT_PRESET_PANES: Readonly<Record<LayoutPreset, number>> = { single: 1, columns2: 2, rows2: 2, top2bottom1: 3, top1bottom2: 3, left2right1: 3, left1right2: 3, grid4: 4 };
 
-/** 탭 종류 — 둘 다 서버·네이버 페이지(preload 0). 챗봇은 admin 탭(cmh-ai-chat 라우트). PLAN U02 · U06 */
-export type TabKind = 'admin' | 'naver';
+/**
+ * 탭 종류 — 셋 다 preload 0. 챗봇은 admin 탭(cmh-ai-chat 라우트). PLAN U02 · U06.
+ * web = 빈 탭(2026-10-05 사장님 «빈 탭 · url 넣고 크롬처럼 검색») — 주소창이 있고 아무 http(s) 로 간다 · 저장 공간(persist:web)이 따로라 어드민 · 네이버 로그인 쿠키 · 저장된 계정을 안 쓴다.
+ */
+export type TabKind = 'admin' | 'naver' | 'web';
 
 export interface TabRecord {
   id: string;

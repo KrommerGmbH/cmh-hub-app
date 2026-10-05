@@ -16,6 +16,14 @@ const UA_PROBE_TIMEOUT_MS = 5_000;
 
 const DENIED_PERMISSIONS = new Set(['media', 'geolocation', 'notifications', 'midi', 'midiSysex', 'pointerLock', 'openExternal', 'display-capture', 'clipboard-read']);
 
+/** 빈 탭(web)은 아무 사이트나 연다 — 권한은 «기본 거부 + 이것만 허용»(제미나이 검수 2026-10-05: 금지 목록 방식은 목록 밖 권한을 아무 사이트에 줬다) */
+const WEB_ALLOWED_PERMISSIONS = new Set(['fullscreen', 'clipboard-sanitized-write']);
+
+function allowOnlySafeWebPermissions(ses: Session): void {
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(WEB_ALLOWED_PERMISSIONS.has(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => WEB_ALLOWED_PERMISSIONS.has(permission));
+}
+
 /** 네이버 판매자센터 사용자(한국)의 언어 목록 — q 값은 Chromium 이 붙인다(Electron `session.setUserAgent` 둘째 인자) */
 export const NAVER_ACCEPT_LANGUAGES = 'ko-KR,ko,en-US,en';
 
@@ -84,6 +92,11 @@ export async function prepareSessions(): Promise<void> {
   naver.setUserAgent(chromiumLikeUserAgent(app.userAgentFallback, app.getName(), app.getVersion()), NAVER_ACCEPT_LANGUAGES);
   denyRiskyPermissions(naver);
   await addClientHintHeaders(naver, APP_CONFIG.naverPartition);
+
+  // 빈 탭(web · 2026-10-05) — 크롬 같은 UA(Electron 토막 뺌) · 위험 권한 거부 · OS 언어 그대로. 어드민 · 네이버와 쿠키를 안 나눈다
+  const web = session.fromPartition(APP_CONFIG.webPartition);
+  web.setUserAgent(chromiumLikeUserAgent(app.userAgentFallback, app.getName(), app.getVersion()), app.getPreferredSystemLanguages().join(',') || undefined);
+  allowOnlySafeWebPermissions(web);
 
   const admin = session.fromPartition(APP_CONFIG.adminPartition);
   // `--lang=ko-KR`(main.ts)은 앱 전체에 걸린다 — 서버 어드민 요청의 Accept-Language 는 OS 언어 그대로 둔다(어드민 화면 언어가 바뀌지 않게)

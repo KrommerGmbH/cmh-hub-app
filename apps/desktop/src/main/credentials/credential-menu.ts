@@ -15,7 +15,7 @@ export interface CredentialMenu {
   onRemove(username: string): void;
 }
 
-const KIND_LABEL: Record<TabKind, string> = { admin: '어드민', naver: '네이버' };
+const KIND_LABEL: Record<TabKind, string> = { admin: '어드민', naver: '네이버', web: '웹' };
 
 let store: CredentialStore | null = null;
 

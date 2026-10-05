@@ -1,4 +1,4 @@
-// 빌드에 고정되는 값(A02 — 사용자가 URL 을 넣지 않는다 · phishing 차단)
+// 빌드에 고정되는 값(A02 — 어드민 · 네이버 탭은 사용자가 URL 을 넣지 않는다 · phishing 차단. 예외는 빈 탭(web · 2026-10-05) 하나 — 따로 된 세션 · 저장된 계정 안 씀)
 export const APP_CONFIG = {
   /** 서버 어드민 호스트 — https:// 만 */
   serverOrigin: 'https://testumgebung.my-mik.de',
@@ -12,6 +12,8 @@ export const APP_CONFIG = {
   naverHostSuffixes: ['naver.com', 'naver.net', 'pstatic.net'],
   /** «+» 메뉴 — 서버 어드민 라우트(U06 챗봇 = admin 탭) */
   newTabChoices: [
+    // 빈 탭(2026-10-05) — 주소창으로 아무 http(s) · 검색. 저장 공간은 webPartition(어드민 · 네이버와 따로)
+    { label: '빈 탭', kind: 'web', url: 'about:blank' },
     { label: '대시보드', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/sw/dashboard/index' },
     // 메뉴 없는 챗봇 길(CmhAiAgent cmh.ai.chat.solo · coreRoute) — 어드민 안 챗봇(#/cmh/ai/chat/index)과 화면 부품 하나를 같이 쓴다
     { label: 'AI 채팅', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/ai/chat-solo' },
@@ -25,6 +27,10 @@ export const APP_CONFIG = {
     small: 'hf:unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL',
   },
   adminPartition: 'persist:admin',
+  /** 빈 탭(web) 세션 — 어드민 · 네이버 로그인 쿠키 · 저장된 계정과 한 바구니에 두지 않는다 */
+  webPartition: 'persist:web',
+  /** 빈 탭 주소창 검색(크롬 기본과 같은 Google) — 검색어는 encodeURIComponent 로 뒤에 붙인다 */
+  webSearchUrl: 'https://www.google.com/search?q=',
   /**
    * U08 저장된 계정 자동입력(2026-10-05 사장님 «크롬처럼 아이디 · 비밀번호 넣게») — 로그인 페이지 표. 빌드 고정(A02 · 앱은 DB 를 안 읽는다).
    * admin 선택자 = 2026-10-04 Playwright 로그인 실측 · naver = DB `cmh_ai_platform.login_flow`(accounts.commerce.naver.com · loginUrl 경로 /login).

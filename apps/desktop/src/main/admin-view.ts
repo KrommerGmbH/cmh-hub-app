@@ -17,6 +17,8 @@ export interface TabViewEvents {
   onInspect(tabId: string, x: number, y: number): void;
   onCloseInspector(tabId: string): void;
   isInspecting(tabId: string): boolean;
+  /** 빈 탭에서 «새 창으로» 링크(target=_blank · window.open) — 같은 pane 에 새 빈 탭으로(크롬의 새 탭) */
+  onOpenWebTab(tabId: string, url: string): void;
 }
 
 function openOutside(url: string): void {
@@ -24,7 +26,7 @@ function openOutside(url: string): void {
 }
 
 export function createAdminView(tab: TabRecord, events: TabViewEvents): WebContentsView {
-  const partition = tab.kind === 'naver' ? APP_CONFIG.naverPartition : APP_CONFIG.adminPartition;
+  const partition = tab.kind === 'naver' ? APP_CONFIG.naverPartition : tab.kind === 'web' ? APP_CONFIG.webPartition : APP_CONFIG.adminPartition;
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -42,7 +44,8 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
     openOutside(url);
   });
   wc.setWindowOpenHandler(({ url }) => {
-    if (isAllowedUrl(tab.kind, url)) void wc.loadURL(url);
+    if (tab.kind === 'web' && isAllowedUrl('web', url)) events.onOpenWebTab(tab.id, url);
+    else if (isAllowedUrl(tab.kind, url)) void wc.loadURL(url);
     else openOutside(url);
     return { action: 'deny' };
   });

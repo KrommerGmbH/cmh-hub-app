@@ -26,7 +26,7 @@ export function runFingerprintProbeIfRequested(w: ShellWindow): void {
   const noop = (): void => undefined;
   const view = createAdminView(
     { id: 'fingerprint-probe', kind: 'naver', url, title: 'fingerprint', favicon: null, loading: false },
-    { onTitle: noop, onFavicon: noop, onLoading: noop, onUrl: noop, onFocus: noop, onInspect: noop, onCloseInspector: noop, isInspecting: () => false },
+    { onTitle: noop, onFavicon: noop, onLoading: noop, onUrl: noop, onFocus: noop, onInspect: noop, onCloseInspector: noop, isInspecting: () => false, onOpenWebTab: noop },
   );
   w.window.contentView.addChildView(view); // 맨 위 — 실제 네이버 pane 처럼 화면에 보여야 WebGL · 화면 값이 같다
   const b = w.window.getContentBounds();
