@@ -1,6 +1,7 @@
 // 앱 진입점 — 차례: CDP 가드 → Chromium 스위치(ready 전) → ready → 세션 → IPC → 창
 import { app } from 'electron';
 import { assertNoRemoteDebugging } from './cdp-guard.js';
+import { APP_USER_MODEL_ID, ensureDevShortcuts } from './app-identity.js';
 import { installAppLogger } from './logging/app-logger.js';
 import { AppSession } from './identity/app-session.js';
 import { ensureInstallationIdentity } from './identity/installation-identity.js';
@@ -24,9 +25,10 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 // U07 8-13b — navigator.language · Intl 이 OS 표시 언어(사장님 PC 는 독일어 → "de")를 따라가 네이버 사용자 크롬(ko-KR)과 어긋났다(2026-10-03 지문 비교)
 app.commandLine.appendSwitch('lang', 'ko-KR');
 // Windows 작업 표시줄이 이 앱을 electron.exe 가 아니라 «CMH Hub» 로 묶고 창 아이콘을 쓰게(electron-builder appId 와 같은 값)
-if (process.platform === 'win32') app.setAppUserModelId('de.krommer.cmh-hub-app');
+if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
 
 app.whenReady().then(async () => {
+  ensureDevShortcuts(); // 개발판만 — 작업 표시줄 · 알림에 Electron 로고 대신 CMH Hub 아이콘(2026-10-05)
   await prepareSessions();
   registerIpc();
   // H01 · H03 — 설치 ID 와 서명은 창보다 먼저(첫 요청부터 서명이 붙게)

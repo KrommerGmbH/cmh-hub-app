@@ -3,6 +3,7 @@
 import { app, Notification, safeStorage, type WebContents } from 'electron';
 import { join } from 'node:path';
 import type { TabKind } from '@cmh-hub-app/contracts';
+import { APP_DISPLAY_NAME, APP_ICON_PNG } from '../app-identity.js';
 import { captureTypedCredential, fillSavedCredential } from './credential-filler.js';
 import { CredentialStore, type SavedAccount } from './credential-store.js';
 import { matchLoginFieldClick, type LoginPage } from './login-pages.js';
@@ -25,7 +26,20 @@ function credentialStore(): CredentialStore {
 
 /** 저장 · 지우기는 화면에 아무것도 안 바뀐다 — Windows 알림 한 줄로 알린다(아이디는 안 적는다) */
 function notify(body: string): void {
-  if (Notification.isSupported()) new Notification({ title: 'CMH Hub', body, silent: true }).show();
+  if (Notification.isSupported()) new Notification({ title: APP_DISPLAY_NAME, body, silent: true, icon: APP_ICON_PNG }).show();
+}
+
+/**
+ * 자동 저장(credential-autosave) — 로그인에 성공해 로그인 화면을 벗어난 뒤에 부른다. 새 계정이면 저장 · 비밀번호가 바뀌었으면 덮어쓴다.
+ * 이미 같은 것이 있으면 아무것도 안 한다(로그인할 때마다 알림이 뜨지 않게). 값은 로그에 안 적는다.
+ */
+export function autoSaveLoggedInAccount(kind: TabKind, username: string, password: string): void {
+  const store = credentialStore();
+  if (!store.available() || store.hasSame(kind, username, password)) return;
+  const isUpdate = store.list(kind).some((a) => a.username === username);
+  const saved = store.save(kind, username, password);
+  console.info(`[credential] 자동 저장 kind=${kind} 결과=${saved ? (isUpdate ? '바꿈' : '저장함') : '안 함'}`);
+  if (saved) notify(`${KIND_LABEL[kind]} 계정을 이 PC 에 ${isUpdate ? '새 비밀번호로 바꿨습니다' : '저장했습니다'}. 다음부터 로그인 칸을 누르면 넣을 수 있습니다.`);
 }
 
 /** 왼쪽 클릭 계정 목록(credential-focus-watch)이 쓴다 — 암호화를 못 쓰면 빈 목록 */

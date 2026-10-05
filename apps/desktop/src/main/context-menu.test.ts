@@ -7,7 +7,7 @@ const noop = (): void => undefined;
 function fakeWc(canGoBack = false) {
   return {
     navigationHistory: { canGoBack: () => canGoBack, canGoForward: () => false, goBack: noop, goForward: noop },
-    reload: noop, inspectElement: noop, replaceMisspelling: noop, copyImageAt: noop, undo: noop, redo: noop, cut: noop, copy: noop, paste: noop, selectAll: noop,
+    reload: noop, inspectElement: noop, isDevToolsOpened: () => false, closeDevTools: noop, replaceMisspelling: noop, copyImageAt: noop, undo: noop, redo: noop, cut: noop, copy: noop, paste: noop, selectAll: noop,
   } as never;
 }
 const allFlags = { canUndo: true, canRedo: true, canCut: true, canCopy: true, canPaste: true, canSelectAll: true, canDelete: true, canEditRichly: false };

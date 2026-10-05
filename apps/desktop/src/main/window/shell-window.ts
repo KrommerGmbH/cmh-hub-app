@@ -12,6 +12,7 @@ import {
   type UpdateState,
 } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../../config.js';
+import { APP_ICON_PNG } from '../app-identity.js';
 import { LayoutEngine } from '../layout/layout-engine.js';
 import { LayoutStore } from '../layout/layout-store.js';
 import { attachShortcuts } from '../shortcuts.js';
@@ -20,8 +21,8 @@ import { ViewManager } from './view-manager.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
-/** 앱 아이콘(작업 표시줄 · 창) — resources/ 는 dist 옆(배포판은 electron-builder files 에 넣는다) */
-const APP_ICON = join(DIST, '..', 'resources', 'icon.png');
+/** 앱 아이콘(작업 표시줄 · 창) — 한 곳(app-identity.ts) */
+const APP_ICON = APP_ICON_PNG;
 
 export const DEFAULT_TAB: NewTabSpec = {
   kind: 'admin',
@@ -76,6 +77,13 @@ export class ShellWindow {
         onFavicon: (tabId, favicon) => this.patchTab(tabId, { favicon }),
         onLoading: (tabId, loading) => this.patchTab(tabId, { loading }),
         onUrl: (tabId, url) => this.patchTab(tabId, { url }),
+        onInspect: (tabId, x, y) => {
+          this.views.inspect(tabId, x, y, () => this.relayout());
+          // 셸 메뉴가 열린 채면 새 개발자 도구 view 가 메뉴를 덮는다 — 셸을 다시 맨 위로(제미나이 검수 2026-10-05)
+          if (this.shellOnTop) this.setShellOnTop(true);
+        },
+        onCloseInspector: (tabId) => this.views.closeInspector(tabId, () => this.relayout()),
+        isInspecting: (tabId) => this.views.isInspecting(tabId),
         onFocus: (tabId) => {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane && pane.id !== this.engine.getTree().focusedPaneId) this.handleCommand({ cmd: 'focusPane', paneId: pane.id });
@@ -189,6 +197,15 @@ export class ShellWindow {
     // 페이지 자리를 눌러 메뉴를 닫으면 그 클릭은 셸이 먹는다 — 키보드 포커스를 포커스 pane 의 페이지로 돌려준다(Esc 로 닫으면 셸 단추에 남긴다)
     const paneId = this.focusedPaneId();
     if (refocusPage && paneId) this.focusActiveViewOf(paneId);
+  }
+
+  /** smoke — 오른쪽 클릭 «검사»와 같은 길(메뉴는 사람만 누를 수 있다) */
+  handleInspectForSmoke(tabId: string, x: number, y: number): void {
+    this.views.inspect(tabId, x, y, () => this.relayout());
+  }
+
+  closeInspectorForSmoke(tabId: string): void {
+    this.views.closeInspector(tabId, () => this.relayout());
   }
 
   /** smoke — 셸 view 가 지금 맨 위 층인가 */

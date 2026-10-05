@@ -6,6 +6,13 @@ import { clipboard, Menu, type MenuItemConstructorOptions, type WebContents } fr
 import type { TabKind } from '@cmh-hub-app/contracts';
 import { credentialMenuFor, type CredentialMenu } from './credentials/credential-menu.js';
 
+/** «검사» · «개발자 도구 닫기» — 개발자 도구를 pane 오른쪽 view 에 띄우는 ViewManager 로 잇는다 */
+export interface Inspector {
+  inspect(x: number, y: number): void;
+  isOpen(): boolean;
+  close(): void;
+}
+
 /** 메뉴에 보일 계정 수 — 나머지는 «지우기» 하위 메뉴에만 */
 const MAX_FILL_ITEMS = 5;
 
@@ -16,8 +23,10 @@ function menuText(text: string): string {
 
 export function buildContextMenuTemplate(
   params: Electron.ContextMenuParams,
-  wc: Pick<WebContents, 'navigationHistory' | 'reload' | 'replaceMisspelling' | 'copyImageAt' | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll' | 'inspectElement'>,
+  wc: Pick<WebContents, 'navigationHistory' | 'reload' | 'replaceMisspelling' | 'copyImageAt' | 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll' | 'inspectElement' | 'isDevToolsOpened' | 'closeDevTools'>,
   credential: CredentialMenu | null = null,
+  /** «검사» — 탭 pane 오른쪽에 개발자 도구(ViewManager.inspect). 없으면 Electron 기본(따로 뜨는 창) */
+  inspector: Inspector | null = null,
 ): MenuItemConstructorOptions[] {
   const items: MenuItemConstructorOptions[] = [];
   const sep = (): void => {
@@ -80,16 +89,17 @@ export function buildContextMenuTemplate(
     { label: '앞으로', accelerator: 'Alt+Right', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
     { label: '새로고침', accelerator: 'F5', click: () => wc.reload() },
     { type: 'separator' },
-    { label: '검사', click: () => wc.inspectElement(params.x, params.y) },
+    { label: '검사', click: () => (inspector ? inspector.inspect(params.x, params.y) : wc.inspectElement(params.x, params.y)) },
   );
+  if (inspector ? inspector.isOpen() : wc.isDevToolsOpened()) items.push({ label: '개발자 도구 닫기', click: () => (inspector ? inspector.close() : wc.closeDevTools()) });
   return items;
 }
 
-export function attachContextMenu(wc: WebContents, kind: TabKind): void {
+export function attachContextMenu(wc: WebContents, kind: TabKind, inspector: Inspector | null = null): void {
   wc.on('context-menu', (_event, params) => {
     // 메뉴가 열린 사이 탭이 닫히면(Ctrl+W) 항목 click 이 사라진 webContents 를 부른다 — 누를 때 한 번 더 본다(제미나이 검수)
     // 계정 «지우기» 하위 메뉴의 click 은 이 감싸기 밖이다 — 지우기는 webContents 를 안 쓴다
-    const guarded = buildContextMenuTemplate(params, wc, credentialMenuFor(wc, kind, params)).map((item) =>
+    const guarded = buildContextMenuTemplate(params, wc, credentialMenuFor(wc, kind, params), inspector).map((item) =>
       item.click ? { ...item, click: (...args: Parameters<NonNullable<typeof item.click>>) => { if (!wc.isDestroyed()) item.click?.(...args); } } : item,
     );
     Menu.buildFromTemplate(guarded).popup();

@@ -69,6 +69,12 @@ export class CredentialStore {
     return true;
   }
 
+  /** 자동 저장 전에 — 같은 kind · 아이디 · 비밀번호가 이미 있나(있으면 다시 쓰지 · 알리지 않는다) */
+  hasSame(kind: TabKind, username: string, password: string): boolean {
+    if (!this.available()) return false;
+    return this.readAll().some((e) => e.kind === kind && e.username === username && e.password === password);
+  }
+
   remove(kind: TabKind, username: string): boolean {
     if (!this.available()) return false;
     const all = this.readAllForWrite();

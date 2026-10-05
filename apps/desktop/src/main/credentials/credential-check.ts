@@ -2,12 +2,13 @@
 // ①칸 찾기 ②오른쪽 클릭 메뉴 이벤트 ③가짜 계정 넣기 ④safeStorage 저장 왕복을 재서 `[cred-check]` 줄로 찍고 앱을 끈다.
 // 로그인 단추는 누르지 않는다. 사람 앱의 persist:admin · persist:naver · credentials.json 은 건드리지 않는다.
 import { app, safeStorage, WebContentsView, type BaseWindow, type WebContents } from 'electron';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TabKind } from '@cmh-hub-app/contracts';
 import { fillSavedCredential, readFieldState } from './credential-filler.js';
 import { watchLoginFieldFocus } from './credential-focus-watch.js';
+import { watchLoginSubmit } from './credential-autosave.js';
 import { CredentialStore } from './credential-store.js';
 import { findLoginPage, matchLoginFieldClick } from './login-pages.js';
 
@@ -140,6 +141,61 @@ async function checkPage(window: BaseWindow, kind: TabKind, url: string): Promis
   }
 }
 
+/**
+ * 어드민 자동 저장 끝-끝(U08c) — CMH_HUB_CRED_CHECK_PW_FILE(시험 계정 e2e-test 비밀번호 파일 경로)이 있을 때만.
+ * ①틀린 비밀번호로 로그인 단추 → 저장 0 ②맞는 비밀번호 → 대시보드 도착 → 저장 1. 저장은 기록용 가짜(사람 credentials.json 에 안 씀).
+ * 비밀번호 값은 찍지 않는다. 네이버는 로그인 단추를 누르지 않는다(이 시험은 우리 서버 어드민만).
+ */
+async function checkAdminAutoSave(window: BaseWindow): Promise<Record<string, unknown>> {
+  // 비밀번호 파일이 없으면 «연결 시험»: 맞는 로그인 대신 대시보드 주소로 옮겨 «도착 화면에서 저장» 연결만 본다(실제 로그인 성공 증명 아님)
+  const pwFile = process.env['CMH_HUB_CRED_CHECK_PW_FILE'];
+  const password = pwFile && existsSync(pwFile) ? readFileSync(pwFile, 'utf8').trim() : null;
+  const view = new WebContentsView({ webPreferences: { partition: 'cred-check-autosave', sandbox: true, contextIsolation: true, nodeIntegration: false } });
+  window.contentView.addChildView(view);
+  view.setBounds({ x: 0, y: 40, width: 1100, height: 760 });
+  const wc = view.webContents;
+  const saves: Array<{ kind: string; username: string; passwordMatches: boolean }> = [];
+  const wrongPassword = 'Wrong-Password-0000';
+  watchLoginSubmit(wc, 'admin', (kind, username, pw) => saves.push({ kind, username, passwordMatches: pw === (password ?? wrongPassword) }));
+  const clickLoginButton = async (): Promise<boolean> => {
+    const pt = (await wc.executeJavaScriptInIsolatedWorld(1207, [{ code: "(() => { const b = document.querySelector('button[type=\"submit\"]'); if (!b) return null; const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()" }])) as { x: number; y: number } | null;
+    if (!pt) return false;
+    wc.focus();
+    wc.sendInputEvent({ type: 'mouseDown', x: Math.round(pt.x), y: Math.round(pt.y), button: 'left', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: Math.round(pt.x), y: Math.round(pt.y), button: 'left', clickCount: 1 });
+    return true;
+  };
+  try {
+    await wc.loadURL('https://testumgebung.my-mik.de/admin#/login/').catch(() => undefined);
+    await waitForFields(wc, 'admin', 25_000);
+    const page = findLoginPage('admin', wc.getURL());
+    if (!page) return { error: '로그인 화면 아님', url: wc.getURL() };
+    const out: Record<string, unknown> = {};
+    out['mode'] = password ? 'real-login' : 'wiring-only';
+    out['wrongFill'] = await fillSavedCredential(wc, page, 'e2e-test', wrongPassword);
+    out['wrongClicked'] = await clickLoginButton();
+    await sleep(8000);
+    out['savesAfterWrong'] = saves.length;
+    out['urlAfterWrong'] = (wc.getURL().split('#')[1] ?? '').slice(0, 30);
+    if (password) {
+      await waitForFields(wc, 'admin', 10_000);
+      out['rightFill'] = await fillSavedCredential(wc, page, 'e2e-test', password);
+      out['rightClicked'] = await clickLoginButton();
+    } else {
+      await wc.loadURL('https://testumgebung.my-mik.de/admin#/sw/dashboard/index').catch(() => undefined); // 성공 흉내 — 해시만 바뀌어 did-navigate-in-page
+    }
+    const end = Date.now() + 25_000;
+    while (Date.now() < end && saves.length === 0) await sleep(500);
+    out['savesAfterRight'] = saves.length;
+    out['saved'] = saves[0] ? { kind: saves[0].kind, username: saves[0].username, passwordMatches: saves[0].passwordMatches } : null;
+    out['urlAfterRight'] = (wc.getURL().split('#')[1] ?? '').slice(0, 30);
+    return out;
+  } finally {
+    window.contentView.removeChildView(view);
+    if (!wc.isDestroyed()) wc.close();
+  }
+}
+
 function checkStore(): Record<string, unknown> {
   const dir = mkdtempSync(join(tmpdir(), 'cred-check-'));
   try {
@@ -163,6 +219,10 @@ export function runCredentialCheckIfRequested(window: BaseWindow): void {
   void (async () => {
     try {
       console.info('[cred-check] store', JSON.stringify(checkStore()));
+      if (process.env['CMH_HUB_CRED_CHECK'] === 'autosave') {
+        console.info('[cred-check] autosave', JSON.stringify(await checkAdminAutoSave(window)));
+        return;
+      }
       console.info('[cred-check] admin', JSON.stringify(await checkPage(window, 'admin', 'https://testumgebung.my-mik.de/admin#/login/')));
       if (process.env['CMH_HUB_CRED_CHECK'] === 'all') {
         const naverLogin = 'https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback';

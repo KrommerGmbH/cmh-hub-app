@@ -9,6 +9,8 @@ export interface LoginPage {
   pathPrefix: string;
   /** admin 처럼 SPA 해시로 로그인 화면을 가르는 곳 — null 이면 호스트만 본다 */
   hashPrefix: string | null;
+  /** 로그인 뒤 도착 화면 주소의 앞부분 — 자동 저장은 여기 도착했을 때만(제미나이 검수 2026-10-05: «로그인 화면을 벗어남»은 실패 뒤 다른 링크 · F5 도 걸린다) */
+  successUrlPrefixes: readonly string[];
   usernameSelectors: readonly string[];
   passwordSelectors: readonly string[];
 }
@@ -30,6 +32,12 @@ export function findLoginPage(kind: TabKind, pageUrl: string): LoginPage | null 
   if (!u.pathname.startsWith(page.pathPrefix)) return null;
   if (page.hashPrefix !== null && !u.hash.startsWith(page.hashPrefix)) return null;
   return page;
+}
+
+/** 이 주소가 그 로그인 화면의 «로그인 뒤 도착 화면»인가 — 로그인 화면 자체는 아니다 */
+export function isLoginSuccessUrl(page: LoginPage, url: string): boolean {
+  if (findLoginPage(page.kind, url)) return false;
+  return page.successUrlPrefixes.some((prefix) => url.startsWith(prefix));
 }
 
 export interface LoginFieldClick {

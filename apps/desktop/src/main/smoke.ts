@@ -265,6 +265,43 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
     }
   }
 
+  // ⑩ 오른쪽 클릭 «검사» → 개발자 도구가 따로 뜨는 창이 아니라 pane 오른쪽 view 에(2026-10-05 «크롬처럼 오른쪽 사이드에»)
+  {
+    const focused = w.activeTabOfFocusedPane();
+    const tabId = focused?.activeTabId;
+    const page = tabId ? w.views.get(tabId) : undefined;
+    if (!tabId || !page) {
+      log('검사 → 오른쪽 개발자 도구', 'FAIL 포커스 탭 없음');
+    } else {
+      const childCount = (): number => w.window.contentView.children.length;
+      const before = childCount();
+      const pageWidthBefore = page.getBounds().width;
+      let openedEvent = false;
+      page.webContents.once('devtools-opened', () => { openedEvent = true; });
+      w.handleInspectForSmoke(tabId, 100, 100);
+      const opened = await waitFor(() => page.webContents.isDevToolsOpened() || openedEvent, 6000);
+      const lastView = w.window.contentView.children[w.window.contentView.children.length - 1] as Electron.WebContentsView | undefined;
+      console.info(`[smoke] 검사 진단 isDevToolsOpened=${page.webContents.isDevToolsOpened()} · devtools-opened 이벤트=${openedEvent} · 개발자 도구 view 주소=${lastView?.webContents?.getURL?.().slice(0, 60) ?? '없음'}`);
+      const addedView = childCount() === before + 1;
+      const pageNarrowed = page.getBounds().width < pageWidthBefore;
+      const tools = w.window.contentView.children[w.window.contentView.children.length - 1];
+      const toolsRight = tools ? tools.getBounds().x >= page.getBounds().x + page.getBounds().width - 1 : false;
+      w.closeInspectorForSmoke(tabId);
+      const closed = await waitFor(() => childCount() === before && page.getBounds().width === pageWidthBefore, 6000);
+      // 닫은 뒤 다시 «검사» — 새 view 로 다시 떠야 한다
+      // 다른 view 에 띄운 개발자 도구는 다시 열 때 devtools-opened 가 안 온다(isDevToolsOpened 도 false) — «devtools:// 화면이 다시 창에 붙고 페이지가 좁아졌나»로 본다
+      w.handleInspectForSmoke(tabId, 120, 120);
+      const reopened = await waitFor(() => {
+        const top = w.window.contentView.children[w.window.contentView.children.length - 1] as Electron.WebContentsView | undefined;
+        return childCount() === before + 1 && (top?.webContents?.getURL?.() ?? '').startsWith('devtools://') && page.getBounds().width < pageWidthBefore;
+      }, 6000);
+      w.closeInspectorForSmoke(tabId);
+      const closedAgain = await waitFor(() => childCount() === before, 6000);
+      const ok = opened && addedView && pageNarrowed && toolsRight && closed && reopened && closedAgain;
+      log('검사 → 오른쪽 개발자 도구', `${ok ? 'OK' : 'FAIL'} 열림 ${opened} · view 하나 더 ${addedView} · 페이지 좁아짐 ${pageNarrowed} · 오른쪽 ${toolsRight} · 닫으면 원래대로 ${closed} · 다시 열림 ${reopened} · 다시 닫힘 ${closedAgain}`);
+    }
+  }
+
   // ⑧ 진짜 마우스 시험용 — 첫 pane «+» 단추의 «화면» 좌표(창 content 좌상단 + 셸 안 좌표). 밖의 스크립트가 OS 클릭을 보낸다
   //    (JS .click() 은 view 층 순서를 안 거쳐 «메뉴가 페이지 아래에 깔림» 결함을 못 잡았다 · 2026-10-03)
   const plus = await shellJs<{ x: number; y: number }>(`(() => { const r = document.querySelector('.strip .strip-newtab').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

@@ -37,6 +37,8 @@ export const APP_CONFIG = {
       hosts: ['testumgebung.my-mik.de'],
       pathPrefix: '/admin',
       hashPrefix: '#/login',
+      /** 로그인 뒤 도착 화면 — 여기에 와야 «로그인 성공»으로 보고 자동 저장한다(어드민 해시 화면 · #/login 은 아님) */
+      successUrlPrefixes: ['https://testumgebung.my-mik.de/admin#/'],
       usernameSelectors: ['#sw-field--username'],
       passwordSelectors: ['#sw-field--password'],
     },
@@ -45,6 +47,8 @@ export const APP_CONFIG = {
       hosts: ['accounts.commerce.naver.com'],
       pathPrefix: '/login',
       hashPrefix: null,
+      /** 2단계 인증 · 기기 등록을 거쳐 판매자센터 첫 화면에 들어가야 «로그인 성공» — DB login_flow.returnUrlDefault = #/home/dashboard(판매자 가입 등 다른 화면은 아님) */
+      successUrlPrefixes: ['https://sell.smartstore.naver.com/#/home'],
       usernameSelectors: ['input[placeholder="아이디 또는 이메일 주소"]', '#id'],
       passwordSelectors: ['input[type="password"]', '#pw'],
     },

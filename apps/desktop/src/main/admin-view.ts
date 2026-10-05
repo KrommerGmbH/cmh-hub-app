@@ -3,6 +3,7 @@ import { shell, WebContentsView } from 'electron';
 import type { TabRecord } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../config.js';
 import { attachContextMenu } from './context-menu.js';
+import { watchLoginSubmit } from './credentials/credential-autosave.js';
 import { watchLoginFieldFocus } from './credentials/credential-focus-watch.js';
 import { isAllowedUrl } from './url-policy.js';
 
@@ -12,6 +13,10 @@ export interface TabViewEvents {
   onLoading(tabId: string, loading: boolean): void;
   onUrl(tabId: string, url: string): void;
   onFocus(tabId: string): void;
+  /** 오른쪽 클릭 «검사» — 개발자 도구를 pane 오른쪽에(2026-10-05) */
+  onInspect(tabId: string, x: number, y: number): void;
+  onCloseInspector(tabId: string): void;
+  isInspecting(tabId: string): boolean;
 }
 
 function openOutside(url: string): void {
@@ -55,8 +60,9 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   wc.on('did-navigate-in-page', (_e, url) => events.onUrl(tab.id, url));
   wc.on('focus', () => events.onFocus(tab.id));
 
-  attachContextMenu(wc, tab.kind); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
+  attachContextMenu(wc, tab.kind, { inspect: (x, y) => events.onInspect(tab.id, x, y), isOpen: () => events.isInspecting(tab.id), close: () => events.onCloseInspector(tab.id) }); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
   watchLoginFieldFocus(wc, tab.kind, () => view.getBounds()); // 로그인 칸 왼쪽 클릭 → 계정 목록(U08b · 2026-10-05)
+  watchLoginSubmit(wc, tab.kind); // 로그인 성공(로그인 화면을 벗어남) → 계정 자동 저장(U08c · 2026-10-05)
   void wc.loadURL(tab.url);
   return view;
 }
