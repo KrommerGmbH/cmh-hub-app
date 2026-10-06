@@ -18,9 +18,6 @@ catalogs:
     electron-builder:
       specifier: ^26.15.3
       version: 26.15.3
-    electron-updater:
-      specifier: ^6.8.9
-      version: 6.8.9
     ghost-cursor:
       specifier: ^1.4.2
       version: 1.4.2
@@ -44,7 +41,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/contracts
       electron-updater:
-        specifier: 'catalog:'
+        specifier: ^6.8.9
         version: 6.8.9
       ghost-cursor:
         specifier: 'catalog:'

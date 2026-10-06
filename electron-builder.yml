@@ -3,15 +3,16 @@ appId: de.krommer.cmh-hub-app
 productName: cmh-hub
 directories:
   output: release
+# 경로는 apps/desktop 기준 — dist:win 은 apps/desktop 에서 돈다(projectDir · 2026-10-06 첫 빌드에서 루트 기준 경로라 main.js 가 빠짐)
 files:
-  - "apps/desktop/dist/**"
-  - "apps/desktop/package.json"
-  - "apps/desktop/resources/**"
+  - "dist/**"
+  - "package.json"
+  - "resources/**"
   - "!**/*.map"
 extraMetadata:
-  main: apps/desktop/dist/main/main.js
+  main: dist/main/main.js
 win:
-  icon: apps/desktop/resources/icon.ico
+  icon: resources/icon.ico
   target:
     - target: nsis
       arch: [x64]

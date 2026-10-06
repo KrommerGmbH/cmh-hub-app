@@ -19,6 +19,7 @@ import { attachShortcuts } from '../shortcuts.js';
 import { buildState } from './state-builder.js';
 import { ViewManager } from './view-manager.js';
 import { resolveOmniboxInput } from '../omnibox.js';
+import { AppUpdater } from '../update/app-updater.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -39,6 +40,11 @@ export class ShellWindow {
   readonly views: ViewManager;
   private geometry: LayoutGeometry = { panes: [], sashes: [] };
   private update: UpdateState = { state: 'none' };
+  /** G03 — 상태가 바뀌면 셸 모달(shell:state.update)로 보낸다 */
+  readonly updater = new AppUpdater((state) => {
+    this.update = state;
+    this.sendState();
+  });
   private relayoutTimer: NodeJS.Timeout | null = null;
   /** 셸 팝오버가 열려 셸이 맨 위인가 — 그동안 새 탭 view 가 생기면(단축키) 셸을 다시 올린다 */
   private shellOnTop = false;
@@ -165,9 +171,13 @@ export class ShellWindow {
         return;
       }
       case 'update.download':
+        this.updater.download();
+        return;
       case 'update.install':
+        this.updater.install();
+        return;
       case 'update.later':
-        console.info('[update] 1차에서는 상태만 — G03 뒤에', cmd.cmd);
+        this.updater.later();
         return;
       case 'aiTaskStop':
         console.info('[ai] 1차에서는 상태만 — W02 뒤에', cmd.paneId);

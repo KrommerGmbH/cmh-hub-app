@@ -40,6 +40,7 @@ app.whenReady().then(async () => {
   // 끝-끝 시험용(개발판만) — 서버 var/log/cmh_hub_app_errors-<날짜>.log 에 이 줄이 오면 길이 다 이어진 것이다
   if (process.env['CMH_HUB_TEST_ERROR'] && !app.isPackaged) console.error('[test] 오류 보내기 끝-끝 시험', new Date().toISOString());
   const w = await createShellWindow();
+  w.updater.start(); // G03 — 배포판만 확인(개발판은 안 함)
   startHeartbeat(appSession, w.window, () => {
     console.warn('[heartbeat] 사장님이 이 설치를 차단했습니다 — 창을 닫습니다');
     w.window.close();
