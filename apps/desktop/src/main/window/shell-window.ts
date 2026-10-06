@@ -91,6 +91,10 @@ export class ShellWindow {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane) this.handleCommand({ cmd: 'newTab', paneId: pane.id, kind: 'web', url });
         },
+        onOpenAdminTab: (tabId, url) => {
+          const pane = this.engine.getPaneOfTab(tabId);
+          if (pane) this.handleCommand({ cmd: 'newTab', paneId: pane.id, kind: 'admin', url });
+        },
         onFocus: (tabId) => {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane && pane.id !== this.engine.getTree().focusedPaneId) this.handleCommand({ cmd: 'focusPane', paneId: pane.id });

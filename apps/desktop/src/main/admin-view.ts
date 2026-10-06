@@ -19,6 +19,13 @@ export interface TabViewEvents {
   isInspecting(tabId: string): boolean;
   /** 빈 탭에서 «새 창으로» 링크(target=_blank · window.open) — 같은 pane 에 새 빈 탭으로(크롬의 새 탭) */
   onOpenWebTab(tabId: string, url: string): void;
+  /** 어드민의 챗봇 버튼(window.open #/cmh/ai/chat-solo) — 앱 안에서는 split 대신 새 어드민 탭으로(2026-10-06) */
+  onOpenAdminTab(tabId: string, url: string): void;
+}
+
+/** 어드민 챗봇 주소인가 — 이 주소만 새 탭으로 연다(다른 window.open 은 지금처럼 같은 탭) */
+export function isAdminChatUrl(url: string): boolean {
+  return url.startsWith(APP_CONFIG.serverOrigin + '/') && url.includes('#/cmh/ai/chat-solo');
 }
 
 function openOutside(url: string): void {
@@ -45,6 +52,7 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   });
   wc.setWindowOpenHandler(({ url }) => {
     if (tab.kind === 'web' && isAllowedUrl('web', url)) events.onOpenWebTab(tab.id, url);
+    else if (tab.kind === 'admin' && isAdminChatUrl(url)) events.onOpenAdminTab(tab.id, url);
     else if (isAllowedUrl(tab.kind, url)) void wc.loadURL(url);
     else openOutside(url);
     return { action: 'deny' };

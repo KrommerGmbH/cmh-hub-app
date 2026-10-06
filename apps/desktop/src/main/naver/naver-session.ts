@@ -101,6 +101,9 @@ export async function prepareSessions(): Promise<void> {
   const admin = session.fromPartition(APP_CONFIG.adminPartition);
   // `--lang=ko-KR`(main.ts)은 앱 전체에 걸린다 — 서버 어드민 요청의 Accept-Language 는 OS 언어 그대로 둔다(어드민 화면 언어가 바뀌지 않게)
   const systemLanguages = app.getPreferredSystemLanguages();
-  if (systemLanguages.length > 0) admin.setUserAgent(admin.getUserAgent(), systemLanguages.join(','));
+  // 어드민 화면(챗봇 버튼)이 «앱 안» 인지 알 수 있게 UA 에 `CmhHubApp/<판>` 을 붙인다 — 앱 안이면 split 대신 새 탭(2026-10-06)
+  const adminUserAgent = `${admin.getUserAgent()} CmhHubApp/${app.getVersion()}`;
+  if (systemLanguages.length > 0) admin.setUserAgent(adminUserAgent, systemLanguages.join(','));
+  else admin.setUserAgent(adminUserAgent);
   denyRiskyPermissions(admin);
 }
