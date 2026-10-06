@@ -468,17 +468,21 @@ export class LayoutEngine implements LayoutEngineApi {
       }
     }
     while (kept.length < want) {
-      // 탭이 둘 이상인 pane 이 있으면 그 pane 의 «활성이 아닌 마지막 탭»을 새 pane 으로 옮긴다 — 새 어드민을 또 열지 않는다
-      // (2026-10-04 사장님 «1번 창에 어드민 · 네이버 두 개 있고 2단 좌우 → 우측에 새로운 어드민이 열림»)
-      const donor = kept.find((p) => p.tabIds.length > 1);
+      // 탭이 둘 이상인 첫 pane 은 첫 탭만 남기고, 둘째 탭부터 새 pane 으로 떼어 그 pane 바로 뒤에 앉힌다 — 탭 차례 = 창 차례 · 새 어드민을 또 열지 않는다
+      // (2026-10-04 «우측에 새로운 어드민이 열림» · 2026-10-06 사장님 «탭 순서대로 다음 view 로 · 지금은 1번 탭이 다른 뷰로 넘어감» —
+      //  옛날엔 «활성이 아닌 마지막 탭»을 옮겨 [1, 2(활성)] 이면 1번이 넘어갔다). 창보다 탭이 많으면 남은 탭은 뒤 창에 남는다.
+      const donorIndex = kept.findIndex((p) => p.tabIds.length > 1);
+      const donor = kept[donorIndex];
       if (donor) {
-        const movable = [...donor.tabIds].reverse().find((id) => id !== donor.activeTabId);
-        if (movable === undefined) {
-          this.tree = snapshot;
-          return { ...change, rejected: `applyLayout: 옮길 탭이 없다(탭 ${tabCount} · 창 ${want})` };
-        }
-        donor.tabIds = donor.tabIds.filter((id) => id !== movable);
-        kept.push({ type: 'pane', id: randomUUID(), tabIds: [movable], activeTabId: movable });
+        const first = donor.tabIds[0]!;
+        const rest = donor.tabIds.slice(1);
+        const movedActive = donor.activeTabId !== null && rest.includes(donor.activeTabId) ? donor.activeTabId : null;
+        donor.tabIds = [first];
+        donor.activeTabId = first;
+        const moved: PaneNode = { type: 'pane', id: randomUUID(), tabIds: rest, activeTabId: movedActive ?? rest[0]! };
+        // 보던 탭이 옮겨 갔으면 포커스도 따라간다 — 사람이 보던 화면이 그대로 포커스
+        if (movedActive && this.tree.focusedPaneId === donor.id) this.tree.focusedPaneId = moved.id;
+        kept.splice(donorIndex + 1, 0, moved);
         continue;
       }
       // 탭 수 검사(want ≤ 탭 수) 때문에 여기 오면 트리가 깨진 것이다 — 새 탭으로 채우지 않고 되돌린다(2026-10-04 «빈 창을 새 어드민으로 채우지 않는다»)

@@ -297,6 +297,32 @@ describe('applyLayout — 2026-10-04 사장님 버그', () => {
   });
 });
 
+describe('applyLayout — 탭 차례 = 창 차례(2026-10-06 «탭 순서대로 다음 view 로 · 지금은 1번 탭이 다른 뷰로 넘어감»)', () => {
+  it('탭 [1, 2(활성)] → 2단: 왼쪽 1 · 오른쪽 2 · 포커스는 보던 2', () => {
+    const e = engineWithTabs(2); // newTab 은 새 탭을 활성으로 만든다 → 2번이 활성
+    const [t1, t2] = e.listPanes()[0]!.tabIds;
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    const [left, right] = e.listPanes();
+    expect(left!.tabIds).toEqual([t1]);
+    expect(right!.tabIds).toEqual([t2]);
+    expect(e.getTree().focusedPaneId).toBe(right!.id);
+  });
+
+  it('탭 4 → grid4: 창 1~4 에 탭 1~4 차례대로', () => {
+    const e = engineWithTabs(4);
+    const tabs = [...e.listPanes()[0]!.tabIds];
+    e.apply({ cmd: 'applyLayout', preset: 'grid4' }, { newTab: ADMIN });
+    expect(e.listPanes().map((p) => p.tabIds[0])).toEqual(tabs);
+  });
+
+  it('탭 3 → 2단: 왼쪽 1 · 오른쪽 2, 3 (남은 탭은 뒤 창)', () => {
+    const e = engineWithTabs(3);
+    const [t1, t2, t3] = e.listPanes()[0]!.tabIds;
+    e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: ADMIN });
+    expect(e.listPanes().map((p) => p.tabIds)).toEqual([[t1], [t2, t3]]);
+  });
+});
+
 describe('applyLayout — 탭 수보다 창이 많은 모양은 거절(2026-10-04 «탭이 3개인데 4단 분할이 가능»)', () => {
   it('탭 3 → grid4 거절 · 트리 그대로 · top2bottom1 은 된다', () => {
     const e = engineWithTabs(3);
