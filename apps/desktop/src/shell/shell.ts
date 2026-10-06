@@ -402,14 +402,15 @@ function setPopupOpen(open: boolean, refocusPage = false): void {
  * 닫는 까닭에 따라 포커스가 갈 곳이 다르다:
  * 'pick'(항목 고름) · 'outside'(페이지 자리를 누름) → 페이지 view 로(main 이 돌려준다)
  * 'escape' · 'toggle'(같은 단추) → 메뉴를 연 단추로(키보드로 열고 닫은 사람이 제자리에 남게)
+ * 'omnibox'(메뉴가 열린 채 Ctrl+T 로 빈 탭) → 아무 데도 안 옮김 — 곧 새 탭 주소창에 포커스를 준다(제미나이 검수 2026-10-06)
  */
-function closeMenu(how: 'pick' | 'outside' | 'escape' | 'toggle' = 'outside'): void {
+function closeMenu(how: 'pick' | 'outside' | 'escape' | 'toggle' | 'omnibox' = 'outside'): void {
   const wasOpen = popupOpen;
   menuEl.hidden = true;
   layoutMenuEl.hidden = true;
   layoutButtonEl.setAttribute('aria-expanded', 'false');
   const backToOpener = how === 'escape' || how === 'toggle';
-  setPopupOpen(false, !backToOpener);
+  setPopupOpen(false, !backToOpener && how !== 'omnibox');
   if (wasOpen && backToOpener) popupOpener?.focus();
   popupOpener = null;
 }
@@ -664,7 +665,11 @@ function render(state: ShellState): void {
   }
   // 빈 탭을 막 열었으면 크롬처럼 그 주소창에 포커스(main 이 셸 view 에 키보드 포커스를 이미 줬다).
   // 맨 끝에 — 위의 «탭 포커스 되돌리기»가 막 준 주소창 포커스를 빼앗았다(✕ 를 누른 뒤 빈 탭을 열 때 · smoke ⑪ 2026-10-05)
-  if (state.focusOmniboxPaneId) stripEls.get(state.focusOmniboxPaneId)?.querySelector<HTMLInputElement>('.strip-omnibox')?.focus();
+  if (state.focusOmniboxPaneId) {
+    // 메뉴가 열린 채 Ctrl+T 면 메뉴가 떠 있고 셸이 맨 위에 남아 페이지 첫 클릭을 먹는다 — 먼저 닫는다(제미나이 검수 2026-10-06)
+    if (popupOpen) closeMenu('omnibox');
+    stripEls.get(state.focusOmniboxPaneId)?.querySelector<HTMLInputElement>('.strip-omnibox')?.focus();
+  }
 }
 
 document.addEventListener('click', (e) => {

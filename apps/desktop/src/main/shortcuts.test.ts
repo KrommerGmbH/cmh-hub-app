@@ -47,4 +47,8 @@ describe('레이아웃 단축키 Ctrl+Shift+1..8(2026-10-04)', () => {
   it('Shift 없는 Ctrl+1 은 그대로 pane 포커스', () => {
     expect(commandForInput(key('Digit1'), fakeWindow)).toEqual({ cmd: 'focusPane', paneId: 'p1' });
   });
+
+  it('Ctrl+T = 빈 탭(크롬처럼 · 2026-10-06)', () => {
+    expect(commandForInput(key('KeyT'), fakeWindow)).toEqual({ cmd: 'newTab', paneId: 'p1', kind: 'web', url: 'about:blank' });
+  });
 });

@@ -36,7 +36,8 @@ export function commandForInput(input: Input, w: ShellWindow): ShellCommand | nu
     const paneId = w.paneIdByOrder(Number(digit[1]) - 1);
     return paneId ? { cmd: 'focusPane', paneId } : null;
   }
-  if (input.code === 'KeyT') return focused ? { cmd: 'newTab', paneId: focused } : null;
+  // Ctrl+T = 크롬처럼 빈 탭(주소창에 포커스 · shell-window.ts handleCommand 의 blankWebTab) — 2026-10-06 사장님 «Ctrl+T 를 빈 탭으로 바꿔»
+  if (input.code === 'KeyT') return focused ? { cmd: 'newTab', paneId: focused, kind: 'web', url: 'about:blank' } : null;
   if (input.code === 'KeyW') return pane?.activeTabId ? { cmd: 'closeTab', tabId: pane.activeTabId } : null;
   if (input.code === 'PageUp' || input.code === 'PageDown') {
     if (!pane || !pane.activeTabId || pane.tabIds.length < 2) return null;
