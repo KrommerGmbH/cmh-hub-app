@@ -20,6 +20,9 @@ import { buildState } from './state-builder.js';
 import { ViewManager } from './view-manager.js';
 import { resolveOmniboxInput } from '../omnibox.js';
 import { AppUpdater } from '../update/app-updater.js';
+import type { AppSession } from '../identity/app-session.js';
+import { ScreenLookup } from '../ai-element/element-lookup.js';
+import { CHAT_TAB_URL, ChatHandoff, isChatTabUrl } from '../ai-element/chat-handoff.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -50,8 +53,13 @@ export class ShellWindow {
   private shellOnTop = false;
   /** 다음 상태 한 번에만 실어 보낼 «주소창에 포커스» pane(빈 탭을 막 연 때) */
   private focusOmniboxPaneId: string | null = null;
+  /** U10 — 네이버 주소 → 담당 AI(서버 화면 표 · 메모리) · 고른 작업을 «AI 채팅» 탭에 넘기기 */
+  private readonly screenLookup: ScreenLookup;
+  private readonly chatHandoff: ChatHandoff;
 
-  private constructor() {
+  private constructor(appSession: AppSession | null) {
+    this.screenLookup = new ScreenLookup(appSession);
+    this.chatHandoff = new ChatHandoff({ findChatTab: () => this.findChatTab(), openChatTab: (sourceTabId) => this.openChatTabBeside(sourceTabId) });
     this.store = new LayoutStore(join(app.getPath('userData'), 'layout.json'));
     this.window = new BaseWindow({
       width: 1440,
@@ -101,6 +109,8 @@ export class ShellWindow {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane) this.handleCommand({ cmd: 'newTab', paneId: pane.id, kind: 'admin', url });
         },
+        aiLookup: (pageUrl) => this.screenLookup.lookup(pageUrl),
+        aiSend: (tabId, request) => this.chatHandoff.send(tabId, request),
         onFocus: (tabId) => {
           const pane = this.engine.getPaneOfTab(tabId);
           if (pane && pane.id !== this.engine.getTree().focusedPaneId) this.handleCommand({ cmd: 'focusPane', paneId: pane.id });
@@ -120,8 +130,9 @@ export class ShellWindow {
     });
   }
 
-  static async create(): Promise<ShellWindow> {
-    const w = new ShellWindow();
+  /** appSession — U10 이 서버 화면 표를 읽는 데 쓴다(null 이면 담당 AI 없이 · smoke 등) */
+  static async create(appSession: AppSession | null = null): Promise<ShellWindow> {
+    const w = new ShellWindow(appSession);
     // 시작은 늘 1단 · 어드민 탭 하나(2026-10-04 사장님 «default 는 1개 창, 어드민만»). 지난 레이아웃(layout.json)은 되살리지 않는다
     // — 옛 U05 복원은 smoke 시험이 남긴 3단 · 탭 여럿까지 되살렸다. 저장(store.save)은 그대로 둔다(나중에 «마지막 배치로 열기» 설정을 붙일 자리)
     w.engine.resetToDefault(DEFAULT_TAB);
@@ -135,8 +146,8 @@ export class ShellWindow {
     return w;
   }
 
-  /** 셸 · 단축키 · 덮개가 보내는 명령 — 트리를 바꾸고 view · 상태를 맞춘다 */
-  handleCommand(cmd: ShellCommand): void {
+  /** 셸 · 단축키 · 덮개가 보내는 명령 — 트리를 바꾸고 view · 상태를 맞춘다. newTab = split 이 새 pane 에 만들 첫 탭(기본 어드민 첫 화면 · U10 은 AI 채팅) */
+  handleCommand(cmd: ShellCommand, newTab: NewTabSpec = DEFAULT_TAB): void {
     switch (cmd.cmd) {
       case 'window.minimize':
         this.window.minimize();
@@ -194,7 +205,7 @@ export class ShellWindow {
       const url = APP_CONFIG.newTabChoices.find((c) => c.kind === 'naver')?.url;
       if (url) command = { ...cmd, url };
     }
-    const change = this.engine.apply(command, { newTab: DEFAULT_TAB });
+    const change = this.engine.apply(command, { newTab });
     if (change.rejected) {
       console.info('[layout] 거절:', change.rejected, cmd);
       this.sendState();
@@ -248,6 +259,40 @@ export class ShellWindow {
   isShellOnTop(): boolean {
     const children = this.window.contentView.children;
     return children[children.length - 1] === this.shellView;
+  }
+
+  /** U10 — 이미 열린 «AI 채팅» 탭(admin · #/cmh/ai/chat-solo)을 그 pane 에서 활성으로 올리고 webContents 를 준다. 없으면 null */
+  findChatTab(): WebContents | null {
+    const tab = Object.values(this.engine.getTree().tabs).find((t) => t.kind === 'admin' && isChatTabUrl(t.url));
+    const wc = tab ? this.views.get(tab.id)?.webContents : undefined;
+    if (!tab || !wc || wc.isDestroyed()) return null;
+    if (this.engine.getPaneOfTab(tab.id)?.activeTabId !== tab.id) this.handleCommand({ cmd: 'activateTab', tabId: tab.id });
+    return wc;
+  }
+
+  /**
+   * U10 — «AI 채팅» 탭을 소스 탭과 «다른» pane 에 연다(사람이 보던 화면을 가리지 않게). 다른 pane 이 없으면 소스 pane 을 좌우로 나눠 오른쪽에
+   * — split 이 새 pane 의 첫 탭을 바로 chat-solo 로 만든다(어드민 첫 화면을 거치지 않는다). pane 상한(4)으로 split 이 거절되면 소스 pane 에 새 탭으로.
+   */
+  openChatTabBeside(sourceTabId: string): WebContents | null {
+    const source = this.engine.getPaneOfTab(sourceTabId);
+    if (!source) return null;
+    const other = this.engine.listPanes().find((p) => p.id !== source.id);
+    if (other) {
+      this.handleCommand({ cmd: 'newTab', paneId: other.id, kind: 'admin', url: CHAT_TAB_URL });
+      return this.activeWebContentsOf(other.id);
+    }
+    this.handleCommand({ cmd: 'split', paneId: source.id, orientation: 'horizontal' }, { kind: 'admin', url: CHAT_TAB_URL, title: 'AI 채팅' });
+    const focused = this.focusedPaneId();
+    if (focused && focused !== source.id) return this.activeWebContentsOf(focused);
+    this.handleCommand({ cmd: 'newTab', paneId: source.id, kind: 'admin', url: CHAT_TAB_URL });
+    return this.activeWebContentsOf(source.id);
+  }
+
+  private activeWebContentsOf(paneId: string): WebContents | null {
+    const pane = this.engine.getPane(paneId);
+    const wc = pane?.activeTabId ? this.views.get(pane.activeTabId)?.webContents : undefined;
+    return wc && !wc.isDestroyed() ? wc : null;
   }
 
   focusedPaneId(): string | null {
@@ -325,8 +370,8 @@ export class ShellWindow {
 
 let current: ShellWindow | null = null;
 
-export async function createShellWindow(): Promise<ShellWindow> {
-  current = await ShellWindow.create();
+export async function createShellWindow(appSession: AppSession | null = null): Promise<ShellWindow> {
+  current = await ShellWindow.create(appSession);
   current.window.on('closed', () => {
     current = null;
   });

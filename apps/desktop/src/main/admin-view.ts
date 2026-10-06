@@ -2,6 +2,8 @@
 import { shell, WebContentsView } from 'electron';
 import type { TabRecord } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../config.js';
+import { createAiActionProvider, type HandoffRequest, type HandoffResult } from './ai-element/chat-handoff.js';
+import type { ScreenRecord } from './ai-element/element-lookup.js';
 import { attachContextMenu } from './context-menu.js';
 import { watchLoginSubmit } from './credentials/credential-autosave.js';
 import { watchLoginFieldFocus } from './credentials/credential-focus-watch.js';
@@ -21,6 +23,10 @@ export interface TabViewEvents {
   onOpenWebTab(tabId: string, url: string): void;
   /** 어드민의 챗봇 버튼(window.open #/cmh/ai/chat-solo) — 앱 안에서는 split 대신 새 어드민 탭으로(2026-10-06) */
   onOpenAdminTab(tabId: string, url: string): void;
+  /** U10 오른쪽 클릭 «AI 작업 ▸»(2026-10-06) — 네이버 주소 → 담당 AI(ShellWindow 의 ScreenLookup). 없으면(fingerprint-probe 등 시험용 view) 담당 없이 */
+  aiLookup?(pageUrl: string): Promise<ScreenRecord | null>;
+  /** U10 — 고른 작업을 «AI 채팅» 탭에 넘긴다(ShellWindow 의 ChatHandoff · 소스 탭과 다른 pane 에 연다). 없으면 «AI 작업» 메뉴가 안 뜬다 */
+  aiSend?(tabId: string, request: HandoffRequest): Promise<HandoffResult>;
 }
 
 /** 어드민 챗봇 주소인가 — 이 주소만 새 탭으로 연다(다른 window.open 은 지금처럼 같은 탭) */
@@ -71,7 +77,18 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   wc.on('did-navigate-in-page', (_e, url) => events.onUrl(tab.id, url));
   wc.on('focus', () => events.onFocus(tab.id));
 
-  attachContextMenu(wc, tab.kind, { inspect: (x, y) => events.onInspect(tab.id, x, y), isOpen: () => events.isInspecting(tab.id), close: () => events.onCloseInspector(tab.id) }); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
+  // U10 «AI 작업 ▸»(2026-10-06) — aiSend 가 있을 때만(ShellWindow) · 빈 탭은 createAiActionProvider 가 null
+  const aiLookup = events.aiLookup?.bind(events);
+  const aiSend = events.aiSend?.bind(events);
+  const aiActions = aiSend
+    ? createAiActionProvider(wc, tab.id, tab.kind, { lookup: (pageUrl) => (aiLookup ? aiLookup(pageUrl) : Promise.resolve(null)), send: (tabId, request) => aiSend(tabId, request) })
+    : null;
+  attachContextMenu(
+    wc,
+    tab.kind,
+    { inspect: (x, y) => events.onInspect(tab.id, x, y), isOpen: () => events.isInspecting(tab.id), close: () => events.onCloseInspector(tab.id) },
+    aiActions,
+  ); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
   watchLoginFieldFocus(wc, tab.kind, () => view.getBounds()); // 로그인 칸 왼쪽 클릭 → 계정 목록(U08b · 2026-10-05)
   watchLoginSubmit(wc, tab.kind); // 로그인 성공(로그인 화면을 벗어남) → 계정 자동 저장(U08c · 2026-10-05)
   void wc.loadURL(tab.url);

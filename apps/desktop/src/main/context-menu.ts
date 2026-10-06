@@ -13,6 +13,17 @@ export interface Inspector {
   close(): void;
 }
 
+/** U10 «AI 작업 ▸» 하위 항목 하나(2026-10-06) — 글은 한국어 · run 은 그 작업을 «AI 채팅» 탭에 넘긴다 */
+export interface AiActionItem {
+  label: string;
+  run(): void;
+}
+
+/** 오른쪽 클릭 자리의 요소를 읽어 «AI 작업» 항목을 만든다(ai-element/chat-handoff.ts createAiActionProvider) — 빈 배열이면 메뉴에 안 보인다 */
+export interface AiActionProvider {
+  itemsAt(params: Electron.ContextMenuParams): Promise<AiActionItem[]>;
+}
+
 /** 메뉴에 보일 계정 수 — 나머지는 «지우기» 하위 메뉴에만 */
 const MAX_FILL_ITEMS = 5;
 
@@ -27,6 +38,8 @@ export function buildContextMenuTemplate(
   credential: CredentialMenu | null = null,
   /** «검사» — 탭 pane 오른쪽에 개발자 도구(ViewManager.inspect). 없으면 Electron 기본(따로 뜨는 창) */
   inspector: Inspector | null = null,
+  /** U10 «AI 작업 ▸» 하위 항목(2026-10-06) — attachContextMenu 가 요소를 읽어 채운다 · 비면 메뉴에 안 보인다 */
+  aiItems: readonly AiActionItem[] = [],
 ): MenuItemConstructorOptions[] {
   const items: MenuItemConstructorOptions[] = [];
   const sep = (): void => {
@@ -45,6 +58,12 @@ export function buildContextMenuTemplate(
         submenu: credential.accounts.map((account) => ({ label: menuText(account.username), click: () => credential.onRemove(account.username) })),
       });
     }
+    sep();
+  }
+
+  // U10 «AI 작업 ▸»(2026-10-06 사장님 안 «요소 → 하네스 자동 연결 → 작업 고르기 → 클릭만») — 네이버 · 어드민 탭의 요소 종류별 작업
+  if (aiItems.length > 0) {
+    items.push({ label: 'AI 작업', submenu: aiItems.map((item) => ({ label: menuText(item.label), click: () => item.run() })) });
     sep();
   }
 
@@ -95,13 +114,28 @@ export function buildContextMenuTemplate(
   return items;
 }
 
-export function attachContextMenu(wc: WebContents, kind: TabKind, inspector: Inspector | null = null): void {
+export function attachContextMenu(wc: WebContents, kind: TabKind, inspector: Inspector | null = null, ai: AiActionProvider | null = null): void {
+  // 빠른 연속 오른쪽 클릭 — 늦게 끝난 앞 클릭이 뒤 메뉴를 바꿔치기하지 않게 마지막 클릭만 띄운다(검수 2026-10-06)
+  let latest = 0;
   wc.on('context-menu', (_event, params) => {
-    // 메뉴가 열린 사이 탭이 닫히면(Ctrl+W) 항목 click 이 사라진 webContents 를 부른다 — 누를 때 한 번 더 본다(제미나이 검수)
-    // 계정 «지우기» 하위 메뉴의 click 은 이 감싸기 밖이다 — 지우기는 webContents 를 안 쓴다
-    const guarded = buildContextMenuTemplate(params, wc, credentialMenuFor(wc, kind, params), inspector).map((item) =>
-      item.click ? { ...item, click: (...args: Parameters<NonNullable<typeof item.click>>) => { if (!wc.isDestroyed()) item.click?.(...args); } } : item,
-    );
-    Menu.buildFromTemplate(guarded).popup();
+    const seq = ++latest;
+    void (async () => {
+      // U10 — 요소 읽기(isolated world · ms 단위)와 담당 AI(표 · 처음 한 번 최대 1.5초 · 그 뒤 메모리)를 기다린 뒤 메뉴를 띄운다. 실패해도 메뉴는 뜬다
+      let aiItems: AiActionItem[] = [];
+      if (ai) {
+        try {
+          aiItems = await ai.itemsAt(params);
+        } catch (error) {
+          console.warn('[ai-menu] 요소 읽기 실패 — AI 작업 없이 메뉴를 띄웁니다', error);
+        }
+      }
+      if (wc.isDestroyed() || seq !== latest) return;
+      // 메뉴가 열린 사이 탭이 닫히면(Ctrl+W) 항목 click 이 사라진 webContents 를 부른다 — 누를 때 한 번 더 본다(제미나이 검수)
+      // 계정 «지우기» 하위 메뉴 · «AI 작업» 하위 메뉴의 click 은 이 감싸기 밖이다 — 지우기는 webContents 를 안 쓰고, AI 작업은 ChatHandoff 가 스스로 isDestroyed 를 본다
+      const guarded = buildContextMenuTemplate(params, wc, credentialMenuFor(wc, kind, params), inspector, aiItems).map((item) =>
+        item.click ? { ...item, click: (...args: Parameters<NonNullable<typeof item.click>>) => { if (!wc.isDestroyed()) item.click?.(...args); } } : item,
+      );
+      Menu.buildFromTemplate(guarded).popup();
+    })();
   });
 }
