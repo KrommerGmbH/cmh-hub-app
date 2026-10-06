@@ -10,6 +10,7 @@ import { fillSavedCredential, readFieldState } from './credential-filler.js';
 import { watchLoginFieldFocus } from './credential-focus-watch.js';
 import { watchLoginSubmit } from './credential-autosave.js';
 import { CredentialStore } from './credential-store.js';
+import { APP_CONFIG } from '../../config.js';
 import { findLoginPage, matchLoginFieldClick } from './login-pages.js';
 
 const FAKE_USERNAME = 'cred-check-user';
@@ -166,7 +167,7 @@ async function checkAdminAutoSave(window: BaseWindow): Promise<Record<string, un
     return true;
   };
   try {
-    await wc.loadURL('https://testumgebung.my-mik.de/admin#/login/').catch(() => undefined);
+    await wc.loadURL(`${APP_CONFIG.serverOrigin}/admin#/login/`).catch(() => undefined);
     await waitForFields(wc, 'admin', 25_000);
     const page = findLoginPage('admin', wc.getURL());
     if (!page) return { error: '로그인 화면 아님', url: wc.getURL() };
@@ -182,7 +183,7 @@ async function checkAdminAutoSave(window: BaseWindow): Promise<Record<string, un
       out['rightFill'] = await fillSavedCredential(wc, page, 'e2e-test', password);
       out['rightClicked'] = await clickLoginButton();
     } else {
-      await wc.loadURL('https://testumgebung.my-mik.de/admin#/sw/dashboard/index').catch(() => undefined); // 성공 흉내 — 해시만 바뀌어 did-navigate-in-page
+      await wc.loadURL(`${APP_CONFIG.serverOrigin}/admin#/sw/dashboard/index`).catch(() => undefined); // 성공 흉내 — 해시만 바뀌어 did-navigate-in-page
     }
     const end = Date.now() + 25_000;
     while (Date.now() < end && saves.length === 0) await sleep(500);
@@ -223,7 +224,7 @@ export function runCredentialCheckIfRequested(window: BaseWindow): void {
         console.info('[cred-check] autosave', JSON.stringify(await checkAdminAutoSave(window)));
         return;
       }
-      console.info('[cred-check] admin', JSON.stringify(await checkPage(window, 'admin', 'https://testumgebung.my-mik.de/admin#/login/')));
+      console.info('[cred-check] admin', JSON.stringify(await checkPage(window, 'admin', `${APP_CONFIG.serverOrigin}/admin#/login/`)));
       if (process.env['CMH_HUB_CRED_CHECK'] === 'all') {
         const naverLogin = 'https://accounts.commerce.naver.com/login?url=https%3A%2F%2Fsell.smartstore.naver.com%2F%23%2Flogin-callback';
         console.info('[cred-check] naver', JSON.stringify(await checkPage(window, 'naver', naverLogin)));

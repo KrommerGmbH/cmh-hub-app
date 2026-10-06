@@ -11,7 +11,7 @@
     "test": "vitest run",
     "dev": "pnpm run build && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
-    "dist:win": "pnpm run build && electron-builder --win --config ../../electron-builder.yml"
+    "dist:win": "pnpm run build && node scripts/build-release.mjs && electron-builder --win --config ../../electron-builder.yml"
   },
   "dependencies": {
     "@cmh-hub-app/contracts": "workspace:*",

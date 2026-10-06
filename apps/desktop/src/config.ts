@@ -1,10 +1,15 @@
+import { SERVER_ORIGIN } from './build-target.js';
+
+/** 서버 호스트 이름(포트 없음) — url-policy.ts · login-pages.ts 가 URL.hostname 과 견준다. 서버 주소 하나(build-target.ts)에서 나온다 */
+const SERVER_HOST = new URL(SERVER_ORIGIN).hostname;
+
 // 빌드에 고정되는 값(A02 — 어드민 · 네이버 탭은 사용자가 URL 을 넣지 않는다 · phishing 차단. 예외는 빈 탭(web · 2026-10-05) 하나 — 따로 된 세션 · 저장된 계정 안 씀)
 export const APP_CONFIG = {
   /** 서버 어드민 호스트 — https:// 만 */
-  serverOrigin: 'https://testumgebung.my-mik.de',
+  serverOrigin: SERVER_ORIGIN,
   adminPath: '/admin',
   /** admin 탭이 갈 수 있는 호스트 */
-  adminHosts: ['testumgebung.my-mik.de'],
+  adminHosts: [SERVER_HOST],
   /**
    * naver 탭이 갈 수 있는 호스트 — 접미사로 본다. 판매자센터 정확한 호스트는 코딩 전 실측(cmh_ai_screen 의 URL · PLAN A02).
    * 로그인(nid.naver.com)도 naver.com 아래라 같이 통과한다.
@@ -14,9 +19,9 @@ export const APP_CONFIG = {
   newTabChoices: [
     // 빈 탭(2026-10-05) — 주소창으로 아무 http(s) · 검색. 저장 공간은 webPartition(어드민 · 네이버와 따로)
     { label: '빈 탭', kind: 'web', url: 'about:blank' },
-    { label: '대시보드', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/sw/dashboard/index' },
+    { label: '대시보드', kind: 'admin', url: `${SERVER_ORIGIN}/admin#/sw/dashboard/index` },
     // 메뉴 없는 챗봇 길(CmhAiAgent cmh.ai.chat.solo · coreRoute) — 어드민 안 챗봇(#/cmh/ai/chat/index)과 화면 부품 하나를 같이 쓴다
-    { label: 'AI 채팅', kind: 'admin', url: 'https://testumgebung.my-mik.de/admin#/cmh/ai/chat-solo' },
+    { label: 'AI 채팅', kind: 'admin', url: `${SERVER_ORIGIN}/admin#/cmh/ai/chat-solo` },
     { label: '네이버 스마트스토어센터', kind: 'naver', url: 'https://sell.smartstore.naver.com/' },
   ] as const,
   /** 네이버 pane 세션 — 우리 어드민 쿠키와 한 바구니에 두지 않는다 */
@@ -40,11 +45,11 @@ export const APP_CONFIG = {
   loginPages: [
     {
       kind: 'admin',
-      hosts: ['testumgebung.my-mik.de'],
+      hosts: [SERVER_HOST],
       pathPrefix: '/admin',
       hashPrefix: '#/login',
       /** 로그인 뒤 도착 화면 — 여기에 와야 «로그인 성공»으로 보고 자동 저장한다(어드민 해시 화면 · #/login 은 아님) */
-      successUrlPrefixes: ['https://testumgebung.my-mik.de/admin#/'],
+      successUrlPrefixes: [`${SERVER_ORIGIN}/admin#/`],
       usernameSelectors: ['#sw-field--username'],
       passwordSelectors: ['#sw-field--password'],
     },
