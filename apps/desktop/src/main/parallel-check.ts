@@ -15,6 +15,9 @@ import type { ShellWindow } from './window/shell-window.js';
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main
 const DIST = join(here, '..');
 const TASK_ID = 'parallel-test';
+/** AI 커서 빠르기 배수 — 이동 · 동작 사이 쉬는 시간을 이 수로 나눈다(2026-10-06 사장님 «너무 느려 2-3 배 빨라도 돼» · CMH_HUB_PARALLEL_SPEED 로 바꿈) */
+const rawSpeed = Number(process.env['CMH_HUB_PARALLEL_SPEED'] ?? '2.5');
+const AI_SPEED = Number.isFinite(rawSpeed) && rawSpeed >= 1 && rawSpeed <= 10 ? rawSpeed : 2.5; // Infinity · 100 이면 쉬는 시간 0 → 이벤트 폭주(제미나이 검수 2026-10-06)
 
 interface Point {
   x: number;
@@ -184,7 +187,7 @@ async function run(w: ShellWindow): Promise<void> {
     };
     const end = Date.now() + minutes * 60_000;
     let step = 0;
-    const steps = Math.round(minutes * 20);
+    const steps = Math.round(minutes * 13 * AI_SPEED); // 띠 글자의 전체 단계 수 어림 — 2026-10-06 실측: 빠르기 2.5 · 3분 = 99단계(분당 33). 빠르기를 안 곱하면 띠가 100% 를 넘김
     const band = (): void => {
       if (!ov.webContents.isDestroyed()) ov.webContents.send(OVERLAY_IPC.band, { paneId: right, taskId: TASK_ID, title: '병렬 시험(읽기만 · 저장 0)', step, steps });
     };
@@ -201,7 +204,7 @@ async function run(w: ShellWindow): Promise<void> {
         const y = Math.round(p.y);
         naver.sendInputEvent({ type: 'mouseMove', x, y });
         sendCursor({ x, y });
-        const dt = Math.max(4, Math.min(40, (p.timestamp ?? last + 16) - last));
+        const dt = Math.max(2, Math.min(40, (p.timestamp ?? last + 16) - last) / AI_SPEED);
         last = p.timestamp ?? last + 16;
         await sleep(dt);
       }
@@ -265,7 +268,7 @@ async function run(w: ShellWindow): Promise<void> {
         if (target) await moveTo(target);
       }
       save();
-      await sleep(rand(1200, 3500));
+      await sleep(rand(1200, 3500) / AI_SPEED);
     }
     summary.stoppedBy = stopRequested ? 'stop-button' : 'time';
   } catch (error) {
