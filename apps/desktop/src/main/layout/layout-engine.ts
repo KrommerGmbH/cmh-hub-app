@@ -253,6 +253,8 @@ export class LayoutEngine implements LayoutEngineApi {
       case 'update.later':
       case 'window.minimize':
       case 'window.toggleMaximize':
+      case 'devtools.resize':
+      case 'devtools.close':
       case 'window.close':
         return emptyChange(this.tree.focusedPaneId);
     }

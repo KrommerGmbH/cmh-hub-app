@@ -44,7 +44,11 @@ export type ShellCommand =
   | { cmd: 'update.later' }
   | { cmd: 'window.minimize' }
   | { cmd: 'window.toggleMaximize' }
-  | { cmd: 'window.close' };
+  | { cmd: 'window.close' }
+  /** 개발자 도구 너비 조절 — ratio = 개발자 도구 칸 너비 / pane 내용 너비 */
+  | { cmd: 'devtools.resize'; tabId: string; ratio: number }
+  /** 개발자 도구 닫기 */
+  | { cmd: 'devtools.close'; tabId: string };
 
 export interface AiTaskBand {
   paneId: string;
@@ -63,6 +67,13 @@ export interface ShellTabView {
   active: boolean;
 }
 
+export interface ShellDevToolsView {
+  tabId: string;
+  sashRect: Rect;
+  headerRect: Rect;
+  paneContentRect: Rect;
+}
+
 export interface ShellPaneView {
   id: string;
   stripRect: Rect;
@@ -77,6 +88,8 @@ export interface ShellPaneView {
   canGoForward: boolean;
   /** 활성 탭이 빈 탭(web)일 때 그 주소 — 셸이 주소창을 보이고 채운다 · 다른 종류면 null(주소창 없음) */
   omniboxUrl: string | null;
+  /** 활성 탭의 개발자 도구가 열려 있으면 셸이 경계선 · 머리줄을 그린다 */
+  devtools: ShellDevToolsView | null;
 }
 
 export interface ShellState {

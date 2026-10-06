@@ -16,8 +16,11 @@ function oneLine(error: unknown): string {
 export class AppUpdater {
   private version: string | undefined;
   private downloading = false;
+  /** 서버가 이 판을 거절함(G04) · 한 번 켜지면 앱을 다시 켤 때까지 안 꺼진다 */
+  private required = false;
   /** 다 받은 판 — 있으면 다시 확인하지 않는다(앱을 닫을 때 깔린다 · 6시간 타이머가 같은 판을 «있음»으로 다시 띄우던 결함 · 검수 2026-10-06) */
   private readyVersion: string | null = null;
+  private devRejectedShown = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly publish: (state: UpdateState) => void) {}
@@ -25,6 +28,27 @@ export class AppUpdater {
   /** 판을 알 때만 version 칸을 넣는다(exactOptionalPropertyTypes — undefined 를 그대로 못 넣는다) */
   private known(): { version?: string } {
     return this.version === undefined ? {} : { version: this.version };
+  }
+
+  /** 서버가 이 판을 거절함(G04) — 필수 업데이트 모달 */
+  markRequired(): void {
+    if (!app.isPackaged) {
+      if (!this.devRejectedShown) {
+        this.devRejectedShown = true;
+        console.warn('[update] 서버가 이 개발판을 거절 — app-too-old · package.json 판 번호를 올리십시오');
+        this.publish({ state: 'error', message: '서버가 이 개발판을 거절합니다(app-too-old). 개발판은 자동 업데이트가 없습니다 — 판 번호를 올리십시오.' });
+      }
+      return;
+    }
+    if (this.required) return;
+    this.required = true;
+    if (this.readyVersion !== null) {
+      this.publish({ state: 'ready', version: this.readyVersion, ...(this.required ? { mandatory: true } : {}) });
+      return;
+    }
+    this.publish({ state: 'required', ...this.known() });
+    console.warn('[update] 서버가 이 판을 거절 — 필수 업데이트(app-too-old)');
+    this.check();
   }
 
   start(): void {
@@ -37,16 +61,17 @@ export class AppUpdater {
     autoUpdater.on('update-available', (info) => {
       this.version = info.version;
       const size = info.files[0]?.size;
-      this.publish({ state: 'available', version: info.version, ...(size === undefined ? {} : { size }) });
+      this.publish({ state: this.required ? 'required' : 'available', version: info.version, ...(size === undefined ? {} : { size }) });
     });
     autoUpdater.on('update-not-available', () => {
+      if (this.required) return;
       if (!this.downloading) this.publish({ state: 'none' });
     });
     autoUpdater.on('download-progress', (p) => this.publish({ state: 'downloading', ...this.known(), percent: p.percent }));
     autoUpdater.on('update-downloaded', (info) => {
       this.downloading = false;
       this.readyVersion = info.version;
-      this.publish({ state: 'ready', version: info.version });
+      this.publish({ state: 'ready', version: info.version, ...(this.required ? { mandatory: true } : {}) });
     });
     autoUpdater.on('error', (error: unknown) => {
       // 확인 단계 오류(오프라인 · Releases 가 아직 없음 404)는 로그만 — 시작할 때마다 오류 모달을 띄우지 않는다.
@@ -54,7 +79,11 @@ export class AppUpdater {
       if (this.downloading) {
         console.warn('[update] 받기 실패', oneLine(error));
         this.downloading = false;
-        this.publish({ state: 'error', ...this.known(), message: oneLine(error) });
+        if (this.required) {
+          this.publish({ state: 'required', ...this.known(), message: oneLine(error) });
+        } else {
+          this.publish({ state: 'error', ...this.known(), message: oneLine(error) });
+        }
       }
     });
     this.check();
@@ -84,6 +113,14 @@ export class AppUpdater {
 
   /** 모달 «나중에» — 모달만 닫는다. 받아 둔 판은 autoInstallOnAppQuit 로 다음에 닫을 때 깔린다 */
   later(): void {
+    if (this.required) {
+      if (this.readyVersion !== null) {
+        this.publish({ state: 'ready', version: this.readyVersion, ...(this.required ? { mandatory: true } : {}) });
+        return;
+      }
+      this.publish({ state: 'required', ...this.known() });
+      return;
+    }
     this.publish({ state: 'none' });
   }
 }

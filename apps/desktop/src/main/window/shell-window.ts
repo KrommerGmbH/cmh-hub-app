@@ -95,11 +95,11 @@ export class ShellWindow {
         onLoading: (tabId, loading) => this.patchTab(tabId, { loading }),
         onUrl: (tabId, url) => this.patchTab(tabId, { url }),
         onInspect: (tabId, x, y) => {
-          this.views.inspect(tabId, x, y, () => this.relayout());
+          this.views.inspect(tabId, x, y, () => this.refreshAfterInspector());
           // 셸 메뉴가 열린 채면 새 개발자 도구 view 가 메뉴를 덮는다 — 셸을 다시 맨 위로(제미나이 검수 2026-10-05)
           if (this.shellOnTop) this.setShellOnTop(true);
         },
-        onCloseInspector: (tabId) => this.views.closeInspector(tabId, () => this.relayout()),
+        onCloseInspector: (tabId) => this.views.closeInspector(tabId, () => this.refreshAfterInspector()),
         isInspecting: (tabId) => this.views.isInspecting(tabId),
         onOpenWebTab: (tabId, url) => {
           const pane = this.engine.getPaneOfTab(tabId);
@@ -196,6 +196,15 @@ export class ShellWindow {
       case 'shell.popup':
         this.setShellOnTop(cmd.open, cmd.refocusPage ?? true);
         return;
+      case 'devtools.resize':
+        if (this.views.setDevToolsRatio(cmd.tabId, cmd.ratio)) {
+          this.relayout();
+          this.sendState();
+        }
+        return;
+      case 'devtools.close':
+        this.views.closeInspector(cmd.tabId, () => this.refreshAfterInspector());
+        return;
       default:
         break;
     }
@@ -248,11 +257,16 @@ export class ShellWindow {
 
   /** smoke — 오른쪽 클릭 «검사»와 같은 길(메뉴는 사람만 누를 수 있다) */
   handleInspectForSmoke(tabId: string, x: number, y: number): void {
-    this.views.inspect(tabId, x, y, () => this.relayout());
+    this.views.inspect(tabId, x, y, () => this.refreshAfterInspector());
   }
 
   closeInspectorForSmoke(tabId: string): void {
-    this.views.closeInspector(tabId, () => this.relayout());
+    this.views.closeInspector(tabId, () => this.refreshAfterInspector());
+  }
+
+  private refreshAfterInspector(): void {
+    this.relayout();
+    this.sendState();
   }
 
   /** smoke — 셸 view 가 지금 맨 위 층인가 */
@@ -357,7 +371,18 @@ export class ShellWindow {
   private sendState(): void {
     const wc = this.shellView.webContents;
     if (wc.isDestroyed()) return;
-    wc.send(SHELL_IPC.state, buildState(this.engine, this.geometry, this.window, this.update, (tabId) => this.historyOf(tabId), this.focusOmniboxPaneId));
+    wc.send(
+      SHELL_IPC.state,
+      buildState(
+        this.engine,
+        this.geometry,
+        this.window,
+        this.update,
+        (tabId) => this.historyOf(tabId),
+        this.focusOmniboxPaneId,
+        (tabId, content) => this.views.devToolsLayoutOf(tabId, content),
+      ),
+    );
     this.focusOmniboxPaneId = null;
   }
 

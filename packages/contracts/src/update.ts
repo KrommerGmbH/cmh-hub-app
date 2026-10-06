@@ -6,4 +6,6 @@ export interface UpdateState {
   percent?: number;
   /** 원인 하나만 · 한 줄 */
   message?: string;
+  /** G04 — 서버가 이 판을 거절함 · 셸이 «나중에 · 다음 실행 때» 를 숨긴다 */
+  mandatory?: boolean;
 }

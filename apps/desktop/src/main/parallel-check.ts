@@ -130,8 +130,14 @@ async function run(w: ShellWindow): Promise<void> {
     const left = w.paneIdByOrder(0);
     const right = w.paneIdByOrder(1);
     if (!naverTabId || !adminTabId || !left || !right) throw new Error('탭 · pane 을 못 찾음');
-    if (w.engine.getPaneOfTab(naverTabId)?.id !== right) w.handleCommand({ cmd: 'moveTab', tabId: naverTabId, toPaneId: right });
-    if (w.engine.getPaneOfTab(adminTabId)?.id !== left) w.handleCommand({ cmd: 'moveTab', tabId: adminTabId, toPaneId: left });
+    // ceaca1c 뒤 applyLayout 이 탭 차례대로 놓는다 — moveTab 은 pane 을 없애 «없는 pane» 거절을 냈다(2026-10-06 Fable 판정)
+    if (w.engine.getPaneOfTab(naverTabId)?.id !== right || w.engine.getPaneOfTab(adminTabId)?.id !== left) {
+      const leftActive = w.engine.getPane(left)?.activeTabId;
+      const rightActive = w.engine.getPane(right)?.activeTabId;
+      const leftKind = leftActive ? w.engine.getTab(leftActive)?.kind ?? '없음' : '없음';
+      const rightKind = rightActive ? w.engine.getTab(rightActive)?.kind ?? '없음' : '없음';
+      throw new Error(`배치 틀림: 왼쪽 ${leftKind} · 오른쪽 ${rightKind}`);
+    }
     await sleep(800);
     const naverView = w.views.get(naverTabId);
     const adminView = w.views.get(adminTabId);

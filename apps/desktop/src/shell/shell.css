@@ -95,6 +95,14 @@ button:disabled { opacity: .35; cursor: default; }
 body.dragging-col, body.dragging-col * { cursor: col-resize !important; }
 body.dragging-row, body.dragging-row * { cursor: row-resize !important; }
 
+/* ── 개발자 도구 경계선 · 머리줄(HUBAPP-DEVTOOLS) ── */
+.devtools-sash { position: absolute; background: var(--frame); z-index: 3; cursor: col-resize; }
+.devtools-sash:hover, .devtools-sash.dragging { background: var(--accent); }
+.devtools-header { position: absolute; z-index: 3; display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.devtools-close { width: 22px; height: 22px; display: grid; place-items: center; border: 0; border-radius: var(--radius-s); background: transparent; color: var(--muted); cursor: pointer; }
+.devtools-close:hover { background: var(--hover); color: var(--text); }
+.devtools-close:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+
 /* ── 팝오버(«+» · 레이아웃) — 셸이 맨 위로 올라온 동안만 보인다(shell.ts setPopupOpen) · 블러는 안 쓴다(셸 층이 투명이라 아래 페이지가 안 흐려진다) ── */
 .menu { position: absolute; z-index: 10; min-width: 232px; padding: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-l);
   box-shadow: 0 0 0 1px rgba(0,0,0,.3), 0 10px 30px -6px rgba(0,0,0,.6); animation: pop-in var(--dur) var(--ease); }

@@ -4,17 +4,34 @@ import {
   LAYOUT_LIMITS,
   type LayoutEngineApi,
   type LayoutGeometry,
+  type Rect,
+  type ShellDevToolsView,
   type ShellPaneView,
   type ShellState,
   type UpdateState,
 } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../../config.js';
 import { detectLayoutPreset } from '../layout/layout-engine.js';
+import type { DevToolsSplit } from './devtools-split.js';
 
 /** 탭 view 의 방문 기록 — view 가 없거나 닫혔으면 undefined */
 export type TabHistoryOf = (tabId: string) => { canGoBack: boolean; canGoForward: boolean } | undefined;
 
-export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, window: BaseWindow, update: UpdateState, historyOf: TabHistoryOf, focusOmniboxPaneId: string | null = null): ShellState {
+function toDevToolsView(tabId: string, content: Rect, devtoolsOf: (tabId: string, content: Rect) => DevToolsSplit | null): ShellDevToolsView | null {
+  const split = devtoolsOf(tabId, content);
+  if (!split) return null;
+  return { tabId, sashRect: split.sash, headerRect: split.header, paneContentRect: content };
+}
+
+export function buildState(
+  engine: LayoutEngineApi,
+  geometry: LayoutGeometry,
+  window: BaseWindow,
+  update: UpdateState,
+  historyOf: TabHistoryOf,
+  focusOmniboxPaneId: string | null = null,
+  devtoolsOf: (tabId: string, content: Rect) => DevToolsSplit | null = () => null,
+): ShellState {
   const tree = engine.getTree();
   const paneCount = engine.paneCount();
   const panes: ShellPaneView[] = [];
@@ -38,6 +55,7 @@ export function buildState(engine: LayoutEngineApi, geometry: LayoutGeometry, wi
       canGoForward: history?.canGoForward ?? false,
       // 빈 탭만 주소창 — about:blank 은 빈 칸으로
       omniboxUrl: activeTab?.kind === 'web' ? (activeTab.url === 'about:blank' ? '' : activeTab.url) : null,
+      devtools: pane.activeTabId ? toDevToolsView(pane.activeTabId, g.contentRect, devtoolsOf) : null,
     });
   }
   const [width, height] = window.getContentSize();

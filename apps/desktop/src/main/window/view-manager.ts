@@ -2,24 +2,7 @@
 import { WebContentsView, type BaseWindow } from 'electron';
 import type { LayoutChange, LayoutEngineApi, LayoutGeometry, Rect } from '@cmh-hub-app/contracts';
 import { createAdminView, type TabViewEvents } from '../admin-view.js';
-
-/** 개발자 도구 너비 — pane 너비의 이 비율 · 양쪽 최소(크롬 오른쪽 도킹과 비슷하게) */
-const DEVTOOLS_WIDTH_RATIO = 0.4;
-const DEVTOOLS_MIN_WIDTH = 320;
-const PAGE_MIN_WIDTH = 320;
-
-/** pane 자리를 페이지(왼쪽)와 개발자 도구(오른쪽)로 나눈다 — pane 이 좁으면 개발자 도구를 줄인다 */
-export function splitForDevTools(content: Rect): { page: Rect; devtools: Rect } {
-  const want = Math.round(content.width * DEVTOOLS_WIDTH_RATIO);
-  // pane 이 둘의 최소 합(640)보다 좁으면 반씩 — 개발자 도구가 0px 로 사라지지 않게(제미나이 검수 2026-10-05)
-  const width = content.width < DEVTOOLS_MIN_WIDTH + PAGE_MIN_WIDTH
-    ? Math.floor(content.width / 2)
-    : Math.min(Math.max(want, DEVTOOLS_MIN_WIDTH), content.width - PAGE_MIN_WIDTH);
-  return {
-    page: { ...content, width: content.width - width },
-    devtools: { x: content.x + content.width - width, y: content.y, width, height: content.height },
-  };
-}
+import { splitForDevTools, type DevToolsSplit } from './devtools-split.js';
 
 export class ViewManager {
   private readonly views = new Map<string, WebContentsView>();
@@ -27,6 +10,8 @@ export class ViewManager {
   private readonly devtools = new Map<string, WebContentsView>();
   /** 지금 열려 있는(창에 붙은) 개발자 도구의 탭 id */
   private readonly devtoolsOpen = new Set<string>();
+  /** 탭 id → 개발자 도구 너비 비율 (HUBAPP-DEVTOOLS) */
+  private readonly devtoolsRatio = new Map<string, number>();
 
   constructor(
     private readonly window: BaseWindow,
@@ -67,7 +52,7 @@ export class ViewManager {
         const tools = this.devtoolsOpen.has(tabId) ? this.devtools.get(tabId) : undefined;
         if (tabId === pane.activeTabId) {
           if (tools) {
-            const split = splitForDevTools(paneGeometry.contentRect);
+            const split = splitForDevTools(paneGeometry.contentRect, this.devtoolsRatio.get(tabId));
             view.setBounds(split.page);
             tools.setBounds(split.devtools);
             tools.setVisible(true);
@@ -81,6 +66,19 @@ export class ViewManager {
         }
       }
     }
+  }
+
+  /** 개발자 도구 너비 비율 설정 — 탭 id 에 저장 */
+  setDevToolsRatio(tabId: string, ratio: number): boolean {
+    if (!this.devtoolsOpen.has(tabId) || !Number.isFinite(ratio)) return false;
+    this.devtoolsRatio.set(tabId, Math.min(0.95, Math.max(0.05, ratio)));
+    return true;
+  }
+
+  /** 활성 탭의 개발자 도구 분할 배치 계산 — 닫혀 있으면 null */
+  devToolsLayoutOf(tabId: string, content: Rect): DevToolsSplit | null {
+    if (!this.devtoolsOpen.has(tabId)) return null;
+    return splitForDevTools(content, this.devtoolsRatio.get(tabId));
   }
 
   /**
@@ -136,8 +134,12 @@ export class ViewManager {
   private destroyDevTools(tabId: string): void {
     if (this.devtoolsOpen.has(tabId)) this.hideDevTools(tabId);
     const tools = this.devtools.get(tabId);
-    if (!tools) return;
+    if (!tools) {
+      this.devtoolsRatio.delete(tabId);
+      return;
+    }
     this.devtools.delete(tabId);
+    this.devtoolsRatio.delete(tabId);
     if (!tools.webContents.isDestroyed()) tools.webContents.close();
   }
 

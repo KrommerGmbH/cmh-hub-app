@@ -41,6 +41,8 @@ app.whenReady().then(async () => {
   if (process.env['CMH_HUB_TEST_ERROR'] && !app.isPackaged) console.error('[test] 오류 보내기 끝-끝 시험', new Date().toISOString());
   const w = await createShellWindow(appSession); // U10 — 오른쪽 클릭 «AI 작업» 이 서버 화면 표(cmh-ai-screen)를 읽는 데 세션을 쓴다
   w.updater.start(); // G03 — 배포판만 확인(개발판은 안 함)
+  // G04 — 서버가 이 판을 거절하면(403 app-too-old) 필수 업데이트 모달(«나중에» 없음)
+  appSession.onAppError((code) => { if (code === 'app-too-old') w.updater.markRequired(); });
   startHeartbeat(appSession, w.window, () => {
     console.warn('[heartbeat] 사장님이 이 설치를 차단했습니다 — 창을 닫습니다');
     w.window.close();

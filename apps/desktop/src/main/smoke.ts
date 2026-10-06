@@ -286,6 +286,35 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       const pageNarrowed = page.getBounds().width < pageWidthBefore;
       const tools = w.window.contentView.children[w.window.contentView.children.length - 1];
       const toolsRight = tools ? tools.getBounds().x >= page.getBounds().x + page.getBounds().width - 1 : false;
+      const headerShown = await waitFor(async () => (await shellJs<number>("document.querySelectorAll('.devtools-header').length")) === 1, 3000);
+      const toolsWidthBefore = tools?.getBounds().width ?? 0;
+      const devtoolsSashRect = await shellJs<{ left: number; top: number; height: number } | null>(
+        "(() => { const el = document.querySelector('.devtools-sash'); if (!el) return null; const r = el.getBoundingClientRect(); return { left: r.left, top: r.top, height: r.height }; })()"
+      );
+      if (devtoolsSashRect) {
+        const x0 = Math.round(devtoolsSashRect.left + 2);
+        const y = Math.round(devtoolsSashRect.top + devtoolsSashRect.height / 2);
+        const wc = w.shellView.webContents;
+        wc.sendInputEvent({ type: 'mouseMove', x: x0, y });
+        wc.sendInputEvent({ type: 'mouseDown', x: x0, y, button: 'left', clickCount: 1 });
+        for (let i = 1; i <= 10; i++) {
+          wc.sendInputEvent({ type: 'mouseMove', x: x0 - i * 20, y, button: 'left', modifiers: ['leftbuttondown'] });
+          await wait(30);
+        }
+        wc.sendInputEvent({ type: 'mouseUp', x: x0 - 200, y, button: 'left', clickCount: 1 });
+      }
+      const toolsWidened = await waitFor(() => (tools?.getBounds().width ?? 0) >= toolsWidthBefore + 150, 3000);
+      const closeRect = await shellJs<{ x: number; y: number } | null>(
+        "(() => { const el = document.querySelector('.devtools-close'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()"
+      );
+      if (closeRect) {
+        const wc = w.shellView.webContents;
+        wc.sendInputEvent({ type: 'mouseMove', x: closeRect.x, y: closeRect.y });
+        wc.sendInputEvent({ type: 'mouseDown', x: closeRect.x, y: closeRect.y, button: 'left', clickCount: 1 });
+        wc.sendInputEvent({ type: 'mouseUp', x: closeRect.x, y: closeRect.y, button: 'left', clickCount: 1 });
+      }
+      const closedByX = await waitFor(() => childCount() === before && page.getBounds().width === pageWidthBefore, 6000);
+      const headerGone = await waitFor(async () => (await shellJs<number>("document.querySelectorAll('.devtools-header').length")) === 0, 3000);
       w.closeInspectorForSmoke(tabId);
       const closed = await waitFor(() => childCount() === before && page.getBounds().width === pageWidthBefore, 6000);
       // 닫은 뒤 다시 «검사» — 새 view 로 다시 떠야 한다
@@ -297,8 +326,8 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       }, 6000);
       w.closeInspectorForSmoke(tabId);
       const closedAgain = await waitFor(() => childCount() === before, 6000);
-      const ok = opened && addedView && pageNarrowed && toolsRight && closed && reopened && closedAgain;
-      log('검사 → 오른쪽 개발자 도구', `${ok ? 'OK' : 'FAIL'} 열림 ${opened} · view 하나 더 ${addedView} · 페이지 좁아짐 ${pageNarrowed} · 오른쪽 ${toolsRight} · 닫으면 원래대로 ${closed} · 다시 열림 ${reopened} · 다시 닫힘 ${closedAgain}`);
+      const ok = opened && addedView && pageNarrowed && toolsRight && headerShown && toolsWidened && closedByX && headerGone && closed && reopened && closedAgain;
+      log('검사 → 오른쪽 개발자 도구', `${ok ? 'OK' : 'FAIL'} 열림 ${opened} · view 하나 더 ${addedView} · 페이지 좁아짐 ${pageNarrowed} · 오른쪽 ${toolsRight} · 닫으면 원래대로 ${closed} · 다시 열림 ${reopened} · 다시 닫힘 ${closedAgain} · 머리줄 ${headerShown} · 끌어 넓힘 ${toolsWidened} · ×로 닫힘 ${closedByX} · 머리줄 사라짐 ${headerGone}`);
     }
   }
 

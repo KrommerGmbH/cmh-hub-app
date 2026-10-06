@@ -1,6 +1,6 @@
 // U01 — 셸 페이지. 상태(ShellState)가 정본 · 받을 때마다 다시 그린다. window.hubShell 만 쓴다(Node · electron 없음).
 // 스트립 · sash 요소는 id 로 재사용한다(지우고 새로 만들지 않는다) — 끌고 있는 sash 가 사라지면 포인터 캡처가 끊긴다(2026-10-02 사장님 «넓히고 좁히기가 안 된다»).
-import type { SashGeometry, ShellCommand, ShellState } from '@cmh-hub-app/contracts';
+import type { SashGeometry, ShellCommand, ShellDevToolsView, ShellState } from '@cmh-hub-app/contracts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -19,8 +19,22 @@ const modalEl = $<HTMLElement>('#update-modal');
 const stripEls = new Map<string, HTMLElement>();
 const sashEls = new Map<string, HTMLElement>();
 const sashData = new Map<string, SashGeometry>();
+const devtoolsEls = new Map<string, { sash: HTMLElement; header: HTMLElement }>();
+const devtoolsData = new Map<string, ShellDevToolsView>();
 
 let lastState: ShellState | null = null;
+
+interface DevToolsDrag {
+  paneId: string;
+  tabId: string;
+  pointerId: number;
+  contentRight: number;
+  contentWidth: number;
+  raf: number | null;
+  pending: number | null;
+  lastSent: number | null;
+}
+let devtoolsDrag: DevToolsDrag | null = null;
 
 interface Drag {
   sashId: string;
@@ -302,6 +316,123 @@ window.addEventListener('pointermove', onWindowPointerMove);
 window.addEventListener('pointerup', onWindowPointerEnd);
 window.addEventListener('pointercancel', onWindowPointerEnd);
 
+// ───────────────────────── 개발자 도구 sash · 머리줄 (HUBAPP-DEVTOOLS) ─────────────────────────
+
+function sendDevToolsResize(d: DevToolsDrag, ratio: number): void {
+  if (d.lastSent !== null && Math.abs(d.lastSent - ratio) < 0.002) return;
+  d.lastSent = ratio;
+  send({ cmd: 'devtools.resize', tabId: d.tabId, ratio });
+}
+
+function onDevToolsSashPointerDown(e: PointerEvent): void {
+  if (e.button !== 0) return;
+  const el = e.currentTarget as HTMLElement;
+  const paneId = el.dataset['paneId'];
+  const tabId = el.dataset['tabId'];
+  const data = paneId ? devtoolsData.get(paneId) : undefined;
+  if (!paneId || !tabId || !data) return;
+  e.preventDefault();
+  const width = data.paneContentRect.width;
+  devtoolsDrag = {
+    paneId,
+    tabId,
+    pointerId: e.pointerId,
+    contentRight: data.paneContentRect.x + width,
+    contentWidth: width,
+    raf: null,
+    pending: null,
+    lastSent: null,
+  };
+  el.classList.add('dragging');
+  document.body.classList.add('dragging-col');
+  try {
+    el.setPointerCapture(e.pointerId);
+  } catch {
+    // 캡처가 안 되어도 window 의 pointermove 로 받는다
+  }
+}
+
+function onDevToolsPointerMove(e: PointerEvent): void {
+  if (!devtoolsDrag || e.pointerId !== devtoolsDrag.pointerId) return;
+  if (devtoolsDrag.contentWidth <= 0) return;
+  devtoolsDrag.pending = Math.min(0.95, Math.max(0.05, (devtoolsDrag.contentRight - e.clientX) / devtoolsDrag.contentWidth));
+  if (devtoolsDrag.raf === null) {
+    devtoolsDrag.raf = requestAnimationFrame(() => {
+      if (!devtoolsDrag) return;
+      devtoolsDrag.raf = null;
+      if (devtoolsDrag.pending !== null) sendDevToolsResize(devtoolsDrag, devtoolsDrag.pending);
+      devtoolsDrag.pending = null;
+    });
+  }
+}
+
+function onDevToolsPointerEnd(e: PointerEvent): void {
+  if (!devtoolsDrag || e.pointerId !== devtoolsDrag.pointerId) return;
+  const d = devtoolsDrag;
+  devtoolsDrag = null;
+  if (d.raf !== null) cancelAnimationFrame(d.raf);
+  if (d.pending !== null) sendDevToolsResize(d, d.pending);
+  const el = devtoolsEls.get(d.paneId)?.sash;
+  el?.classList.remove('dragging');
+  try {
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  } catch {
+    // 이미 풀렸으면 그만
+  }
+  document.body.classList.remove('dragging-col');
+}
+
+function createDevToolsElements(paneId: string): { sash: HTMLElement; header: HTMLElement } {
+  const sash = document.createElement('div');
+  sash.className = 'devtools-sash';
+  sash.addEventListener('pointerdown', onDevToolsSashPointerDown);
+
+  const header = document.createElement('div');
+  header.className = 'devtools-header';
+
+  const title = document.createElement('span');
+  title.className = 'devtools-title';
+  title.textContent = '개발자 도구';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'devtools-close';
+  closeBtn.title = '개발자 도구 닫기';
+  closeBtn.setAttribute('aria-label', '개발자 도구 닫기');
+  closeBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.3"/></svg>';
+  closeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const tabId = header.dataset['tabId'] ?? sash.dataset['tabId'];
+    if (tabId) send({ cmd: 'devtools.close', tabId });
+  });
+
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+
+  panesEl.appendChild(sash);
+  panesEl.appendChild(header);
+
+  const els = { sash, header };
+  devtoolsEls.set(paneId, els);
+  return els;
+}
+
+function upsertDevTools(paneId: string, view: ShellDevToolsView): void {
+  devtoolsData.set(paneId, view);
+  const els = devtoolsEls.get(paneId) ?? createDevToolsElements(paneId);
+  els.sash.className = `devtools-sash${devtoolsDrag?.paneId === paneId ? ' dragging' : ''}`;
+  els.sash.dataset['paneId'] = paneId;
+  els.sash.dataset['tabId'] = view.tabId;
+  els.header.dataset['paneId'] = paneId;
+  els.header.dataset['tabId'] = view.tabId;
+  place(els.sash, view.sashRect);
+  place(els.header, view.headerRect);
+}
+
+window.addEventListener('pointermove', onDevToolsPointerMove);
+window.addEventListener('pointerup', onDevToolsPointerEnd);
+window.addEventListener('pointercancel', onDevToolsPointerEnd);
+
 // ───────────────────────── «+» 메뉴 ─────────────────────────
 
 const ADMIN_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>';
@@ -429,7 +560,7 @@ function renderUpdate(state: ShellState): void {
   const primary = $<HTMLButtonElement>('#update-primary');
   const secondary = $<HTMLButtonElement>('#update-secondary');
   progress.hidden = u.state !== 'downloading';
-  secondary.hidden = u.state === 'required' || u.state === 'downloading';
+  secondary.hidden = u.state === 'required' || u.state === 'downloading' || (u.state === 'ready' && u.mandatory === true);
   primary.hidden = u.state === 'downloading';
   const mb = u.size ? ` · ${(u.size / 1024 / 1024).toFixed(1)} MB` : '';
   switch (u.state) {
@@ -443,7 +574,7 @@ function renderUpdate(state: ShellState): void {
       break;
     case 'required':
       title.textContent = '업데이트가 필요합니다';
-      text.textContent = `서버가 이 판을 더 받지 않습니다. 새 판 ${u.version ?? ''}${mb} 을 받아야 계속 쓸 수 있습니다.`;
+      text.textContent = `서버가 이 판을 더 받지 않습니다. 새 판 ${u.version ?? ''}${mb} 을 받아야 계속 쓸 수 있습니다.${u.message ? ` (지난 시도 실패: ${u.message})` : ''}`;
       primary.textContent = '지금 업데이트';
       primary.onclick = () => send({ cmd: 'update.download' });
       break;
@@ -657,6 +788,31 @@ function render(state: ShellState): void {
   }
   for (const sash of state.sashes) upsertSash(sash);
 
+  for (const pane of state.panes) {
+    if (pane.devtools) upsertDevTools(pane.id, pane.devtools);
+  }
+  for (const [id, els] of devtoolsEls) {
+    const pane = state.panes.find((p) => p.id === id);
+    if (!pane || pane.devtools === null) {
+      if (devtoolsDrag?.paneId === id) {
+        if (devtoolsDrag.raf !== null) cancelAnimationFrame(devtoolsDrag.raf);
+        try {
+          if (els.sash.hasPointerCapture(devtoolsDrag.pointerId)) {
+            els.sash.releasePointerCapture(devtoolsDrag.pointerId);
+          }
+        } catch {
+          // 이미 풀렸으면 그만
+        }
+        document.body.classList.remove('dragging-col');
+        devtoolsDrag = null;
+      }
+      els.sash.remove();
+      els.header.remove();
+      devtoolsEls.delete(id);
+      devtoolsData.delete(id);
+    }
+  }
+
   renderUpdate(state);
   // Delete 로 pane 의 마지막 탭을 닫으면 그 스트립째 사라진다 — 포커스 pane 의 활성 탭으로 옮긴다
   if (hadTabFocus && !(document.activeElement as HTMLElement | null)?.closest?.('.tab')) {
@@ -710,7 +866,7 @@ function renderDemo(): void {
   const demo: ShellState = {
     panes: [
       {
-        id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false, omniboxUrl: null,
+        id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false, omniboxUrl: null, devtools: null,
         stripRect: { x: 0, y: 40, width: left, height: 40 },
         contentRect: { x: 0, y: 80, width: left, height: h - 80 },
         tabs: [
@@ -719,7 +875,7 @@ function renderDemo(): void {
         ],
       },
       {
-        id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false, omniboxUrl: null,
+        id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false, omniboxUrl: null, devtools: null,
         stripRect: { x: left + 4, y: 40, width: w - left - 4, height: 40 },
         contentRect: { x: left + 4, y: 80, width: w - left - 4, height: h - 80 },
         tabs: [{ id: 't3', kind: 'naver', title: '스마트스토어센터 · 상품 목록', favicon: null, loading: true, active: true }],
