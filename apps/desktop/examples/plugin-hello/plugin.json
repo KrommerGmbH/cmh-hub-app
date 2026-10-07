@@ -1,0 +1,14 @@
+{
+  "name": "plugin-hello",
+  "version": "0.1.0",
+  "minAppVersion": "0.1.0",
+  "description": "Example plugin: answers ping, reads one allowed entity, tries one entity it did not declare.",
+  "main": "main.mjs",
+  "activationEvents": ["onView:hello.view", "onCommand:hello.say"],
+  "contributes": {
+    "views": [{ "id": "hello.view", "title": "Hello", "where": "sidebar" }],
+    "commands": [{ "id": "hello.say", "title": "Say hello" }],
+    "subscribers": [{ "event": "app.ready" }]
+  },
+  "permissions": ["entity:cmh_ai_prompt:read"]
+}
