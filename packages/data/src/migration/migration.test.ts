@@ -8,7 +8,7 @@ import { Criteria } from '../criteria.js';
 import { createDefaultRegistry } from '../definition/index.js';
 import { openSqliteDatabase } from '../driver/sqlite/sqlite-database.js';
 import { DataSourceFactory } from '../repository.js';
-import { backupPathFor, coreMigrations, Migration, Migration1791331200CmhAiBaseSchema, MigrationError, MigrationRunner, migrateWithBackup, SchemaBuilder } from './index.js';
+import { backupPathFor, coreMigrations, CorruptDatabaseError, Migration, Migration1791331200CmhAiBaseSchema, MigrationError, MigrationRunner, migrateWithBackup, SchemaBuilder } from './index.js';
 
 /** 앱 기본 마이그레이션 이름(차례대로) */
 const CORE = coreMigrations().map((m) => m.className);
@@ -193,6 +193,61 @@ describe('파일 DB — 사본 · 실패 시 되돌림', () => {
     const filename = join(dir, 'fresh.sqlite');
     await expect(migrateWithBackup({ filename, migrations: [...coreMigrations(), new BrokenMigration()] })).rejects.toThrow(MigrationError);
     expect(existsSync(filename)).toBe(false);
+  });
+
+  it('깨진 파일(SQLITE_NOTADB) — CorruptDatabaseError · 파일은 그대로 · 앞선 사본 경로는 칸으로만(메시지는 파일 이름만)', async () => {
+    const filename = join(dir, 'cmh-hub.sqlite');
+    const garbage = Buffer.from('this is not a sqlite database — '.repeat(200), 'utf8');
+    writeFileSync(filename, garbage);
+
+    const first = await migrateWithBackup({ filename, migrations: coreMigrations() }).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(CorruptDatabaseError);
+    expect((first as CorruptDatabaseError).sqliteCode).toBe('SQLITE_NOTADB');
+    expect((first as CorruptDatabaseError).backupPath).toBeNull();
+    expect(readFileSync(filename).equals(garbage)).toBe(true);
+    expect(existsSync(`${filename}-wal`)).toBe(false);
+
+    writeFileSync(backupPathFor(filename), 'OLD-BACKUP');
+    const second = (await migrateWithBackup({ filename, migrations: coreMigrations() }).catch((e: unknown) => e)) as CorruptDatabaseError;
+    expect(second).toBeInstanceOf(CorruptDatabaseError);
+    expect(second.backupPath).toBe(backupPathFor(filename));
+    expect(second.message).toContain('cmh-hub.sqlite.pre-migration.bak');
+    expect(second.message).not.toContain(dir);
+    expect(readFileSync(filename).equals(garbage)).toBe(true);
+    expect(readFileSync(backupPathFor(filename), 'utf8')).toBe('OLD-BACKUP');
+  });
+
+  it('마이그레이션 실패 메시지에 폴더 경로가 없다 · 사본 전체 경로는 MigrationError.backupPath', async () => {
+    const filename = join(dir, 'cmh-hub.sqlite');
+    const a = await DataSourceFactory.create({ dataSource: 'local', filename });
+    await a.close();
+    const err = (await migrateWithBackup({ filename, migrations: [...coreMigrations(), new BrokenMigration()] }).catch((e: unknown) => e)) as MigrationError;
+    expect(err).toBeInstanceOf(MigrationError);
+    expect(err.backupPath).toBe(backupPathFor(filename));
+    expect(err.message).toContain('사본(cmh-hub.sqlite.pre-migration.bak)으로 되돌렸다');
+    expect(err.message).not.toContain(dir);
+  });
+
+  it('끊긴 실행이 남긴 임시 파일(*.pre-migration.bak.tmp-* · *.restore-*)을 열 때 치운다 · 살아 있는 남의 pid 것은 남긴다', async () => {
+    const filename = join(dir, 'cmh-hub.sqlite');
+    const a = await DataSourceFactory.create({ dataSource: 'local', filename });
+    await a.close();
+    // 없는 pid(Linux pid_max 4194304 보다 크다) · 이 프로세스 pid · 살아 있는 부모 pid
+    const dead = 2_147_000_000;
+    const staleBak = `${backupPathFor(filename)}.tmp-${dead}-1`;
+    const staleRestore = `${filename}.restore-${dead}-2`;
+    const ownBak = `${backupPathFor(filename)}.tmp-${process.pid}-3`;
+    const liveOther = `${backupPathFor(filename)}.tmp-${process.ppid}-4`;
+    const notOurs = `${backupPathFor(filename)}.tmp-keep-me`;
+    for (const f of [staleBak, staleRestore, ownBak, liveOther, notOurs]) writeFileSync(f, 'LEFTOVER');
+
+    const b = await DataSourceFactory.create({ dataSource: 'local', filename });
+    await b.close();
+    expect(existsSync(staleBak)).toBe(false);
+    expect(existsSync(staleRestore)).toBe(false);
+    expect(existsSync(ownBak)).toBe(false);
+    expect(existsSync(liveOther)).toBe(true);
+    expect(existsSync(notOurs)).toBe(true);
   });
 });
 

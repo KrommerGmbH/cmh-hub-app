@@ -97,7 +97,7 @@ class DataSourceImpl implements DataSource {
 }
 
 export const DataSourceFactory = {
-  /** local = SQLite 열기 + 마이그레이션(사본 · 실패 시 되돌림 · MigrationError) · server = Admin API driver */
+  /** local = SQLite 열기 + 마이그레이션(사본 · 실패 시 되돌림 · MigrationError · 깨진 파일은 CorruptDatabaseError) · server = Admin API driver */
   async create(options: DataSourceOptions): Promise<DataSource> {
     const registry = options.registry ?? createDefaultRegistry();
     if (options.dataSource === 'server') {

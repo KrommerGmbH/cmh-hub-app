@@ -5,16 +5,18 @@
 // 상태: idle → starting → running ⇄ restarting → failed | stopping → stopped
 //   · 자식이 뜻밖에 죽으면 한 번(maxRestarts) 다시 띄운다. 그래도 죽으면 failed — 앱은 살고 요청은 unavailable 로 거부된다.
 //   · 열기(마이그레이션) 실패는 다시 띄우지 않고 곧장 failed(같은 파일이면 또 실패한다).
-//   · 다시 띄우는 동안 온 요청은 새 자식을 기다린다(startTimeoutMs 안) · 죽을 때 날아가던 요청은 processExited 로 거부(쓰기 중복을 피해 되풀이하지 않는다).
+//   · 띄우는(다시 띄우는) 동안 온 요청은 새 자식을 그 요청의 시간초과 안에서만 기다린다(넘으면 unavailable) · 죽을 때 날아가던 요청은 processExited 로 거부(쓰기 중복을 피해 되풀이하지 않는다).
+//   · open(사본 + 마이그레이션)은 기본 시간초과가 없다 — 자식이 살아 있는 동안 기다리고, 자식이 끝나면 그때 실패한다(검수 6 S3 · 큰 DB · 느린 디스크).
 // 내리기: 'shutdown' 요청(stopTimeoutMs · DB 닫기) → SIGTERM → killTimeoutMs → SIGKILL → killTimeoutMs — 플러그인(plugin-process.ts)과 같은 차례.
 // 비밀칸: secrets.read 는 SECRET_READERS(호출자 · 엔티티 · 칸) 허용 목록에 있는 것만 자식에게 보낸다.
-//   ⚠ 호출자 이름은 main 코드가 스스로 밝히는 글자다(main 안은 믿는다) — 허용 목록은 «어디서 비밀값을 꺼내나»를 한 곳에 적어 두는 문지기다.
+//   ⚠ 호출자 이름은 main 코드가 스스로 밝히는 글자다(main 안은 믿는다) — 허용 목록은 «어디서 비밀값을 꺼내나»를 한 곳에 적어 두는 가드다.
+//   공개 call() 은 DATA_PUBLIC_METHODS(repo.* · health)만 보낸다 — secrets.read · open · shutdown 은 안쪽 send() 로만(검수 6 B1: call() 로 허용 목록을 건너뛰던 길).
 
 import { fileURLToPath } from 'node:url';
 import type { CriteriaRequestParams, Entity, EntitySearchResult, IdSearchResult, WriteResult } from '@cmh-hub-app/data';
 import type { PluginChannel, ProcessLauncher } from '../plugin/process-launcher.js';
 import { RpcEndpoint, RpcError } from '../plugin/plugin-rpc.js';
-import { DATA_METHOD, DATA_RPC_ERROR, type HealthResult, type OpenResult, type SecretReadResult } from './data-protocol.js';
+import { DATA_METHOD, DATA_PUBLIC_METHODS, DATA_RPC_ERROR, type HealthResult, type OpenResult, type SecretReadResult } from './data-protocol.js';
 
 export type DataServiceState = 'idle' | 'starting' | 'running' | 'restarting' | 'failed' | 'stopping' | 'stopped';
 
@@ -44,7 +46,10 @@ export interface DataServiceOptions {
   readonly workerPath?: string;
   /** 요청 하나 기본 시간초과 · 기본 10초 */
   readonly requestTimeoutMs?: number;
-  /** open(마이그레이션 포함) 답 기다림 · 기본 30초 */
+  /**
+   * open(사본 + 마이그레이션) 답 기다림 · 기본 없음(자식이 살아 있는 동안 기다린다 · 자식이 끝나면 processExited 로 실패).
+   * 주면 그 시간에 끊고 자식을 거둔다(시험 · 나중에 화면이 «멈춤» 판정을 따로 할 때).
+   */
   readonly startTimeoutMs?: number;
   /** 'shutdown' 답 기다림 · 기본 2초 */
   readonly stopTimeoutMs?: number;
@@ -82,6 +87,19 @@ function defaultEnv(): Record<string, string> {
 
 function defaultWorkerPath(): string {
   return fileURLToPath(new URL('./data-worker.js', import.meta.url));
+}
+
+/**
+ * «시간초과 없음» 대신 쓰는 값 — RpcEndpoint.request 는 늘 setTimeout 을 거는데, 2^31-1 ms 를 넘기면 Node 가 1ms 로 바꾼다
+ * (TimeoutOverflowWarning · 2026-10-07 node 로 확인). 2^31-1 ms ≈ 24.8일.
+ */
+const NO_TIMEOUT_MS = 2_147_483_647;
+
+/** start 실패(마지막) — 화면이 code(-32014 corruptDatabase 등)와 data(DataOpenErrorData)로 고를 것을 보인다 */
+export interface DataServiceFailure {
+  readonly code: number | null;
+  readonly message: string;
+  readonly data: unknown;
 }
 
 /** p 가 ms 안에 끝나면 true */
@@ -125,6 +143,7 @@ export class DataService {
   private restarts = 0;
   private lastErrorValue: string | null = null;
   private openResult: OpenResult | null = null;
+  private failureValue: DataServiceFailure | null = null;
 
   constructor(private readonly options: DataServiceOptions) {}
 
@@ -145,6 +164,11 @@ export class DataService {
     return this.restarts;
   }
 
+  /** 마지막 start · 재시작 실패의 RPC 오류 번호와 data(깨진 파일이면 code -32014 · data.backupPath) · 없으면 null */
+  get lastFailure(): DataServiceFailure | null {
+    return this.failureValue;
+  }
+
   /** 마지막 open 결과(이번에 돈 마이그레이션) */
   get lastOpen(): OpenResult | null {
     return this.openResult;
@@ -159,7 +183,7 @@ export class DataService {
     try {
       await ready;
     } catch (error) {
-      if (this.state === 'starting') this.fail(`start failed: ${(error as Error).message}`);
+      if (this.state === 'starting') this.fail(`start failed: ${(error as Error).message}`, error);
       throw error;
     }
     // 띄우는 사이 stop() 이 불렸으면 running 으로 바꾸지 않는다
@@ -212,19 +236,34 @@ export class DataService {
       this.log('warn', `secret read denied: caller "${caller}" → ${entity}.${field}`);
       throw new RpcError(DATA_RPC_ERROR.permissionDenied, `permission denied: "${caller}" may not read ${entity}.${field}`);
     }
-    const result = (await this.call(DATA_METHOD.readSecret, { entity, id, field })) as SecretReadResult;
+    const result = (await this.send(DATA_METHOD.readSecret, { entity, id, field })) as SecretReadResult;
     return result.value;
   }
 
-  /** 낮은 길 — 위 메서드에 없는 것(시험 · 다음 차례). scope 를 넣으면 자식이 거부한다 */
+  /**
+   * 낮은 길 — DATA_PUBLIC_METHODS(repo.* · health)만. secrets.read · open · shutdown 등 그 밖은 자식에게 보내지 않고 permissionDenied.
+   * scope 를 넣으면 자식이 거부한다.
+   */
   async call(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
-    const session = await this.currentSession();
-    return session.rpc.request(method, params, timeoutMs ?? this.options.requestTimeoutMs ?? 10_000);
+    if (!DATA_PUBLIC_METHODS.has(method)) {
+      this.log('warn', `call denied: method "${method}" is not public`);
+      throw new RpcError(DATA_RPC_ERROR.permissionDenied, `permission denied: method "${method}" cannot be sent through DataService.call()`);
+    }
+    return this.send(method, params, timeoutMs);
   }
 
   // ───────────── 안쪽 ─────────────
 
-  private async currentSession(): Promise<Session> {
+  /** 메서드를 거르지 않고 보낸다 — 이 파일 안(readSecret · call)만 부른다. 띄우는 중 기다림도 timeoutMs 안에 든다 */
+  private async send(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+    const budgetMs = timeoutMs ?? this.options.requestTimeoutMs ?? 10_000;
+    const startedAt = Date.now();
+    const session = await this.currentSession(budgetMs);
+    const leftMs = Math.max(1, budgetMs - (Date.now() - startedAt));
+    return session.rpc.request(method, params, leftMs);
+  }
+
+  private async currentSession(waitMs: number): Promise<Session> {
     switch (this.stateValue) {
       case 'idle':
         throw unavailable('data service is not started');
@@ -238,6 +277,10 @@ export class DataService {
     }
     const ready = this.ready;
     if (!ready) throw unavailable('data service has no process');
+    // open 은 시간초과가 없으므로(S3) 띄우는 중 기다림은 요청 쪽 시간으로 끊는다 — open 자체는 계속 돈다
+    if (this.stateValue !== 'running' && !(await settlesWithin(ready, waitMs))) {
+      throw unavailable(`data service is still ${this.stateValue} after ${waitMs}ms`);
+    }
     try {
       return await ready;
     } catch {
@@ -278,7 +321,7 @@ export class DataService {
     });
     this.session = session;
     try {
-      this.openResult = (await rpc.request(DATA_METHOD.open, { filename: this.options.filename }, this.options.startTimeoutMs ?? 30_000)) as OpenResult;
+      this.openResult = (await rpc.request(DATA_METHOD.open, { filename: this.options.filename }, this.options.startTimeoutMs ?? NO_TIMEOUT_MS)) as OpenResult;
     } catch (error) {
       // 열기 실패 · 시간초과 · 죽음 — 거둔다(자식도 스스로 끝나지만 기다리지 않는다)
       await this.terminate(session);
@@ -307,7 +350,7 @@ export class DataService {
         if (this.stateValue === 'restarting' && this.ready === ready) this.setState('running', null);
       },
       (error: unknown) => {
-        if (this.stateValue === 'restarting' && this.ready === ready) this.fail(`restart failed: ${(error as Error).message}`);
+        if (this.stateValue === 'restarting' && this.ready === ready) this.fail(`restart failed: ${(error as Error).message}`, error);
       },
     );
   }
@@ -341,8 +384,10 @@ export class DataService {
     return settlesWithin(session.exited, killTimeoutMs);
   }
 
-  private fail(message: string): void {
+  private fail(message: string, cause?: unknown): void {
     this.lastErrorValue = message;
+    this.failureValue =
+      cause instanceof RpcError ? { code: cause.code, message: cause.message, data: cause.data ?? null } : { code: null, message, data: null };
     this.log('error', message);
     this.setState('failed', message);
   }

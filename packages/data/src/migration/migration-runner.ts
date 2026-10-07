@@ -7,12 +7,18 @@ export const MIGRATION_TABLE = 'migration';
 
 export class MigrationError extends Error {
   override readonly name = 'MigrationError';
+  /**
+   * migrateWithBackup 이 만든(또는 되돌릴 때 쓴) 사본의 전체 경로 · 없으면 null.
+   * 메시지에는 파일 이름만 적는다(warn · error 로그는 서버 오류 보고로 간다 · 2026-10-07 검수 N6) — 전체 경로는 이 칸으로만.
+   */
+  readonly backupPath: string | null;
   constructor(
     message: string,
     readonly migrationClass: string | null,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; backupPath?: string | null },
   ) {
-    super(message, options);
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    this.backupPath = options?.backupPath ?? null;
   }
 }
 

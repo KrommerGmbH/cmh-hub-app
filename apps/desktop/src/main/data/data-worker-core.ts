@@ -1,25 +1,31 @@
 // R1 앱 연결 — 자료 프로세스 안쪽 일(자식 전용). DataSource 를 열고 RPC 메서드를 Repository 에 잇는다.
 // 전송(Electron parentPort · Node process.send)은 data-worker.ts 가 맡는다 — 이 파일은 전송을 모른다.
 // 권한 규칙은 data-protocol.ts 머리 주석. scope 는 늘 'api'(READ_SCOPE) · system 범위는 secrets.read 안에서 비밀칸 하나만.
+// open 전에 registry 를 훑는다(검수 6 S1): 쓰기 보호 엔티티(cmh_ai_approval)에 ON DELETE CASCADE · SET NULL FK 가 있으면 열지 않는다 —
+//   denyProtectedWrite 는 루트 엔티티 이름만 보므로, 그런 FK 가 있으면 다른 엔티티 repo.delete 가 승인 줄을 지우거나 바꾼다.
 
 import {
+  CorruptDatabaseError,
   CriteriaError,
   DataSourceFactory,
   DataWriteError,
   EntityDefinitionError,
   MigrationError,
   ValueError,
+  createDefaultRegistry,
   isId,
   snakeToCamel,
   type CriteriaRequestParams,
   type DataSource,
   type DataSourceOptions,
+  type EntityDefinition,
+  type EntityRegistry,
   type RawRow,
   type ReadOptions,
 } from '@cmh-hub-app/data';
 import { RpcError, type RpcMethodHandler } from '../plugin/plugin-rpc.js';
 import { isWriteProtectedEntity } from '../settings/approval-entity.js';
-import { DATA_METHOD, DATA_RPC_ERROR, type HealthResult, type OpenResult, type SecretReadResult } from './data-protocol.js';
+import { DATA_METHOD, DATA_RPC_ERROR, type DataOpenErrorData, type HealthResult, type OpenResult, type SecretReadResult } from './data-protocol.js';
 
 /** 렌더러 · 플러그인 · 에이전트로 가는 읽기는 전부 이 범위 — 바꾸는 길을 두지 않는다 */
 const READ_SCOPE: ReadOptions = Object.freeze({ scope: 'api' });
@@ -32,6 +38,53 @@ export interface DataWorkerCoreOptions {
   readonly create?: DataSourceCreate;
   /** open 실패 뒤 자식을 끝내는 일(data-worker.ts 가 process.exit 를 넘긴다) */
   readonly onOpenFailed?: () => void;
+  /** 시험에서 바꿔 끼운다(가짜 정의를 넣은 registry) · 기본 createDefaultRegistry */
+  readonly createRegistry?: () => EntityRegistry;
+}
+
+/** 쓰기 보호 엔티티의 FK 중 대상이 지워질 때 그 줄을 지우거나(cascade) 바꾸는(set null) 것 하나 */
+export interface ProtectedCascade {
+  readonly entity: string;
+  readonly field: string;
+  readonly reference: string;
+  readonly onDelete: 'cascade' | 'set null';
+}
+
+/**
+ * 쓰기 보호 엔티티(기본 isWriteProtectedEntity)의 fk 칸 중 onDelete 가 cascade · set null 인 것.
+ * restrict · 없음(SQLite NO ACTION)은 대상 delete 를 막을 뿐 보호 줄을 바꾸지 않으므로 뺀다.
+ * ⚠ 보는 것은 registry 정의뿐 — 중간 테이블(manyToMany mappingTable) · 마이그레이션이 박아 둔 DDL 은 안 본다.
+ */
+export function findProtectedCascades(
+  definitions: readonly Pick<EntityDefinition, 'entityName' | 'fields'>[],
+  isProtected: (entityName: string) => boolean = isWriteProtectedEntity,
+): ProtectedCascade[] {
+  const found: ProtectedCascade[] = [];
+  for (const def of definitions) {
+    if (!isProtected(def.entityName)) continue;
+    for (const field of def.fields) {
+      if (field.type !== 'fk' || !field.reference) continue;
+      if (field.onDelete === 'cascade' || field.onDelete === 'set null') {
+        found.push({ entity: def.entityName, field: field.name, reference: field.reference, onDelete: field.onDelete });
+      }
+    }
+  }
+  return found;
+}
+
+function openErrorData(name: string, reason: DataOpenErrorData['reason'], backupPath: string | null, sqliteCode?: string): DataOpenErrorData {
+  return sqliteCode === undefined ? { name, reason, backupPath } : { name, reason, backupPath, sqliteCode };
+}
+
+/** open 실패 → RPC 오류. 메시지에는 전체 경로를 넣지 않는다(자료층 메시지가 이미 파일 이름만 · 전체 경로는 data.backupPath) */
+function toOpenRpcError(error: unknown): RpcError {
+  if (error instanceof RpcError) return error;
+  const message = `cannot open data source: ${errorMessage(error)}`;
+  if (error instanceof CorruptDatabaseError) {
+    return new RpcError(DATA_RPC_ERROR.corruptDatabase, message, openErrorData(error.name, 'corruptDatabase', error.backupPath, error.sqliteCode));
+  }
+  if (error instanceof MigrationError) return new RpcError(DATA_RPC_ERROR.openFailed, message, openErrorData(error.name, 'migrationFailed', error.backupPath));
+  return new RpcError(DATA_RPC_ERROR.openFailed, message, openErrorData(errorName(error), 'openFailed', null));
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -101,9 +154,11 @@ export class DataWorkerCore {
   private opening = false;
   private readonly openedAt = Date.now();
   private readonly create: DataSourceCreate;
+  private readonly createRegistry: () => EntityRegistry;
 
   constructor(private readonly options: DataWorkerCoreOptions = {}) {
     this.create = options.create ?? ((o) => DataSourceFactory.create(o));
+    this.createRegistry = options.createRegistry ?? createDefaultRegistry;
   }
 
   get isOpen(): boolean {
@@ -118,15 +173,26 @@ export class DataWorkerCore {
     const filename = params['filename'];
     this.opening = true;
     try {
+      const registry = this.createRegistry();
+      // 파일을 열기(마이그레이션) 전에 막는다 — 정의만 보면 되므로 DB 를 건드리지 않는다
+      const cascades = findProtectedCascades(registry.all());
+      if (cascades.length > 0) {
+        const list = cascades.map((c) => `${c.entity}.${c.field} → ${c.reference} ON DELETE ${c.onDelete.toUpperCase()}`).join(', ');
+        throw new RpcError(
+          DATA_RPC_ERROR.openFailed,
+          `cannot open data source: write-protected entity has a foreign key that deletes or changes its rows when the referenced row is deleted (${list})`,
+          openErrorData('ProtectedEntityCascadeError', 'protectedEntityCascade', null),
+        );
+      }
       // ⏸ ⑫ 결정 뒤 server — 무료/서버 전환(R9)은 아직 안 한다. 지금은 늘 로컬 SQLite 파일 하나.
-      const ds = await this.create({ dataSource: 'local', filename });
+      const ds = await this.create({ dataSource: 'local', filename, registry });
       this.dataSource = ds;
       this.filename = filename;
       const migration = ds.migration;
       return { filename, updated: migration?.updated ?? [], destructive: migration?.destructive ?? [] };
     } catch (error) {
-      // 깨진 파일(SQLITE_NOTADB 는 migrateWithBackup 밖 · openSqliteDatabase 에서 난다)도 여기 — 모두 openFailed
-      const rpcError = new RpcError(DATA_RPC_ERROR.openFailed, `cannot open data source: ${errorMessage(error)}`, { name: errorName(error) });
+      // 깨진 파일 → corruptDatabase(-32014) · 마이그레이션 실패 · FK 검사 실패 · 그 밖 → openFailed(-32010) — 까닭은 data.reason
+      const rpcError = toOpenRpcError(error);
       this.options.onOpenFailed?.();
       throw rpcError;
     } finally {
