@@ -15,6 +15,12 @@ describe('isAllowedUrl (A02 허용 호스트)', () => {
     expect(isAllowedUrl('naver', 'https://evil-naver.com/')).toBe(false);
     expect(isAllowedUrl('naver', 'https://testumgebung.my-mik.de/admin')).toBe(false);
   });
+  it('web 탭은 일반 사이트 통과 · 네이버 탭 꺼짐(U11) 시 네이버 호스트는 막는다', () => {
+    expect(isAllowedUrl('web', 'https://example.com/')).toBe(true);
+    expect(isAllowedUrl('web', 'https://sell.smartstore.naver.com/')).toBe(false);
+    expect(isAllowedUrl('web', 'https://네이버.com/')).toBe(false);
+    expect(isAllowedUrl('naver', 'https://sell.smartstore.naver.com/')).toBe(true);
+  });
   it('깨진 URL · file: · javascript: 는 막는다 · about: 은 통과', () => {
     expect(isAllowedUrl('admin', 'not a url')).toBe(false);
     expect(isAllowedUrl('admin', 'file:///C:/x.html')).toBe(false);

@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { path as ghostPath } from 'ghost-cursor';
 import { OVERLAY_IPC } from '@cmh-hub-app/contracts';
+import { APP_CONFIG } from '../config.js';
 import type { ShellWindow } from './window/shell-window.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main
@@ -98,6 +99,10 @@ async function readTargets(wc: WebContents): Promise<{ hover: Point[]; inputs: P
 
 export function runParallelCheckIfRequested(w: ShellWindow): void {
   if (!process.env['CMH_HUB_PARALLEL'] || app.isPackaged) return;
+  if (!APP_CONFIG.naverTabEnabled) {
+    console.info('[parallel] 네이버 탭이 꺼져 있다(U11) — 병렬 시험을 건너뛴다');
+    return;
+  }
   void run(w);
 }
 

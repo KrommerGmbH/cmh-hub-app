@@ -14,7 +14,13 @@ export const APP_CONFIG = {
    * naver 탭이 갈 수 있는 호스트 — 접미사로 본다. 판매자센터 정확한 호스트는 코딩 전 실측(cmh_ai_screen 의 URL · PLAN A02).
    * 로그인(nid.naver.com)도 naver.com 아래라 같이 통과한다.
    */
-  naverHostSuffixes: ['naver.com', 'naver.net', 'pstatic.net'],
+  naverHostSuffixes: [
+    'naver.com',
+    'naver.net',
+    'pstatic.net',
+    // «네이버.com» 한글 도메인 — 메인이 node -e "new URL('https://네이버.com/').hostname" 로 잼 · 2026-10-07
+    'xn--950bt9s8xi.com',
+  ],
   /** «+» 메뉴 — 서버 어드민 라우트(U06 챗봇 = admin 탭) */
   newTabChoices: [
     // 빈 탭(2026-10-05) — 주소창으로 아무 http(s) · 검색. 저장 공간은 webPartition(어드민 · 네이버와 따로)
@@ -22,8 +28,10 @@ export const APP_CONFIG = {
     { label: '대시보드', kind: 'admin', url: `${SERVER_ORIGIN}/admin#/sw/dashboard/index` },
     // 메뉴 없는 챗봇 길(CmhAiAgent cmh.ai.chat.solo · coreRoute) — 어드민 안 챗봇(#/cmh/ai/chat/index)과 화면 부품 하나를 같이 쓴다
     { label: 'AI 채팅', kind: 'admin', url: `${SERVER_ORIGIN}/admin#/cmh/ai/chat-solo` },
-    { label: '네이버 스마트스토어센터', kind: 'naver', url: 'https://sell.smartstore.naver.com/' },
+    { label: '네이버 스마트스토어센터 (크롬에서 열림)', kind: 'naver', url: 'https://sell.smartstore.naver.com/' },
   ] as const,
+  /** U11 · 2026-10-07 셋 합의 — 앱 안 네이버 탭은 크롬과 다른 세션이라 끈다 · 네이버는 크롬(확장) · true 로 켜면 옛 길 그대로 */
+  naverTabEnabled: false,
   /** 네이버 pane 세션 — 우리 어드민 쿠키와 한 바구니에 두지 않는다 */
   naverPartition: 'persist:naver',
   /** W04 — 기본 로컬 모델(unsloth Gemma 4 E4B QAT · UD-Q4_K_XL 4.2 GB · 사장님 2026-10-02 «sloth 거로»). RAM 이 적은 PC 는 E2B(2.6 GB) */

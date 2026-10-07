@@ -52,14 +52,16 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   await wait(800);
   log('layout 2단 좌우', `${w.engine.paneCount() === 2 ? 'OK' : 'FAIL(pane≠2)'} · 닫은 뒤 셸 맨 아래 ${w.isShellOnTop() ? 'FAIL' : 'OK'}`);
 
-  // ② 포커스 pane 의 «+» → 메뉴 «네이버 스마트스토어센터»
+  // ② 포커스 pane 의 «+» → 메뉴 «AI 채팅»
   await shellJs(`[...document.querySelectorAll('.strip')].find(s => s.classList.contains('pane-focused')).querySelector('.strip-newtab').click()`);
   log('+ 메뉴 · 셸 맨 위?', (await waitFor(() => w.isShellOnTop())) ? 'OK' : 'FAIL(메뉴가 페이지 아래에 깔림)');
   const menuCount = await shellJs<number>(`document.querySelectorAll('#newtab-menu .menu-item').length`);
-  await shellJs(`[...document.querySelectorAll('#newtab-menu .menu-item')].find(b => b.textContent.includes('네이버')).click()`);
+  const adminBefore = Object.values(w.engine.getTree().tabs).filter((t) => t.kind === 'admin').length;
+  await shellJs(`[...document.querySelectorAll('#newtab-menu .menu-item')].find(b => b.textContent.includes('AI 채팅')).click()`);
   await wait(1500);
-  const naverTabs = Object.values(w.engine.getTree().tabs).filter((t) => t.kind === 'naver').length;
-  log('click + → 네이버', `menu ${menuCount} · naver tabs ${naverTabs} ${naverTabs === 1 ? 'OK' : 'FAIL'}`);
+  const adminTabs = Object.values(w.engine.getTree().tabs).filter((t) => t.kind === 'admin').length;
+  const added = adminTabs === adminBefore + 1;
+  log('click + → AI 채팅', `menu ${menuCount} · admin tabs ${adminBefore}→${adminTabs} ${added ? 'OK' : 'FAIL'}`);
 
   // ③ sash — 셸이 보내는 것과 같은 resize 명령(드래그는 포인터 캡처라 스크립트로 못 끈다)
   const sashId = await shellJs<string>(`document.querySelector('.sash').dataset.sashId`);

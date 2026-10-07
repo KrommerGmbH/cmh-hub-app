@@ -1,5 +1,5 @@
 // U01 — BaseWindow + 셸 view(맨 아래 · 창 전체) + 탭 view 들. 트리(LayoutEngine)가 정본, 셸은 상태를 받아 그린다.
-import { app, BaseWindow, Notification, WebContentsView, type WebContents } from 'electron';
+import { app, BaseWindow, Notification, shell, WebContentsView, type WebContents } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -23,6 +23,7 @@ import { AppUpdater } from '../update/app-updater.js';
 import type { AppSession } from '../identity/app-session.js';
 import { ScreenLookup } from '../ai-element/element-lookup.js';
 import { CHAT_TAB_URL, ChatHandoff, isChatTabUrl } from '../ai-element/chat-handoff.js';
+import { isAllowedUrl } from '../url-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -180,6 +181,11 @@ export class ShellWindow {
         const tabWc = this.views.get(cmd.tabId)?.webContents;
         const url = resolveOmniboxInput(cmd.text);
         if (tab?.kind !== 'web' || !tabWc || tabWc.isDestroyed() || !url) return;
+        // U11 — 네이버는 크롬 · url-policy 가 스위치를 본다
+        if (!isAllowedUrl('web', url)) {
+          void shell.openExternal(url);
+          return;
+        }
         void tabWc.loadURL(url).catch(() => undefined); // 못 여는 주소는 페이지가 오류 화면을 보인다
         tabWc.focus();
         return;
@@ -213,6 +219,13 @@ export class ShellWindow {
     }
 
     let command: ShellCommand = cmd;
+    if (cmd.cmd === 'newTab' && cmd.kind === 'naver' && !APP_CONFIG.naverTabEnabled) {
+      const url = cmd.url ?? APP_CONFIG.newTabChoices.find((c) => c.kind === 'naver')?.url;
+      if (url) void shell.openExternal(url);
+      console.info('[layout] 네이버 탭 꺼짐(U11) — 기본 브라우저로 엶', url);
+      this.sendState();
+      return;
+    }
     if (cmd.cmd === 'newTab' && cmd.kind === 'naver' && cmd.url === undefined) {
       const url = APP_CONFIG.newTabChoices.find((c) => c.kind === 'naver')?.url;
       if (url) command = { ...cmd, url };

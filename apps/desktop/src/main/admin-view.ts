@@ -35,7 +35,7 @@ export function isAdminChatUrl(url: string): boolean {
 }
 
 function openOutside(url: string): void {
-  if (url.startsWith('https:')) void shell.openExternal(url);
+  if (url.startsWith('https:') || url.startsWith('http:')) void shell.openExternal(url);
 }
 
 export function createAdminView(tab: TabRecord, events: TabViewEvents): WebContentsView {
@@ -52,6 +52,13 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   const wc = view.webContents;
 
   wc.on('will-navigate', (event, url) => {
+    if (isAllowedUrl(tab.kind, url)) return;
+    event.preventDefault();
+    openOutside(url);
+  });
+  wc.on('will-redirect', (event) => {
+    if (!event.isMainFrame) return;
+    const url = event.url;
     if (isAllowedUrl(tab.kind, url)) return;
     event.preventDefault();
     openOutside(url);
