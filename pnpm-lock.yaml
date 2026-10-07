@@ -92,6 +92,9 @@ importers:
       '@cmh-hub-app/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@cmh-hub-app/data':
+        specifier: workspace:*
+        version: link:../../packages/data
       '@cmh-hub-app/driver-core':
         specifier: workspace:*
         version: link:../../packages/driver-core
