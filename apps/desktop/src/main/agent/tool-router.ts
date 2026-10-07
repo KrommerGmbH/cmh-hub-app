@@ -137,6 +137,9 @@ export interface BrowserToolInfo {
   readonly name: string;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
+  /** 사람이 본 적 있는 도구인가. 기본 false(Guard 최소 ask) — 다리를 붙일 때 근거(저장 행)가 있어야 true(RA 검수 4 권고 9) */
+  readonly known?: boolean;
+  /** 기본 true(승인 관문) — 다리가 읽기 도구라고 명시(false)해야 빠진다(RA 검수 4 권고 9) */
   readonly needsApproval?: boolean;
 }
 
@@ -174,6 +177,12 @@ export interface ToolDefinitionSet {
   readonly tools: ChatToolDefinition[];
   /** 상한 · filter 로 뺀 도구의 Guard 이름 */
   readonly dropped: string[];
+  /**
+   * 이번에 모델에게 보여 준 도구만 담은 이름 표(키 = 모델 이름과 Guard 이름 · 값 = 그때의 도구). run 마다 한 번 받아 고정한다 —
+   * AgentRunner 는 이 표로만 찾는다(RA 검수 4 권고 3 · 10): refresh 로 등록 차례가 바뀌어도 이 run 안에서 이름이 다른 도구로 넘어가지 않고,
+   * 상한 · filter · available 로 빠진 도구는 이름을 알아도 불리지 않는다.
+   */
+  readonly byName: ReadonlyMap<string, RoutedTool>;
 }
 
 export interface ToolRouterOptions {
@@ -255,7 +264,8 @@ export class ToolRouter {
             continue;
           }
           entries.push({
-            tool: this.routed(`browser:${info.name}`, 'browser', info.description, info.parameters, true, info.needsApproval === true, true),
+            // 다리를 붙이기 전까지는 막는 쪽 기본값 — known false · needsApproval true(명시한 값만 바꾼다)
+            tool: this.routed(`browser:${info.name}`, 'browser', info.description, info.parameters, info.known === true, info.needsApproval !== false, true),
             route: { kind: 'browser', toolName: info.name },
           });
         }
@@ -315,6 +325,7 @@ export class ToolRouter {
   definitions(limits: ToolDefinitionLimits = TOOL_DEFINITION_DEFAULTS): ToolDefinitionSet {
     const tools: ChatToolDefinition[] = [];
     const dropped: string[] = [];
+    const byName = new Map<string, RoutedTool>();
     let total = 0;
     for (const { tool } of this.catalog) {
       if (!tool.available) continue; // 공급자 없는 도구는 «뺀 것» 이 아니라 «없는 것»
@@ -336,10 +347,12 @@ export class ToolRouter {
         continue;
       }
       tools.push(def);
+      byName.set(tool.modelName, tool);
+      byName.set(tool.name, tool);
       total += size;
     }
     if (dropped.length > 0) this.logger.warn(`[agent] tool definitions: dropped ${dropped.length} (${dropped.slice(0, 5).join(', ')}${dropped.length > 5 ? ', …' : ''})`);
-    return { tools, dropped };
+    return { tools, dropped, byName };
   }
 
   /** Guard 이름으로 부른다. 던지지 않는다 */
@@ -388,22 +401,39 @@ export class ToolRouter {
     return { name, modelName: '', source, description, parameters, known, needsApproval, available };
   }
 
-  /** 모델 이름 겹침 풀기 — 겹치면 `_2` · `_3` …(64자 안으로) */
+  /**
+   * 모델 이름 겹침 풀기 — 겹치면 `_2` · `_3` …(64자 안으로).
+   * 겹침은 Guard 이름 차례(정렬)로 푼다 — 같은 도구 모음이면 등록 차례와 상관없이 같은 이름이 나온다(RA 검수 4 R5).
+   * catalog 차례(상한으로 뺄 때의 차례)는 등록 차례 그대로 둔다.
+   */
   private rebuild(entries: CatalogEntry[]): void {
-    const byGuardName = new Map<string, CatalogEntry>();
-    const byModelName = new Map<string, CatalogEntry>();
-    const catalog: CatalogEntry[] = [];
+    const unique: CatalogEntry[] = [];
+    const seen = new Set<string>();
     for (const e of entries) {
-      if (byGuardName.has(e.tool.name)) {
+      if (seen.has(e.tool.name)) {
         this.logger.warn(`[agent] duplicate tool name "${e.tool.name}" — kept the first`);
         continue;
       }
-      const base = toModelName(e.tool.name);
+      seen.add(e.tool.name);
+      unique.push(e);
+    }
+    const modelNameOf = new Map<string, string>();
+    const taken = new Set<string>();
+    for (const name of [...seen].sort()) {
+      const base = toModelName(name);
       let modelName = base;
-      for (let n = 2; byModelName.has(modelName); n += 1) {
+      for (let n = 2; taken.has(modelName); n += 1) {
         const suffix = `_${n}`;
         modelName = `${base.slice(0, MODEL_NAME_MAX - suffix.length)}${suffix}`;
       }
+      taken.add(modelName);
+      modelNameOf.set(name, modelName);
+    }
+    const byGuardName = new Map<string, CatalogEntry>();
+    const byModelName = new Map<string, CatalogEntry>();
+    const catalog: CatalogEntry[] = [];
+    for (const e of unique) {
+      const modelName = modelNameOf.get(e.tool.name) ?? toModelName(e.tool.name);
       const entry: CatalogEntry = { tool: { ...e.tool, modelName }, route: e.route };
       byGuardName.set(entry.tool.name, entry);
       byModelName.set(modelName, entry);

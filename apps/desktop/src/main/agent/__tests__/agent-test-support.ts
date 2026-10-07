@@ -127,3 +127,47 @@ export function lastEvent(events: readonly AgentEvent[]): AgentEvent {
   if (!e) throw new Error('no events');
   return e;
 }
+
+/**
+ * 이벤트 · 대화 약속 검사(agent-events.ts 머리말):
+ * ①tool_call 마다 닫는 이벤트(tool_result | tool_denied) 정확히 하나 ②callId 고유 ③done 정확히 한 번 · 마지막
+ * ④done.messages 의 assistant tool_calls id 마다 role tool 답 정확히 하나 · 대화 안 tool_call id 고유
+ * 어기면 무엇을 어겼는지 글 목록을 돌려준다(빈 목록 = 지킴).
+ */
+export function eventInvariantViolations(events: readonly AgentEvent[]): string[] {
+  const problems: string[] = [];
+  const doneIdx = events.flatMap((e, i) => (e.type === 'done' ? [i] : []));
+  if (doneIdx.length !== 1) problems.push(`done count ${doneIdx.length}`);
+  else if (doneIdx[0] !== events.length - 1) problems.push('done is not last');
+  const opened = new Map<string, number>();
+  for (const e of events) {
+    if (e.type === 'tool_call') {
+      if (opened.has(e.callId)) problems.push(`duplicate tool_call callId ${e.callId}`);
+      opened.set(e.callId, 0);
+    }
+    if (e.type === 'tool_result' || e.type === 'tool_denied') {
+      const n = opened.get(e.callId);
+      if (n === undefined) problems.push(`close without tool_call ${e.callId}`);
+      else opened.set(e.callId, n + 1);
+    }
+  }
+  for (const [id, n] of opened) if (n !== 1) problems.push(`callId ${id} closed ${n} times`);
+  const done = events[events.length - 1];
+  if (done?.type === 'done') {
+    const asked: string[] = [];
+    const answered = new Map<string, number>();
+    for (const m of done.messages) {
+      for (const r of m.tool_calls ?? []) asked.push(r.id);
+      if (m.role === 'tool' && m.tool_call_id !== undefined) answered.set(m.tool_call_id, (answered.get(m.tool_call_id) ?? 0) + 1);
+    }
+    if (new Set(asked).size !== asked.length) problems.push(`duplicate tool_call ids in messages ${asked.join(',')}`);
+    for (const id of asked) if (answered.get(id) !== 1) problems.push(`tool_call ${id} answered ${answered.get(id) ?? 0} times`);
+    for (const id of answered.keys()) if (!asked.includes(id)) problems.push(`tool answer for unknown id ${id}`);
+  }
+  return problems;
+}
+
+/** 이 시간 안에 안 끝나면 'HANG' */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | 'HANG'> {
+  return Promise.race([p, new Promise<'HANG'>((r) => setTimeout(() => r('HANG'), ms))]);
+}

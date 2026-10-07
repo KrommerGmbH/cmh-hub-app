@@ -15,7 +15,8 @@ describe('ToolRouter', () => {
     expect(await router.refresh()).toEqual({ errors: [] });
     expect(router.list().map((t) => [t.name, t.modelName, t.source, t.known])).toEqual([
       ['app:echo', 'app__echo', 'app', true],
-      ['browser:navigate', 'browser__navigate', 'browser', true],
+      // 브라우저 다리가 known 을 안 주면 false(검수 4 권고 9)
+      ['browser:navigate', 'browser__navigate', 'browser', false],
       ['mcp:cmh-shop-api.mcp:dal_update', 'mcp__cmh-shop-api_mcp__dal_update', 'mcp', false],
     ]);
     expect(router.lookup('mcp__cmh-shop-api_mcp__dal_update')?.name).toBe('mcp:cmh-shop-api.mcp:dal_update');
@@ -86,5 +87,38 @@ describe('ToolRouter', () => {
   it('앱 도구 이름이 마디 규칙을 어기거나 겹치면 생성 때 예외', () => {
     expect(() => new ToolRouter({ appTools: [spyTool('a:b')] })).toThrow(/must match/);
     expect(() => new ToolRouter({ appTools: [spyTool('a'), spyTool('a')] })).toThrow(/duplicate/);
+  });
+
+  it('브라우저 도구는 다리가 명시하지 않으면 known false · needsApproval true(검수 4 권고 9)', async () => {
+    const browser: BrowserToolBridge = {
+      listTools: async () => [
+        { name: 'click', description: 'c', parameters: {} },
+        { name: 'read', description: 'r', parameters: {}, known: true, needsApproval: false },
+      ],
+      callTool: async () => ({ ok: true, text: '', truncated: false }),
+    };
+    const router = new ToolRouter({ browser });
+    await router.refresh();
+    expect(router.list().map((t) => [t.name, t.known, t.needsApproval])).toEqual([
+      ['browser:click', false, true],
+      ['browser:read', true, false],
+    ]);
+  });
+
+  it('definitions 는 보여 준 도구만 담은 이름 표(모델 이름 · Guard 이름)를 함께 돌려준다', () => {
+    const router = new ToolRouter({ appTools: [spyTool('a'), spyTool('b'), createWebSearchTool(null)] });
+    const set = router.definitions({ maxTools: 1, maxDescriptionChars: 10, maxTotalChars: 10_000 });
+    expect([...set.byName.keys()]).toEqual(['app__a', 'app:a']);
+    expect(set.byName.get('app__a')?.name).toBe('app:a');
+    expect(set.byName.has('app__b')).toBe(false); // 상한으로 빠짐
+    expect(set.byName.has('app__web_search')).toBe(false); // 공급자 없음
+  });
+
+  it('모델 이름 겹침은 등록 차례와 상관없이 Guard 이름 차례로 푼다', () => {
+    const one = new ToolRouter({ appTools: [spyTool('a.b'), spyTool('a_b')] });
+    const two = new ToolRouter({ appTools: [spyTool('a_b'), spyTool('a.b')] });
+    expect(one.lookup('app__a_b')?.name).toBe('app:a.b');
+    expect(two.lookup('app__a_b')?.name).toBe('app:a.b');
+    expect(two.list().map((t) => t.name)).toEqual(['app:a_b', 'app:a.b']); // 목록 차례는 등록 차례 그대로
   });
 });

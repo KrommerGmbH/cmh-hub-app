@@ -13,11 +13,27 @@ export type ApprovalActor = 'human-ui';
 /** guard_ask = Guard 결정이 ask · requires_approval = allow 여도 승인 관문(마켓 쓰기 · needsApproval) */
 export type ApprovalReason = 'guard_ask' | 'requires_approval';
 
+/**
+ * 승인 화면에 싣는 인자 전문 상한(UTF-8 바이트). 넘으면 사람이 다 볼 수 없으므로 승인 자체를 열지 않는다(RA 검수 4 차단 2) —
+ * AgentRunner 는 열기 전에 재서 deny 하고, 관문도 넘는 요청은 예외로 막는다(두 겹).
+ */
+export const APPROVAL_ARGS_MAX_BYTES = 256 * 1024;
+
 export interface ApprovalRequest {
   readonly runId: string;
   /** Guard 이름 */
   readonly tool: string;
+  /** 도구 줄용 요약(비밀 같은 키 값은 `***(N자)` · 500자 상한). 승인 판단에는 argsFull 을 쓴다 */
   readonly argsSummary: string;
+  /**
+   * 실행될 인자 전문 — 자르지 않고 가리지도 않은 canonical JSON(키 정렬). 사람이 승인하는 것은 이 글이다(RA 검수 4 차단 2).
+   * APPROVAL_ARGS_MAX_BYTES 를 넘으면 관문이 예외.
+   */
+  readonly argsFull: string;
+  /** 비밀처럼 보이는 키의 경로(`a.b` · `items[0].token`). 비어 있지 않으면 R6 승인 화면이 경고를 띄운다 — 값은 argsFull 에 그대로 있다 */
+  readonly maskedKeys: readonly string[];
+  /** Guard 가 맞춘 규칙(없으면 null) — 승인 화면 표시용 */
+  readonly matchedPattern?: string | null;
   readonly reason: ApprovalReason;
   /** 이 run 이 끝나면(취소 · 시간 상한) 대기를 거둔다 — 결과는 'rejected'(사람이 승인하지 않았으므로 막는 쪽) */
   readonly signal?: AbortSignal;
@@ -27,6 +43,8 @@ export interface ApprovalTicket {
   /** UI 가 decide 에 넘길 id */
   readonly id: string;
   readonly decision: Promise<ApprovalOutcome>;
+  /** 이 때(ms · epoch)가 지나면 관문이 'timeout' 을 낸다 — 아는 관문만 */
+  readonly expiresAt?: number;
 }
 
 /** AgentRunner 가 보는 쪽 — 결정할 수단이 없다 */
@@ -37,14 +55,32 @@ export interface ApprovalGate {
   requestApproval(request: ApprovalRequest): Promise<ApprovalOutcome>;
 }
 
+/**
+ * `{ open, requestApproval }` 만 담은 얇은 겉객체(RA 검수 4 권고 7). InMemoryApprovalGate 를 그대로 넘기면
+ * 형변환으로 `decide` 에 닿을 수 있다 — runner · 도구 · 플러그인에는 이것만 넘긴다(AgentRunner 생성자도 스스로 감싼다).
+ */
+export function restrictGate(gate: ApprovalGate): ApprovalGate {
+  return Object.freeze({
+    open: (request: ApprovalRequest) => gate.open(request),
+    requestApproval: (request: ApprovalRequest) => gate.requestApproval(request),
+  });
+}
+
 export interface PendingApproval {
   readonly id: string;
   readonly runId: string;
   readonly tool: string;
   readonly argsSummary: string;
+  /** 사람이 승인 화면에서 볼 인자 전문(ApprovalRequest.argsFull) */
+  readonly argsFull: string;
+  /** 비밀처럼 보이는 키 경로 — 승인 화면 경고용 */
+  readonly maskedKeys: readonly string[];
+  readonly matchedPattern: string | null;
   readonly reason: ApprovalReason;
   /** 열린 때(ms · now()) */
   readonly createdAt: number;
+  /** 이 때가 지나면 'timeout'(ms · now() 기준) */
+  readonly expiresAt: number;
 }
 
 export interface InMemoryApprovalGateOptions {
@@ -79,14 +115,25 @@ export class InMemoryApprovalGate implements ApprovalGate {
 
   // async 지만 await 가 없어 대기 행은 이 함수를 부른 그 차례에 이미 들어가 있다
   async open(request: ApprovalRequest): Promise<ApprovalTicket> {
+    if (typeof request.argsFull !== 'string') throw new Error('approval: argsFull must be a string');
+    if (Buffer.byteLength(request.argsFull, 'utf8') > APPROVAL_ARGS_MAX_BYTES) {
+      throw new Error(`approval: argsFull larger than ${APPROVAL_ARGS_MAX_BYTES} bytes — a human cannot review it`);
+    }
     const id = this.newId();
+    // 같은 id 로 앞 대기를 덮어쓰면 앞 약속은 영원히 안 풀린다(RA 검수 4 R11) — 프로그래머 잘못(newId)이므로 예외
+    if (this.slots.has(id)) throw new Error(`approval: duplicate approval id ${JSON.stringify(id)}`);
+    const createdAt = this.now();
     const pending: PendingApproval = {
       id,
       runId: request.runId,
       tool: request.tool,
       argsSummary: request.argsSummary,
+      argsFull: request.argsFull,
+      maskedKeys: [...(request.maskedKeys ?? [])],
+      matchedPattern: request.matchedPattern ?? null,
       reason: request.reason,
-      createdAt: this.now(),
+      createdAt,
+      expiresAt: createdAt + this.timeoutMs,
     };
     const signal = request.signal;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -106,7 +153,7 @@ export class InMemoryApprovalGate implements ApprovalGate {
         else signal.addEventListener('abort', onAbort, { once: true });
       }
     });
-    return { id, decision };
+    return { id, decision, expiresAt: pending.expiresAt };
   }
 
   async requestApproval(request: ApprovalRequest): Promise<ApprovalOutcome> {
