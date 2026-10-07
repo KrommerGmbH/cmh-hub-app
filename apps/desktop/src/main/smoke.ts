@@ -276,10 +276,23 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       const childCount = (): number => w.window.contentView.children.length;
       const before = childCount();
       const pageWidthBefore = page.getBounds().width;
+      const devtoolsContentScript =
+        "(() => { let d = ''; const w = (n) => { if (d.length > 300) return; if (n.nodeName === 'STYLE') return; if (n.nodeType === 3) d += n.textContent; if (n.shadowRoot) w(n.shadowRoot); for (const c of n.childNodes || []) w(c); }; const e = document.querySelector('#elements-content'); if (e) w(e); return d.trim().length; })()";
+      const devtoolsContentLength = async (): Promise<number> => {
+        const top = w.window.contentView.children[w.window.contentView.children.length - 1] as Electron.WebContentsView | undefined;
+        if (!top || top.webContents.isDestroyed()) return 0;
+        try {
+          const len = (await top.webContents.executeJavaScript(devtoolsContentScript)) as unknown;
+          return typeof len === 'number' ? len : 0;
+        } catch {
+          return 0;
+        }
+      };
       let openedEvent = false;
       page.webContents.once('devtools-opened', () => { openedEvent = true; });
       w.handleInspectForSmoke(tabId, 100, 100);
       const opened = await waitFor(() => page.webContents.isDevToolsOpened() || openedEvent, 6000);
+      const openedContent = await waitFor(async () => (await devtoolsContentLength()) > 0, 10000);
       const lastView = w.window.contentView.children[w.window.contentView.children.length - 1] as Electron.WebContentsView | undefined;
       console.info(`[smoke] 검사 진단 isDevToolsOpened=${page.webContents.isDevToolsOpened()} · devtools-opened 이벤트=${openedEvent} · 개발자 도구 view 주소=${lastView?.webContents?.getURL?.().slice(0, 60) ?? '없음'}`);
       const addedView = childCount() === before + 1;
@@ -317,17 +330,18 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       const headerGone = await waitFor(async () => (await shellJs<number>("document.querySelectorAll('.devtools-header').length")) === 0, 3000);
       w.closeInspectorForSmoke(tabId);
       const closed = await waitFor(() => childCount() === before && page.getBounds().width === pageWidthBefore, 6000);
-      // 닫은 뒤 다시 «검사» — 새 view 로 다시 떠야 한다
+      // 닫은 뒤 다시 «검사» — 숨겨 둔 view 가 다시 창에 붙고 내용이 차야 한다
       // 다른 view 에 띄운 개발자 도구는 다시 열 때 devtools-opened 가 안 온다(isDevToolsOpened 도 false) — «devtools:// 화면이 다시 창에 붙고 페이지가 좁아졌나»로 본다
       w.handleInspectForSmoke(tabId, 120, 120);
       const reopened = await waitFor(() => {
         const top = w.window.contentView.children[w.window.contentView.children.length - 1] as Electron.WebContentsView | undefined;
         return childCount() === before + 1 && (top?.webContents?.getURL?.() ?? '').startsWith('devtools://') && page.getBounds().width < pageWidthBefore;
       }, 6000);
+      const reopenedContent = await waitFor(async () => (await devtoolsContentLength()) > 0, 10000);
       w.closeInspectorForSmoke(tabId);
       const closedAgain = await waitFor(() => childCount() === before, 6000);
-      const ok = opened && addedView && pageNarrowed && toolsRight && headerShown && toolsWidened && closedByX && headerGone && closed && reopened && closedAgain;
-      log('검사 → 오른쪽 개발자 도구', `${ok ? 'OK' : 'FAIL'} 열림 ${opened} · view 하나 더 ${addedView} · 페이지 좁아짐 ${pageNarrowed} · 오른쪽 ${toolsRight} · 닫으면 원래대로 ${closed} · 다시 열림 ${reopened} · 다시 닫힘 ${closedAgain} · 머리줄 ${headerShown} · 끌어 넓힘 ${toolsWidened} · ×로 닫힘 ${closedByX} · 머리줄 사라짐 ${headerGone}`);
+      const ok = opened && openedContent && addedView && pageNarrowed && toolsRight && headerShown && toolsWidened && closedByX && headerGone && closed && reopened && reopenedContent && closedAgain;
+      log('검사 → 오른쪽 개발자 도구', `${ok ? 'OK' : 'FAIL'} 열림 ${opened} · 열림 내용 ${openedContent} · view 하나 더 ${addedView} · 페이지 좁아짐 ${pageNarrowed} · 오른쪽 ${toolsRight} · 닫으면 원래대로 ${closed} · 다시 열림 ${reopened} · 다시 열림 내용 ${reopenedContent} · 다시 닫힘 ${closedAgain} · 머리줄 ${headerShown} · 끌어 넓힘 ${toolsWidened} · ×로 닫힘 ${closedByX} · 머리줄 사라짐 ${headerGone}`);
     }
   }
 

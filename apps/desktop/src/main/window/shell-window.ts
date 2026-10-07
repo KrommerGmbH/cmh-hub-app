@@ -1,5 +1,5 @@
 // U01 — BaseWindow + 셸 view(맨 아래 · 창 전체) + 탭 view 들. 트리(LayoutEngine)가 정본, 셸은 상태를 받아 그린다.
-import { app, BaseWindow, WebContentsView, type WebContents } from 'electron';
+import { app, BaseWindow, Notification, WebContentsView, type WebContents } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -12,7 +12,7 @@ import {
   type UpdateState,
 } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../../config.js';
-import { APP_ICON_PNG } from '../app-identity.js';
+import { APP_DISPLAY_NAME, APP_ICON_PNG } from '../app-identity.js';
 import { LayoutEngine } from '../layout/layout-engine.js';
 import { LayoutStore } from '../layout/layout-store.js';
 import { attachShortcuts } from '../shortcuts.js';
@@ -95,7 +95,10 @@ export class ShellWindow {
         onLoading: (tabId, loading) => this.patchTab(tabId, { loading }),
         onUrl: (tabId, url) => this.patchTab(tabId, { url }),
         onInspect: (tabId, x, y) => {
-          this.views.inspect(tabId, x, y, () => this.refreshAfterInspector());
+          if (!this.views.inspect(tabId, x, y, () => this.refreshAfterInspector())) {
+            this.notifyDevtoolsSpent();
+            return;
+          }
           // 셸 메뉴가 열린 채면 새 개발자 도구 view 가 메뉴를 덮는다 — 셸을 다시 맨 위로(제미나이 검수 2026-10-05)
           if (this.shellOnTop) this.setShellOnTop(true);
         },
@@ -256,8 +259,21 @@ export class ShellWindow {
   }
 
   /** smoke — 오른쪽 클릭 «검사»와 같은 길(메뉴는 사람만 누를 수 있다) */
-  handleInspectForSmoke(tabId: string, x: number, y: number): void {
-    this.views.inspect(tabId, x, y, () => this.refreshAfterInspector());
+  handleInspectForSmoke(tabId: string, x: number, y: number): boolean {
+    const ok = this.views.inspect(tabId, x, y, () => this.refreshAfterInspector());
+    if (!ok) this.notifyDevtoolsSpent();
+    return ok;
+  }
+
+  private notifyDevtoolsSpent(): void {
+    if (Notification.isSupported()) {
+      new Notification({
+        title: APP_DISPLAY_NAME,
+        body: '이 탭은 개발자 도구를 다시 열 수 없습니다(한 번 닫히면 그 탭에서는 못 엽니다 · Electron 제약). 탭을 새로 여십시오.',
+        silent: true,
+        icon: APP_ICON_PNG,
+      }).show();
+    }
   }
 
   closeInspectorForSmoke(tabId: string): void {

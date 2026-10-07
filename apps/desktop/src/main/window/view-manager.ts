@@ -12,6 +12,8 @@ export class ViewManager {
   private readonly devtoolsOpen = new Set<string>();
   /** 탭 id → 개발자 도구 너비 비율 (HUBAPP-DEVTOOLS) */
   private readonly devtoolsRatio = new Map<string, number>();
+  /** 진짜로 닫아서 이 탭에서는 다시 못 여는 탭 id */
+  private readonly devtoolsSpent = new Set<string>();
 
   constructor(
     private readonly window: BaseWindow,
@@ -84,29 +86,38 @@ export class ViewManager {
   /**
    * «검사» — 개발자 도구를 그 탭 pane 의 오른쪽 view 에 띄운다(Electron 기본은 따로 뜨는 창 · Electron 아이콘).
    * setDevToolsWebContents 는 탭마다 한 번만 — 닫았다 다시 열 때 새 webContents 를 붙이면 안 열린다(2026-10-05 smoke 실측 «다시 열림 false»).
+   * 2026-10-07 실측 — 진짜로 닫으면(closeDevTools) 같은 view 를 다시 써도 빈 화면이다 → 어드민 · 빈 탭은 숨기기만, 네이버 탭만 진짜로 닫는다.
    * 그래서 개발자 도구 view 는 닫을 때 창에서 떼기만 하고, 탭이 닫힐 때 없앤다(electron.d.ts «closing the DevTools does not destroy the devToolsWebContents»).
    */
-  inspect(tabId: string, x: number, y: number, onChanged: () => void): void {
+  inspect(tabId: string, x: number, y: number, onChanged: () => void): boolean {
+    if (this.devtoolsSpent.has(tabId)) return false;
     const page = this.views.get(tabId);
-    if (!page || page.webContents.isDestroyed()) return;
+    if (!page || page.webContents.isDestroyed()) return false;
     if (!this.devtoolsOpen.has(tabId)) {
       let tools = this.devtools.get(tabId);
-      if (!tools) {
+      if (tools) {
+        this.window.contentView.addChildView(tools);
+        this.devtoolsOpen.add(tabId);
+        onChanged();
+      } else {
         tools = new WebContentsView();
         page.webContents.setDevToolsWebContents(tools.webContents);
         this.devtools.set(tabId, tools);
         // 개발자 도구 안에서 닫아도(단축키 등) 자리를 되돌린다
         page.webContents.on('devtools-closed', () => {
+          if (!this.views.has(tabId)) return;
+          this.devtoolsSpent.add(tabId);
           if (this.devtoolsOpen.has(tabId)) this.hideDevTools(tabId);
           onChanged();
         });
+        this.window.contentView.addChildView(tools);
+        this.devtoolsOpen.add(tabId);
+        page.webContents.openDevTools({ mode: 'detach', activate: true });
+        onChanged();
       }
-      this.window.contentView.addChildView(tools);
-      this.devtoolsOpen.add(tabId);
-      page.webContents.openDevTools({ mode: 'detach', activate: true });
-      onChanged();
     }
     page.webContents.inspectElement(x, y);
+    return true;
   }
 
   /** 이 탭의 개발자 도구가 열려 있나 — 다른 view 에 띄우면 webContents.isDevToolsOpened() 가 false 다(2026-10-05 smoke 실측) · 그래서 우리가 센다 */
@@ -124,8 +135,13 @@ export class ViewManager {
   /** 닫기 = 개발자 도구를 닫고 view 를 창에서 뗀다(webContents 는 다시 열 때 쓴다) */
   private hideDevTools(tabId: string): void {
     this.devtoolsOpen.delete(tabId);
-    const page = this.views.get(tabId);
-    if (page && !page.webContents.isDestroyed()) page.webContents.closeDevTools();
+    const kind = this.engine.getTab(tabId)?.kind;
+    if (kind === 'naver') {
+      // 계획서 U07 8번 3행 «네이버 작업 중에는 닫는다» — 붙은 채면 네이버가 개발자 도구 열림을 볼 수 있다
+      const page = this.views.get(tabId);
+      if (page && !page.webContents.isDestroyed()) page.webContents.closeDevTools();
+      this.devtoolsSpent.add(tabId);
+    }
     const tools = this.devtools.get(tabId);
     if (tools && !this.window.isDestroyed()) this.window.contentView.removeChildView(tools);
   }
@@ -133,6 +149,9 @@ export class ViewManager {
   /** 탭이 닫힐 때 — 개발자 도구 webContents 까지 없앤다(closeDevTools 는 그것을 안 닫는다 · electron.d.ts) */
   private destroyDevTools(tabId: string): void {
     if (this.devtoolsOpen.has(tabId)) this.hideDevTools(tabId);
+    const page = this.views.get(tabId);
+    if (page && !page.webContents.isDestroyed()) page.webContents.closeDevTools();
+    this.devtoolsSpent.delete(tabId);
     const tools = this.devtools.get(tabId);
     if (!tools) {
       this.devtoolsRatio.delete(tabId);
