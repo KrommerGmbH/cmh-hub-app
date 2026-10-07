@@ -1,0 +1,22 @@
+{
+  "name": "chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:bg": "vite build --mode bg",
+    "build:content": "vite build --mode content",
+    "build": "vite build --mode bg && vite build --mode content && node scripts/copy-manifest.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cmh-hub-app/driver-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

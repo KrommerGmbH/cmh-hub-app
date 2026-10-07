@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "CMH Hub — 네이버 판매자센터",
+  "version": "0.1.0",
+  "description": "CMH Hub 앱의 작업을 사장님 크롬에서 돌린다(읽기 1차)",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://sell.smartstore.naver.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://sell.smartstore.naver.com/*"
+  ]
+}

@@ -18,6 +18,7 @@ import { runSmokeIfRequested } from './smoke.js';
 import { runCredentialCheckIfRequested } from './credentials/credential-check.js';
 import { runParallelCheckIfRequested } from './parallel-check.js';
 import { runDriverCheckIfRequested } from './naver/driver-check.js';
+import { runExtCheckIfRequested } from './ext-check.js';
 import { createShellWindow } from './window/shell-window.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
@@ -60,6 +61,7 @@ app.whenReady().then(async () => {
   runCredentialCheckIfRequested(w.window);
   runParallelCheckIfRequested(w); // U07 ⑥⑦ 병렬 시험(개발판 · CMH_HUB_PARALLEL=1)
   runDriverCheckIfRequested(w); // U07a 읽기 전용 드라이버 실측(개발판 · CMH_HUB_DRIVER_CHECK=1 · 어드민 탭만)
+  runExtCheckIfRequested(); // U11 크롬 확장 실측(개발판 · CMH_HUB_EXT_CHECK=1 · 확장은 CMH_EXT_DEV_ORIGIN 으로 빌드)
 });
 
 app.on('window-all-closed', () => {
