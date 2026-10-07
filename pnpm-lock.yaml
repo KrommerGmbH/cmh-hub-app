@@ -40,6 +40,9 @@ importers:
       '@cmh-hub-app/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@cmh-hub-app/driver-core':
+        specifier: workspace:*
+        version: link:../../packages/driver-core
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9
@@ -77,6 +80,18 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
+
+  packages/driver-core:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.5
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.3(@types/node@22.20.5)(vite@8.3.2(@types/node@22.20.5)(jiti@2.7.0))
 
 packages:
 
@@ -2199,7 +2214,7 @@ snapshots:
     dependencies:
       '@types/http-cache-semantics': 4.2.0
       '@types/keyv': 3.1.4
-      '@types/node': 22.20.5
+      '@types/node': 24.19.1
       '@types/responselike': 1.0.3
 
   '@types/chai@5.2.3':
@@ -2217,13 +2232,13 @@ snapshots:
 
   '@types/fs-extra@9.0.13':
     dependencies:
-      '@types/node': 22.20.5
+      '@types/node': 24.19.1
 
   '@types/http-cache-semantics@4.2.0': {}
 
   '@types/keyv@3.1.4':
     dependencies:
-      '@types/node': 22.20.5
+      '@types/node': 24.19.1
 
   '@types/ms@2.1.0': {}
 
@@ -2237,7 +2252,7 @@ snapshots:
 
   '@types/responselike@1.0.3':
     dependencies:
-      '@types/node': 22.20.5
+      '@types/node': 24.19.1
 
   '@vitest/mocker@5.0.3(vite@8.3.2(@types/node@22.20.5)(jiti@2.7.0))':
     dependencies:

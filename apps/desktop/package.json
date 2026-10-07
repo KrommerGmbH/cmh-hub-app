@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@cmh-hub-app/contracts": "workspace:*",
+    "@cmh-hub-app/driver-core": "workspace:*",
     "electron-updater": "^6.8.9",
     "ghost-cursor": "catalog:",
     "node-llama-cpp": "catalog:"
