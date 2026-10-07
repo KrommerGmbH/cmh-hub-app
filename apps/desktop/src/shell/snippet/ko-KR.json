@@ -1,0 +1,47 @@
+{
+  "cmh-hub-app": {
+    "sidebar": {
+      "chats": "대화",
+      "newChat": "새 대화",
+      "showAll": "모두 보기",
+      "tabs": "탭",
+      "newTab": "새 탭",
+      "agentTabs": "에이전트 탭",
+      "bookmarks": "북마크",
+      "settings": "설정",
+      "collapse": "접기"
+    },
+    "composer": {
+      "placeholder": "답장 입력, @ 로 context 추가",
+      "send": "보내기",
+      "stop": "멈추기",
+      "attach": "첨부"
+    },
+    "toolbar": {
+      "agentTabsCount": "Agent tabs {count}",
+      "runLocal": "Local",
+      "runServer": "Server",
+      "guard": "Guard",
+      "guardFull": "Full access",
+      "reasoningLow": "Low",
+      "reasoningMedium": "Medium",
+      "reasoningHigh": "High"
+    },
+    "guard": {
+      "allow": "허용",
+      "ask": "묻기",
+      "deny": "거부",
+      "requiresApproval": "사람 승인 필요"
+    },
+    "plan": {
+      "free": "무료",
+      "premium": "Premium",
+      "staff": "직원"
+    },
+    "common": {
+      "ok": "확인",
+      "cancel": "취소",
+      "error": "오류: {message}"
+    }
+  }
+}

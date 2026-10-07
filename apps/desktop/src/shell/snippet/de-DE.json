@@ -1,0 +1,47 @@
+{
+  "cmh-hub-app": {
+    "sidebar": {
+      "chats": "Chats",
+      "newChat": "Neuer Chat",
+      "showAll": "Alle anzeigen",
+      "tabs": "Tabs",
+      "newTab": "Neuer Tab",
+      "agentTabs": "Agent-Tabs",
+      "bookmarks": "Lesezeichen",
+      "settings": "Einstellungen",
+      "collapse": "Einklappen"
+    },
+    "composer": {
+      "placeholder": "Antworten, @ für Kontext",
+      "send": "Senden",
+      "stop": "Stoppen",
+      "attach": "Anhängen"
+    },
+    "toolbar": {
+      "agentTabsCount": "Agent-Tabs {count}",
+      "runLocal": "Lokal",
+      "runServer": "Server",
+      "guard": "Guard",
+      "guardFull": "Vollzugriff",
+      "reasoningLow": "Niedrig",
+      "reasoningMedium": "Mittel",
+      "reasoningHigh": "Hoch"
+    },
+    "guard": {
+      "allow": "Erlauben",
+      "ask": "Nachfragen",
+      "deny": "Verweigern",
+      "requiresApproval": "Freigabe erforderlich"
+    },
+    "plan": {
+      "free": "Kostenlos",
+      "premium": "Premium",
+      "staff": "Mitarbeiter"
+    },
+    "common": {
+      "ok": "OK",
+      "cancel": "Abbrechen",
+      "error": "Fehler: {message}"
+    }
+  }
+}
