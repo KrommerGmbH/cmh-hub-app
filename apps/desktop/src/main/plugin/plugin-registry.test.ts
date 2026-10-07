@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -205,6 +205,92 @@ describe('PluginRegistry — 게으른 활성화(activationEvents)', () => {
     await registry.deactivate('alpha');
     await registry.activate('alpha');
     expect(registry.get('alpha')).toMatchObject({ state: 'active', errorMessage: null });
+  });
+});
+
+describe('PluginRegistry — 경합 · 폴더 검사', () => {
+  it('plugin registry: deactivate 중 fire 는 새 런타임을 띄우지 않는다', async () => {
+    await addPlugin('r1', manifest('r1', ['onStartup', 'onCommand:x']));
+    let alive = 0;
+    let made = 0;
+    const registry = new PluginRegistry({
+      root, appVersion: '0.1.0',
+      runtimeFactory: () => {
+        made += 1;
+        let onExit: ((info: PluginExitInfo) => void) | null = null;
+        return {
+          async start() { alive += 1; },
+          async stop() {
+            await new Promise((r) => setTimeout(r, 100));
+            alive -= 1;
+            onExit?.({ code: 0, expected: true });
+          },
+          onExit(listener) { onExit = listener; },
+        };
+      },
+    });
+    await registry.scan();
+    await registry.install('r1');
+    await registry.activate('r1');
+    await registry.startup();
+    expect(alive).toBe(1);
+    const deactivating = registry.deactivate('r1');
+    await new Promise((r) => setTimeout(r, 10));
+    const fired = await registry.fire('onCommand:x');
+    await deactivating;
+    expect(fired).toEqual([]);
+    expect(registry.get('r1')).toMatchObject({ state: 'inactive', running: false });
+    expect(alive).toBe(0);
+    expect(made).toBe(1);
+  });
+
+  it('fire 는 앞선 activate 가 끝난 뒤의 상태로 판단한다(줄 안)', async () => {
+    await addPlugin('r2', manifest('r2', ['onCommand:y']));
+    const { registry, runtimes } = setup({ activate: () => new Promise((r) => setTimeout(r, 30)) });
+    await registry.scan();
+    await registry.install('r2');
+    const activating = registry.activate('r2');
+    expect(await registry.fire('onCommand:y')).toEqual([]); // 아직 installed 로 보였다 — 줄 밖 사전 거름에서 빠진다
+    await activating;
+    expect(await registry.fire('onCommand:y')).toEqual(['r2']);
+    expect(runtimes).toHaveLength(1);
+  });
+
+  it('plugin sandbox: 폴더 안 심볼릭 링크는 scan/install 에서 거부', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'cmh-outside-'));
+    try {
+      await writeFile(join(outside, 'secret.txt'), 'TOP-SECRET-OUTSIDE');
+      // scan 때 이미 링크가 있다 → error · 매니페스트를 버려 어떤 생명주기도 못 한다
+      await addPlugin('linked', manifest('linked', ['onStartup']));
+      await mkdir(join(root, 'linked', 'deep', 'er'), { recursive: true });
+      await symlink(outside, join(root, 'linked', 'deep', 'er', 'data'));
+      // scan 뒤 install 전에 링크가 생긴다 → install 거부 · error
+      await addPlugin('later', manifest('later', ['onStartup']));
+      // 하드링크는 경고만
+      await addPlugin('hard', manifest('hard', ['onStartup']));
+      await link(join(outside, 'secret.txt'), join(root, 'hard', 'copy.txt'));
+      const { registry, runtimes } = setup();
+      await registry.scan();
+      expect(registry.get('linked')).toMatchObject({ state: 'error', version: null });
+      expect(registry.get('linked')?.errorMessage).toMatch(/symbolic links are not allowed.*deep\/er\/data/);
+      await expect(registry.install('linked')).rejects.toBeInstanceOf(PluginLifecycleError);
+      await expect(registry.deactivate('linked')).rejects.toBeInstanceOf(PluginLifecycleError);
+      expect(registry.get('hard')).toMatchObject({ state: 'discovered' });
+      expect(registry.get('hard')?.warnings).toContain('hard link (shares content with a file elsewhere): copy.txt');
+
+      await symlink(join(outside, 'secret.txt'), join(root, 'later', 'secret.txt'));
+      await expect(registry.install('later')).rejects.toThrow(/symbolic links are not allowed/);
+      expect(registry.get('later')).toMatchObject({ state: 'error', version: null });
+      await expect(registry.deactivate('later')).rejects.toBeInstanceOf(PluginLifecycleError);
+      expect(runtimes).toEqual([]);
+
+      // 링크를 지우고 다시 scan 하면 discovered 로 돌아온다
+      await rm(join(root, 'later', 'secret.txt'));
+      await registry.scan();
+      expect(registry.get('later')).toMatchObject({ state: 'discovered', errorMessage: null });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

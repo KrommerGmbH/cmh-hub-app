@@ -4,6 +4,7 @@ import { collectChat, type ChatChunk } from '../model-provider.js';
 import { GgufTextProvider, type GgufChatEngine } from './gguf-text-provider.js';
 import { OnnxTextProvider, type OnnxEngine } from './onnx-text-provider.js';
 import { ServerRelayProvider, type RelayTransport } from './server-relay-provider.js';
+import { ModelRegistry } from '../model-registry.js';
 
 async function all(iter: AsyncIterable<ChatChunk>): Promise<ChatChunk[]> {
   const out: ChatChunk[] = [];
@@ -157,13 +158,74 @@ describe('OnnxTextProvider — 주입 엔진', () => {
     const spy = vi.fn();
     const ctrl = new AbortController();
     engine.generate = async (_m, o) => {
-      spy(o.signal);
+      spy(o.signal?.aborted);
       ctrl.abort();
+      spy(o.signal?.aborted); // 엔진은 안쪽 signal 을 받는다 — 바깥 중단이 그대로 전해진다
       return { text: '', promptTokens: 0, completionTokens: 0 };
     };
     const r = await all(new OnnxTextProvider({ ...base, engine }).chat({ model: 'm', messages: [{ role: 'user', content: 'q' }] }, ctrl.signal));
-    expect(spy).toHaveBeenCalledWith(ctrl.signal);
+    expect(spy.mock.calls).toEqual([[false], [true]]);
     expect(r).toEqual([{ type: 'done', finishReason: 'aborted' }]);
+  });
+
+  it('onnx: break(return) 하면 엔진 generate 를 멈추고 줄을 그 뒤에 푼다', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const events: string[] = [];
+    const engine: OnnxEngine = {
+      async load() {},
+      async unload() {},
+      async generate(_m, o) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        events.push('generate:start');
+        try {
+          for (let i = 0; i < 50; i++) {
+            if (o.signal?.aborted) {
+              events.push(`generate:aborted@${i}`);
+              break;
+            }
+            o.onToken?.(`t${i}`);
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          return { text: '', promptTokens: 1, completionTokens: 1 };
+        } finally {
+          // 멈춘 뒤에도 정리에 시간이 걸리는 엔진
+          await new Promise((r) => setTimeout(r, 20));
+          active -= 1;
+          events.push('generate:end');
+        }
+      },
+    };
+    const reg = new ModelRegistry({
+      providers: [{ id: 'o', code: 'o', name: 'o', kind: 'onnx' }],
+      models: [{ providerId: 'o', code: 'q', estimatedRamMB: 10 }],
+      factories: { onnx: () => new OnnxTextProvider({ ...base, engine }) },
+      decryptSecret: (b) => b,
+      ramBudgetMB: 100,
+    });
+    const { provider } = await reg.resolve('q');
+    for await (const c of provider.chat({ model: 'q', messages: [{ role: 'user', content: 'q' }] })) {
+      if (c.type === 'delta') break; // 부르는 쪽이 signal 없이 «그만»
+    }
+    // break 가 끝난 시점에 엔진은 이미 멈췄다(줄은 그 뒤에 풀렸다)
+    expect(active).toBe(0);
+    expect(events).toEqual(['generate:start', 'generate:aborted@1', 'generate:end']);
+    const second = await collectChat(provider.chat({ model: 'q', messages: [{ role: 'user', content: 'q' }], max_tokens: 2 }));
+    expect(second.error).toBeNull();
+    expect(maxActive).toBe(1);
+    expect(reg.loadedLocalModels()).toEqual([{ code: 'q', ramMB: 10 }]);
+  });
+
+  it('isLoaded — 적재 실패면 false · 성공하면 true', async () => {
+    const e1 = fakeOnnx();
+    e1.load = () => Promise.reject(new Error('파일 없음'));
+    const p1 = new OnnxTextProvider({ ...base, engine: e1 });
+    await all(p1.chat({ model: 'm', messages: [{ role: 'user', content: 'q' }] }));
+    expect(p1.isLoaded()).toBe(false);
+    const p2 = new OnnxTextProvider({ ...base, engine: fakeOnnx() });
+    await all(p2.chat({ model: 'm', messages: [{ role: 'user', content: 'q' }] }));
+    expect(p2.isLoaded()).toBe(true);
   });
 });
 

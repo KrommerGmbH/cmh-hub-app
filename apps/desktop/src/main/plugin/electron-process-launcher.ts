@@ -5,6 +5,7 @@
 //   자식 process.execArgv 에 보이기만 하고 권한 모델이 켜지지 않는다(process.permission 없음 · 폴더 밖 파일 읽힘).
 //   같은 플래그를 env `NODE_OPTIONS` 로 주면 켜진다(밖 읽기 ERR_ACCESS_DENIED · child_process 도 막힘). 그래서 execArgv 를 NODE_OPTIONS 로 옮긴다.
 //   Electron fuse `EnableNodeOptionsEnvironmentVariable` 을 끄면(배포 보안 강화 때 흔함) 이 길도 닫힌다 — 끄기 전에 다른 길을 찾아야 한다.
+// kill('SIGKILL') 은 utilityProcess.kill()(신호 못 고름) 대신 `process.kill(pid,'SIGKILL')` — Electron 실측은 확인 못 함(시험은 Node 어댑터만).
 
 import { utilityProcess } from 'electron';
 import { toNodeOptions, type LaunchOptions, type PluginChannel, type ProcessLauncher } from './process-launcher.js';
@@ -38,8 +39,20 @@ export class ElectronProcessLauncher implements ProcessLauncher {
       onExit(listener) {
         exitListeners.push(listener);
       },
-      kill() {
-        child.kill();
+      kill(signal = 'SIGTERM') {
+        if (exited) return;
+        if (signal === 'SIGTERM') {
+          child.kill();
+          return;
+        }
+        // utilityProcess.kill() 은 신호를 고를 수 없다 — SIGKILL 은 pid 로 직접(Windows 는 TerminateProcess)
+        const pid = child.pid;
+        if (pid === undefined) return;
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // 그 사이 끝났다(ESRCH)
+        }
       },
     };
   }

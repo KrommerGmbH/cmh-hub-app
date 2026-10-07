@@ -7,11 +7,16 @@
 //   running = 프로세스가 떠 있나(VS Code «activation»). active 여도 activationEvents 가 올 때까지 안 띄운다(원칙 1·3).
 // 순서 위반은 PluginLifecycleError(프로그래머 · 화면 문제 = 예외) · 플러그인 쪽 실패(매니페스트 · 프로세스 죽음)는 state=error(자료 문제 = 결과).
 // 1차는 상태를 메모리에만 둔다 — 앱을 다시 켜면 scan 뒤 전부 discovered(저장은 다음 차례 · 보고서 참고).
+// fire()(게으른 활성화)도 플러그인별 생명주기 줄(record.queue) 안에서 돈다 — deactivate 가 런타임을 내리는 사이 fire 가 새 런타임을 띄우지 않게(검수 3 차단 8).
+//   런타임을 내리는 동안(stopping)은 startRuntime 이 거부한다(dispose 처럼 줄 밖에서 내릴 때).
+//   ⚠ 생명주기 훅(hooks.activate 등) 안에서 같은 플러그인의 fire() 를 기다리면 줄이 서로 기다려 멈춘다 — 훅에서는 fire 를 기다리지 말 것.
+// 폴더 검사: scan · install · update 때 폴더 전체를 lstat 으로 훑어(inspectPluginFolder) 심볼릭 링크가 있으면 error(이유) · 하드링크는 warnings.
 
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { compareSemver, parseManifestText, type PluginManifest } from './plugin-manifest.js';
+import { inspectPluginFolder } from './plugin-process.js';
 import type { EventBus } from './event-bus.js';
 import type { ServiceContainer } from './service-container.js';
 
@@ -87,6 +92,8 @@ interface PluginRecord {
   warnings: readonly string[];
   runtime: PluginRuntime | null;
   starting: Promise<void> | null;
+  /** 런타임을 내리는 중 — 이동안 startRuntime 거부 */
+  stopping: boolean;
   queue: Promise<unknown>;
 }
 
@@ -125,15 +132,20 @@ export class PluginRegistry {
       const existing = this.records.get(entry.name);
       if (existing && existing.manifest && existing.state !== 'discovered') continue;
       if (existing && existing.runtime) continue;
+      // 매니페스트가 맞아도 폴더 안에 심볼릭 링크가 있으면 error — 매니페스트를 깨진 것처럼(null) 두어 어떤 생명주기 동작도 못 하게
+      //   (manifest 를 남기면 error → deactivate → inactive → activate 로 install 없이 켜지는 길이 생긴다). 고친 뒤 scan 하면 다시 discovered.
+      const folder = read.manifest ? await inspectPluginFolder(dir) : { error: null, warnings: [] };
+      const manifest = folder.error ? null : read.manifest;
       this.records.set(entry.name, {
         name: entry.name,
         dir,
-        manifest: read.manifest,
-        state: read.manifest ? 'discovered' : 'error',
-        errorMessage: read.error,
-        warnings: read.warnings,
+        manifest,
+        state: manifest ? 'discovered' : 'error',
+        errorMessage: read.error ?? folder.error,
+        warnings: [...read.warnings, ...folder.warnings],
         runtime: null,
         starting: null,
+        stopping: false,
         queue: existing?.queue ?? Promise.resolve(),
       });
     }
@@ -156,6 +168,7 @@ export class PluginRegistry {
 
   install(name: string): Promise<void> {
     return this.lifecycle(name, 'install', async (record, manifest) => {
+      await this.checkFolder(record, true);
       await this.options.hooks?.install?.({ manifest, pluginDir: record.dir });
       record.state = 'installed';
     });
@@ -188,6 +201,7 @@ export class PluginRegistry {
       if (compareSemver(next.version, manifest.version) <= 0) {
         throw new PluginLifecycleError(name, 'update', record.state, `version ${next.version} is not newer than ${manifest.version}`);
       }
+      await this.checkFolder(record, false);
       const wasRunning = record.runtime !== null;
       await this.stopRuntime(record);
       await this.options.hooks?.update?.({ manifest: next, pluginDir: record.dir }, { fromVersion: manifest.version, toVersion: next.version });
@@ -215,10 +229,20 @@ export class PluginRegistry {
    * active 이고 아직 안 떠 있으며 그 이벤트를 선언한 플러그인만 띄운다. 새로 띄운(또는 이미 뜨는 중이던) 이름을 돌려준다.
    */
   async fire(event: string): Promise<string[]> {
-    const targets = [...this.records.values()].filter((record) => record.state === 'active' && record.runtime === null
-      && record.manifest?.activationEvents.some((e) => e.raw === event));
-    await Promise.all(targets.map((record) => this.startRuntime(record).catch(() => undefined)));
-    return targets.filter((record) => record.runtime !== null).map((record) => record.name);
+    const wants = (record: PluginRecord): boolean => record.state === 'active' && record.runtime === null && !record.stopping
+      && record.manifest?.activationEvents.some((e) => e.raw === event) === true;
+    const targets = [...this.records.values()].filter(wants);
+    const started = await Promise.all(targets.map((record) => {
+      // 생명주기 줄 안에서 다시 본다 — 앞선 deactivate · uninstall 이 끝난 뒤의 상태로
+      const run = record.queue.then(async () => {
+        if (!wants(record)) return false;
+        await this.startRuntime(record).catch(() => undefined);
+        return record.runtime !== null;
+      });
+      record.queue = run.catch(() => undefined);
+      return run.catch(() => false);
+    }));
+    return targets.filter((_record, i) => started[i] === true).map((record) => record.name);
   }
 
   isRunning(name: string): boolean {
@@ -273,8 +297,23 @@ export class PluginRegistry {
     return next;
   }
 
+  /**
+   * 폴더를 다시 훑는다 — 심볼릭 링크가 생겼으면 error 로 두고 거부(예외) · 하드링크는 경고.
+   * install 때(아직 설치 전)는 scan 과 같이 매니페스트도 버린다 — error → deactivate → activate 로 install 을 건너뛰는 길을 막는다(다시 scan 하면 discovered).
+   */
+  private async checkFolder(record: PluginRecord, forgetManifest: boolean): Promise<void> {
+    const folder = await inspectPluginFolder(record.dir);
+    if (folder.warnings.length > 0) record.warnings = [...new Set([...record.warnings, ...folder.warnings])];
+    if (folder.error) {
+      if (forgetManifest) record.manifest = null;
+      this.fail(record, folder.error);
+      throw new Error(`plugin "${record.name}": ${folder.error}`);
+    }
+  }
+
   private startRuntime(record: PluginRecord): Promise<void> {
     if (record.starting) return record.starting;
+    if (record.stopping) return Promise.reject(new Error(`plugin "${record.name}" is stopping`));
     if (record.runtime || !record.manifest) return Promise.resolve();
     const runtime = this.options.runtimeFactory({ manifest: record.manifest, pluginDir: record.dir });
     record.runtime = runtime;
@@ -307,9 +346,11 @@ export class PluginRegistry {
     const runtime = record.runtime;
     if (!runtime) return;
     record.runtime = null;
+    record.stopping = true;
     try {
       await runtime.stop();
     } finally {
+      record.stopping = false;
       this.release(record.name);
     }
   }

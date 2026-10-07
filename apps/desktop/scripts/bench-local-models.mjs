@@ -386,6 +386,8 @@ function runChild(job, timeoutMs) {
 }
 
 async function childMain() {
+  // 부모(bench)가 죽거나 끊으면 측정을 계속하지 않는다 — 고아로 CPU · RAM 을 잡고 있지 않게
+  process.on('disconnect', () => process.exit(1));
   process.once('message', async (job) => {
     let out;
     try {

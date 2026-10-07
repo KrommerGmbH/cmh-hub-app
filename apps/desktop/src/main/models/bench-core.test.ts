@@ -136,3 +136,23 @@ describe('bench — 통계 · 결과 꼴', () => {
     expect(s.stop()).toBe(300);
   });
 });
+
+describe('bench — 자식 프로세스', () => {
+  it('bench: 부모가 끊기면 자식이 끝난다', async () => {
+    const { fork } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const script = fileURLToPath(new URL('../../../scripts/bench-local-models.mjs', import.meta.url));
+    const child = fork(script, ['--child'], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const exited = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+    await new Promise<void>((resolve) => child.once('spawn', () => resolve()));
+    // 자식이 'disconnect' 처리기를 걸 시간(모듈 적재)을 준 뒤 끊는다 — 처리기가 없으면 자식은 0 으로 끝난다(그래서 1 을 본다)
+    await new Promise((r) => setTimeout(r, 1_000));
+    child.disconnect();
+    const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+    try {
+      expect(await exited).toBe(1);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});

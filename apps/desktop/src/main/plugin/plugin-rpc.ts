@@ -14,6 +14,8 @@ export const RPC_ERROR = {
   timeout: -32002,
   /** 이 앱 정의 — 상대 프로세스가 끝나서 답을 못 받음 */
   processExited: -32003,
+  /** 이 앱 정의 — 상대가 보낸 요청이 동시 상한(maxConcurrentIncoming)을 넘음 */
+  tooManyRequests: -32004,
 } as const;
 
 export interface RpcRequest { readonly jsonrpc: '2.0'; readonly id: number; readonly method: string; readonly params?: unknown }
@@ -42,6 +44,10 @@ export interface RpcEndpointOptions {
   readonly defaultTimeoutMs?: number;
   /** 꼴이 틀린 글 · 상대가 보낸 알림 처리 실패 같은 것을 남긴다 */
   readonly onProtocolError?: (message: string) => void;
+  /** 상대가 보낸 요청 중 아직 답하지 않은 것의 상한 — 넘으면 tooManyRequests 로 바로 답한다 · 없으면 상한 없음 */
+  readonly maxConcurrentIncoming?: number;
+  /** 상대가 보낸 글 한 통의 JSON 바이트 상한 — 넘으면 버린다(요청이면 Invalid Request 로 답) · 없으면 상한 없음 */
+  readonly maxMessageBytes?: number;
 }
 
 interface Pending {
@@ -60,6 +66,8 @@ export class RpcEndpoint {
   private readonly pending = new Map<number, Pending>();
   private closedReason: RpcError | null = null;
   private readonly defaultTimeoutMs: number;
+  /** 상대 요청 중 처리 중인 것 */
+  private incoming = 0;
 
   constructor(private readonly options: RpcEndpointOptions) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 10_000;
@@ -77,6 +85,8 @@ export class RpcEndpoint {
         this.pending.delete(id);
         reject(new RpcError(RPC_ERROR.timeout, `request "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+      // 기다리는 요청 하나 때문에 앱(또는 시험) 프로세스가 끝나지 못하는 일이 없게
+      timer.unref?.();
       this.pending.set(id, { resolve, reject, timer, method });
       try {
         this.options.send({ jsonrpc: '2.0', id, method, ...(params !== undefined ? { params } : {}) });
@@ -101,6 +111,22 @@ export class RpcEndpoint {
     }
     const id = raw['id'];
     const method = raw['method'];
+    const maxBytes = this.options.maxMessageBytes;
+    if (maxBytes !== undefined) {
+      let size: number;
+      try {
+        size = Buffer.byteLength(JSON.stringify(raw), 'utf8');
+      } catch {
+        size = Number.POSITIVE_INFINITY;
+      }
+      if (size > maxBytes) {
+        this.protocolError(`dropped message larger than ${maxBytes} bytes`);
+        if (typeof method === 'string' && typeof id === 'number' && Number.isSafeInteger(id)) {
+          this.reply(id, undefined, new RpcError(RPC_ERROR.invalidRequest, `message larger than ${maxBytes} bytes`));
+        }
+        return;
+      }
+    }
     if (typeof method === 'string') {
       if (id === undefined) {
         void this.dispatch(method, raw['params']).catch((error: unknown) => this.protocolError(`notification "${method}" failed: ${String(error)}`));
@@ -110,10 +136,20 @@ export class RpcEndpoint {
         this.reply(null, undefined, new RpcError(RPC_ERROR.invalidRequest, 'request id must be an integer'));
         return;
       }
-      this.dispatch(method, raw['params']).then(
-        (result) => this.reply(id, result, null),
-        (error: unknown) => this.reply(id, undefined, error instanceof RpcError ? error : new RpcError(RPC_ERROR.internal, error instanceof Error ? error.message : String(error))),
-      );
+      const limit = this.options.maxConcurrentIncoming;
+      if (limit !== undefined && this.incoming >= limit) {
+        this.reply(id, undefined, new RpcError(RPC_ERROR.tooManyRequests, `too many concurrent requests (limit ${limit})`));
+        return;
+      }
+      this.incoming += 1;
+      this.dispatch(method, raw['params'])
+        .then(
+          (result) => this.reply(id, result, null),
+          (error: unknown) => this.reply(id, undefined, error instanceof RpcError ? error : new RpcError(RPC_ERROR.internal, error instanceof Error ? error.message : String(error))),
+        )
+        .finally(() => {
+          this.incoming -= 1;
+        });
       return;
     }
     if (typeof id === 'number' && (Object.prototype.hasOwnProperty.call(raw, 'result') || isObject(raw['error']))) {

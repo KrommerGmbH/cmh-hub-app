@@ -9,9 +9,17 @@
 //   repository.upsert { entity, rows[] }      쓰기 · repository.delete { entity, ids[] } 쓰기
 //   log (알림) { level: 'info'|'warn'|'error', message }
 // 앱 → 플러그인: activate { name, version } · deactivate · event (알림) { event, payload } · 그 밖은 플러그인이 정한 메서드(예 ping)
+//
+// 내리기(검수 3 차단 6): deactivate 요청(stopTimeoutMs) → SIGTERM → killTimeoutMs → SIGKILL → killTimeoutMs 만 exit 대기 → 그래도 안 끝나면 포기하고 stopped.
+//   start 실패 길도 같은 차례로 거둔다. SIGTERM 을 무시하는 플러그인도 stop() 이 끝나고 고아가 남지 않는다.
+// 폴더 검사(검수 3 차단 7): start 때 폴더 전체를 lstat 으로 훑어 심볼릭 링크 · 특수 파일이 하나라도 있으면 띄우지 않는다(하드링크는 경고) —
+//   Node 권한 모델은 링크를 따라가서 `--allow-fs-read=<폴더>` 안의 링크로 밖을 읽을 수 있다. 레지스트리 scan · install 도 같은 검사(inspectPluginFolder).
+//   ⚠ 검사와 실행 사이에 플러그인이 스스로 링크를 만들 수는 없다(쓰기 권한 없음) — 하지만 다른 프로세스가 폴더를 바꾸는 것까지는 못 막는다.
+// RPC 홍수 막기: 플러그인 → 앱 동시 요청 16 · 글 한 통 1MB · log 알림 초당 20(넘친 것은 버리고 개수만 한 줄로).
 
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { scanFolderNoFollow, type FolderScanProblemKind } from '../util/folder-scan.js';
 import type { PluginManifest } from './plugin-manifest.js';
 import { checkEntityAccess, type EntityOperation } from './plugin-permissions.js';
 import type { ProcessLauncher, PluginChannel } from './process-launcher.js';
@@ -47,6 +55,8 @@ export interface PluginProcessOptions {
   readonly startTimeoutMs?: number;
   /** 'deactivate' 답을 기다리고 kill 하기까지 · 기본 2초 */
   readonly stopTimeoutMs?: number;
+  /** SIGTERM 뒤 SIGKILL 까지 · SIGKILL 뒤 exit 를 기다리는 상한 · 기본 2초 */
+  readonly killTimeoutMs?: number;
   /**
    * 기본 true — Node 권한 모델로 띄운다: `--permission --allow-fs-read=<플러그인 폴더>`(S2).
    * 실측(Electron 44.5.1 · NODE_OPTIONS 길): 폴더 밖 읽기 · 모든 쓰기 · child_process 가 ERR_ACCESS_DENIED. 네트워크는 못 막는다(Node 24 에 --allow-net 없음).
@@ -59,6 +69,57 @@ export interface PluginProcessOptions {
 export type PluginProcessStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'stopped' | 'crashed';
 
 const MAX_LOG_LENGTH = 4_000;
+/** 플러그인 → 앱 동시 요청 상한 */
+export const PLUGIN_MAX_CONCURRENT_REQUESTS = 16;
+/** 플러그인이 보내는 글 한 통 상한(JSON 바이트) */
+export const PLUGIN_MAX_MESSAGE_BYTES = 1024 * 1024;
+/** log 알림 초당 상한 */
+export const PLUGIN_LOG_PER_SECOND = 20;
+
+const FOLDER_PROBLEM_TEXT: Readonly<Record<FolderScanProblemKind, string>> = {
+  symlink: 'symbolic links are not allowed inside a plugin folder (the fs sandbox follows them)',
+  special: 'special files (FIFO · socket · device) are not allowed inside a plugin folder',
+  tooDeep: 'plugin folder is nested too deeply',
+  tooMany: 'plugin folder has too many entries',
+  notDirectory: 'plugin folder is not a directory',
+};
+
+/**
+ * 플러그인 폴더 전체를 링크를 따라가지 않고 훑는다(scan · install · start 가 쓴다).
+ * error 가 있으면 거부할 것 · warnings 는 하드링크(nlink > 1) 경고.
+ */
+export async function inspectPluginFolder(dir: string): Promise<{ error: string | null; warnings: string[] }> {
+  let scan;
+  try {
+    scan = await scanFolderNoFollow(dir);
+  } catch (error) {
+    return { error: `cannot scan plugin folder: ${(error as Error).message}`, warnings: [] };
+  }
+  const warnings = scan.hardLinks.map((file) => `hard link (shares content with a file elsewhere): ${file}`);
+  if (scan.problem) {
+    const where = scan.problem.path === '' ? '' : ` ("${scan.problem.path}")`;
+    return { error: `${FOLDER_PROBLEM_TEXT[scan.problem.kind]}${where}`, warnings };
+  }
+  return { error: null, warnings };
+}
+
+/** p 가 ms 안에 끝나면 true */
+function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise((resolveWait) => {
+    const timer = setTimeout(() => resolveWait(false), ms);
+    timer.unref?.();
+    p.then(
+      () => {
+        clearTimeout(timer);
+        resolveWait(true);
+      },
+      () => {
+        clearTimeout(timer);
+        resolveWait(true);
+      },
+    );
+  });
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -94,6 +155,12 @@ export class PluginProcess implements PluginRuntime {
   private rpc: RpcEndpoint | null = null;
   private readonly exitListeners: ((info: PluginExitInfo) => void)[] = [];
   private exitPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private exitNotified = false;
+  /** log 빈도 상한 — 지금 1초 창의 시작 · 개수 · 버린 개수 */
+  private logWindowStart = 0;
+  private logCount = 0;
+  private logDropped = 0;
 
   constructor(private readonly options: PluginProcessOptions) {}
 
@@ -122,10 +189,15 @@ export class PluginProcess implements PluginRuntime {
     try {
       realDir = await realpath(pluginDir);
       entry = await resolveInside(realDir, manifest.main);
+      const folder = await inspectPluginFolder(realDir);
+      for (const warning of folder.warnings) this.options.onLog?.(this.name, 'warn', warning);
+      if (folder.error) throw new Error(folder.error);
     } catch (error) {
       this.statusValue = 'crashed';
       throw error;
     }
+    // 폴더를 훑는 사이 stop() 이 불렸으면 띄우지 않는다(띄우면 아무도 거두지 않는 고아가 된다)
+    if (this.statusValue !== 'starting') throw new Error(`plugin ${this.name} was stopped while starting`);
     const execArgv = this.options.sandboxFs !== false ? ['--permission', `--allow-fs-read=${realDir}`] : [];
     const channel = this.options.launcher.launch(entry, {
       cwd: realDir,
@@ -138,15 +210,21 @@ export class PluginProcess implements PluginRuntime {
       send: (message) => channel.send(message),
       methods: this.hostMethods(),
       defaultTimeoutMs: this.options.requestTimeoutMs ?? 10_000,
+      maxConcurrentIncoming: PLUGIN_MAX_CONCURRENT_REQUESTS,
+      maxMessageBytes: PLUGIN_MAX_MESSAGE_BYTES,
       onProtocolError: (message) => this.options.onLog?.(this.name, 'warn', `rpc: ${message}`),
     });
     this.rpc = rpc;
     this.exitPromise = new Promise<void>((resolveExit) => {
       channel.onExit((code) => {
-        const expected = this.statusValue === 'stopping';
+        // stop() 이 exit 를 못 보고 포기한 뒤(stopped) 늦게 온 exit 도 예상한 종료다
+        const expected = this.statusValue === 'stopping' || this.statusValue === 'stopped';
         this.statusValue = expected ? 'stopped' : 'crashed';
         rpc.close(new RpcError(RPC_ERROR.processExited, `plugin process exited (code ${code ?? 'unknown'})`));
-        for (const listener of this.exitListeners) listener({ code, expected });
+        if (!this.exitNotified) {
+          this.exitNotified = true;
+          for (const listener of this.exitListeners) listener({ code, expected });
+        }
         resolveExit();
       });
     });
@@ -154,9 +232,16 @@ export class PluginProcess implements PluginRuntime {
     try {
       await rpc.request('activate', { name: manifest.name, version: manifest.version }, this.options.startTimeoutMs ?? 10_000);
     } catch (error) {
-      // 활성화 실패 = 프로세스를 거두고 crashed. 'exit' 가 와도 expected=false 로 알린다.
-      if (this.statusValue === 'starting') channel.kill();
-      await this.exitPromise;
+      // 활성화 실패 = 프로세스를 거두고 crashed. 'exit' 가 와도 expected=false 로 알린다. stop() 이 이미 거두는 중이면 그것을 기다린다.
+      if (this.statusValue === 'starting') {
+        const gone = await this.terminate(channel);
+        if (!gone && this.statusValue === 'starting') {
+          this.statusValue = 'crashed';
+          rpc.close(new RpcError(RPC_ERROR.processExited, 'plugin process did not exit after SIGKILL'));
+        }
+      } else if (this.stopPromise) {
+        await this.stopPromise;
+      }
       throw error;
     }
     if (this.statusValue === 'starting') this.statusValue = 'running';
@@ -172,7 +257,13 @@ export class PluginProcess implements PluginRuntime {
   }
 
   async stop(): Promise<void> {
+    if (this.stopPromise) return this.stopPromise;
     if (this.statusValue !== 'running' && this.statusValue !== 'starting') return;
+    this.stopPromise = this.doStop();
+    return this.stopPromise;
+  }
+
+  private async doStop(): Promise<void> {
     const rpc = this.rpc;
     const channel = this.channel;
     this.statusValue = 'stopping';
@@ -183,8 +274,44 @@ export class PluginProcess implements PluginRuntime {
         // 답이 없거나 이미 죽었어도 아래에서 거둔다
       }
     }
-    channel?.kill();
-    await this.exitPromise;
+    if (!channel) {
+      this.statusValue = 'stopped';
+      return;
+    }
+    const gone = await this.terminate(channel);
+    if (!gone && this.statusValue === 'stopping') {
+      // SIGKILL 뒤에도 exit 가 안 왔다(좀비 · 어댑터 문제) — 더 기다리지 않는다. 늦게 온 exit 는 expected 로 알린다.
+      this.statusValue = 'stopped';
+      rpc?.close(new RpcError(RPC_ERROR.processExited, 'plugin process did not exit after SIGKILL'));
+      this.options.onLog?.(this.name, 'error', 'plugin process did not report exit after SIGKILL');
+    }
+  }
+
+  /** SIGTERM → killTimeoutMs → SIGKILL → killTimeoutMs 만 exit 대기. exit 를 보면 true */
+  private async terminate(channel: PluginChannel): Promise<boolean> {
+    const exited = this.exitPromise ?? Promise.resolve();
+    const killTimeoutMs = this.options.killTimeoutMs ?? 2_000;
+    channel.kill('SIGTERM');
+    if (await settlesWithin(exited, killTimeoutMs)) return true;
+    channel.kill('SIGKILL');
+    return settlesWithin(exited, killTimeoutMs);
+  }
+
+  /** log 알림 빈도 상한 — 1초 창마다 PLUGIN_LOG_PER_SECOND 개 · 넘친 개수는 다음 창 첫 줄에 */
+  private acceptLog(): boolean {
+    const now = Date.now();
+    if (now - this.logWindowStart >= 1_000) {
+      if (this.logDropped > 0) this.options.onLog?.(this.name, 'warn', `log rate limited: ${this.logDropped} message(s) dropped`);
+      this.logWindowStart = now;
+      this.logCount = 0;
+      this.logDropped = 0;
+    }
+    if (this.logCount >= PLUGIN_LOG_PER_SECOND) {
+      this.logDropped += 1;
+      return false;
+    }
+    this.logCount += 1;
+    return true;
   }
 
   private hostMethods(): Record<string, RpcMethodHandler> {
@@ -223,7 +350,7 @@ export class PluginProcess implements PluginRuntime {
         return data().delete(entity, p['ids']);
       },
       log: (params) => {
-        if (!isObject(params)) return null;
+        if (!isObject(params) || !this.acceptLog()) return null;
         const level = params['level'] === 'warn' || params['level'] === 'error' ? params['level'] : 'info';
         const message = typeof params['message'] === 'string' ? params['message'].slice(0, MAX_LOG_LENGTH) : '';
         this.options.onLog?.(this.name, level, message);

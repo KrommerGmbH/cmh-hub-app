@@ -71,6 +71,11 @@ export interface ModelProvider {
   chat(req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk>;
   /** 로컬 공급자만 — 적재한 모델을 RAM 에서 내린다(다음 chat 때 다시 적재) */
   unload?(): Promise<void>;
+  /**
+   * 로컬 공급자만 · 선택 — 지금 모델이 RAM 에 올라 있나. 있으면 레지스트리가 chat 이 끝난 뒤 이 값으로 RAM 장부를 맞춘다
+   * (없으면 «처음 적재하던 chat 이 글 없이 error 로 끝남 = 적재 실패» 로 본다).
+   */
+  isLoaded?(): boolean;
 }
 
 export interface CollectedToolCall {

@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { inspect } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { collectChat, type ChatChunk } from '../model-provider.js';
-import { OpenAiCompatProvider, redactSecret } from './openai-compat-provider.js';
+import { OpenAiCompatProvider, redactSecret, SSE_EVENT_MAX_BYTES, TOOL_ARGS_MAX_BYTES } from './openai-compat-provider.js';
 
 const KEY = 'sk-test-SECRET-0123456789abcdefXYZ';
 
@@ -214,6 +215,145 @@ describe('OpenAiCompatProvider — SSE', () => {
     expect(new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://x', reasoningParam: 'openai' }).buildBody(r)).toMatchObject({ reasoning_effort: 'high' });
     expect(new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://x', reasoningParam: 'openrouter' }).buildBody({ ...req, reasoning: 'off' })).toMatchObject({ reasoning: { enabled: false } });
     expect(new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://x', streamUsage: false }).buildBody(req)).not.toHaveProperty('stream_options');
+  });
+});
+
+/** 조각을 그대로 흘리는 가짜 fetch(조각 경계 · 줄 끝을 마음대로) */
+function fakeFetch(parts: Array<string | Uint8Array>, opts: { holdOpen?: boolean } = {}): typeof fetch {
+  const enc = new TextEncoder();
+  return (async (_url: string, init: RequestInit) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const part of parts) c.enqueue(typeof part === 'string' ? enc.encode(part) : part);
+          if (!opts.holdOpen) c.close();
+          else init.signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+        },
+      }),
+      { headers: { 'content-type': 'text/event-stream' } },
+    )) as unknown as typeof fetch;
+}
+const ev = (o: unknown): string => `data: ${JSON.stringify(o)}\n\n`;
+
+describe('OpenAiCompatProvider — 검수 3 권고(SSE 꼴 · 상한 · 비밀)', () => {
+  it('openai-compat: 빈 data 줄(keep-alive)은 무시한다', async () => {
+    const p = new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://h', fetch: fakeFetch(['data:\n\n', 'data: \n\n', ev({ choices: [{ delta: { content: 'A' } }] }), 'data: [DONE]\n\n']) });
+    expect(await collectChat(p.chat(req))).toMatchObject({ text: 'A', finishReason: 'stop', error: null });
+  });
+
+  it('CR 만 쓰는 줄 끝 · 조각 끝의 CR 이 다음 조각의 LF 와 이어지는 경우', async () => {
+    const line = `data: ${JSON.stringify({ choices: [{ delta: { content: 'A' } }] })}`;
+    const crOnly = new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://h', fetch: fakeFetch([`${line}\r\r`, 'data: [DONE]\r\r']) });
+    expect(await collectChat(crOnly.chat(req))).toMatchObject({ text: 'A', finishReason: 'stop', error: null });
+    const split = new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://h', fetch: fakeFetch([`${line}\r`, '\n\r', '\n', 'data: [DONE]\r\n\r\n']) });
+    expect(await collectChat(split.chat(req))).toMatchObject({ text: 'A', finishReason: 'stop', error: null });
+  });
+
+  it('openai-compat: index 없는 tool_calls 두 개는 id 로 나눈다', async () => {
+    const p = new OpenAiCompatProvider({
+      id: 'p',
+      baseUrl: 'http://h',
+      fetch: fakeFetch([
+        ev({ choices: [{ delta: { tool_calls: [{ id: 'c1', function: { name: 'foo', arguments: '{"a"' } }] } }] }),
+        ev({ choices: [{ delta: { tool_calls: [{ function: { arguments: ':1}' } }] } }] }),
+        ev({ choices: [{ delta: { tool_calls: [{ id: 'c2', function: { name: 'bar', arguments: '{"b":2}' } }] }, finish_reason: 'tool_calls' }] }),
+        'data: [DONE]\n\n',
+      ]),
+    });
+    expect((await collectChat(p.chat(req))).toolCalls).toEqual([
+      { id: 'c1', name: 'foo', argumentsJson: '{"a":1}' },
+      { id: 'c2', name: 'bar', argumentsJson: '{"b":2}' },
+    ]);
+  });
+
+  it('조각마다 name 을 다시 보내도 한 번만', async () => {
+    const p = new OpenAiCompatProvider({
+      id: 'p',
+      baseUrl: 'http://h',
+      fetch: fakeFetch([
+        ev({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'foo', arguments: '{"a"' } }] } }] }),
+        ev({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'foo', arguments: ':1}' } }] } }] }),
+        'data: [DONE]\n\n',
+      ]),
+    });
+    expect((await collectChat(p.chat(req))).toolCalls).toEqual([{ id: 'c1', name: 'foo', argumentsJson: '{"a":1}' }]);
+  });
+
+  it('openai-compat: baseUrl 쿼리는 경로 뒤에 붙인다', async () => {
+    const urls: string[] = [];
+    const f = (async (url: string) => {
+      urls.push(url);
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+    await collectChat(new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h.example/openai/?api-version=2024-10&api-key=AZURE-SECRET-1#x', fetch: f }).chat(req));
+    expect(urls).toEqual(['https://h.example/openai/v1/chat/completions?api-version=2024-10&api-key=AZURE-SECRET-1']);
+  });
+
+  it('openai-compat: JSON.stringify(provider)·inspect 에 url 쿼리·extraHeaders 값이 없다', () => {
+    const p = new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h/openai?api-key=AZURE-SECRET-1', apiKey: KEY, extraHeaders: { 'api-key': 'EXTRA-SECRET-2' } });
+    for (const text of [JSON.stringify(p), inspect(p, { depth: 5, showHidden: true })]) {
+      expect(text).not.toContain('AZURE-SECRET-1');
+      expect(text).not.toContain('EXTRA-SECRET-2');
+      expect(text).not.toContain(KEY);
+      expect(text).not.toContain('openai?');
+    }
+  });
+
+  it('openai-compat: 시간초과 글에 url 쿼리가 없다', async () => {
+    const hang = ((_u: string, init: RequestInit) => new Promise((_res, rej) => init.signal?.addEventListener('abort', () => rej(new Error(`aborted ${String(_u)}`))))) as unknown as typeof fetch;
+    const p = new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h/openai?api-key=AZURE-SECRET-1', extraHeaders: { 'api-key': 'EXTRA-SECRET-2' }, firstByteTimeoutMs: 30, fetch: hang });
+    const keep = setInterval(() => undefined, 1_000); // 타이머가 unref 라 시험 프로세스를 붙들 것이 있어야 한다
+    try {
+      const r = await collectChat(p.chat(req));
+      expect(r.error).toBe('첫 바이트 시간초과(30ms): https://h');
+    } finally {
+      clearInterval(keep);
+    }
+  });
+
+  it('요청 실패 · HTTP 오류 글에서 주소 전체 · 쿼리 값 · 덧 헤더 값을 가린다', async () => {
+    const boom = (async (u: string) => {
+      throw new Error(`connect failed ${u} with EXTRA-SECRET-2`);
+    }) as unknown as typeof fetch;
+    const p = new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h/openai?api-key=AZURE-SECRET-1', extraHeaders: { 'api-key': 'EXTRA-SECRET-2' }, fetch: boom });
+    expect((await collectChat(p.chat(req))).error).toBe('요청 실패: connect failed https://h with ***');
+    const echo = (async () => new Response('bad key AZURE-SECRET-1 / EXTRA-SECRET-2', { status: 401 })) as unknown as typeof fetch;
+    const q = new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h/openai?api-key=AZURE-SECRET-1', extraHeaders: { 'api-key': 'EXTRA-SECRET-2' }, fetch: echo });
+    expect((await collectChat(q.chat(req))).error).toBe('HTTP 401: bad key *** / ***');
+  });
+
+  it('openai-compat: idle 시간초과', async () => {
+    const p = new OpenAiCompatProvider({ id: 'p', baseUrl: 'https://h/x?k=QUERY-SECRET-3', idleTimeoutMs: 40, fetch: fakeFetch([ev({ choices: [{ delta: { content: '첫' } }] })], { holdOpen: true }) });
+    const keep = setInterval(() => undefined, 1_000);
+    try {
+      const started = Date.now();
+      const chunks = await all(p.chat(req));
+      expect(chunks).toEqual([
+        { type: 'delta', text: '첫' },
+        { type: 'error', message: '조각 사이 시간초과(40ms): https://h' },
+      ]);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      clearInterval(keep);
+    }
+  });
+
+  it('줄 없이 끝없이 오는 사건 · 너무 큰 도구 인자는 error 로 끊는다(각 1MB)', async () => {
+    const huge = new OpenAiCompatProvider({ id: 'p', baseUrl: 'http://h', fetch: fakeFetch(['data: "', 'x'.repeat(SSE_EVENT_MAX_BYTES), 'never ends']) });
+    expect((await collectChat(huge.chat(req))).error).toBe(`SSE 사건이 너무 큽니다(${SSE_EVENT_MAX_BYTES} 바이트 초과)`);
+    const half = 'y'.repeat(TOOL_ARGS_MAX_BYTES / 2 + 1);
+    const args = new OpenAiCompatProvider({
+      id: 'p',
+      baseUrl: 'http://h',
+      fetch: fakeFetch([
+        ev({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'f', arguments: half } }] } }] }),
+        ev({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: half } }] } }] }),
+        'data: [DONE]\n\n',
+      ]),
+    });
+    const r = await collectChat(args.chat(req));
+    expect(r.error).toBe(`도구 호출 인자가 너무 큽니다(${TOOL_ARGS_MAX_BYTES} 바이트 초과)`);
+    expect(r.toolCalls).toEqual([]);
   });
 });
 

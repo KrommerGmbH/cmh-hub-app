@@ -23,8 +23,14 @@ export interface PluginChannel {
   onMessage(listener: (message: unknown) => void): void;
   /** 한 번만 부른다 · code 는 모르면 null */
   onExit(listener: (code: number | null) => void): void;
-  kill(): void;
+  /**
+   * 기본 'SIGTERM'(Electron 은 utilityProcess.kill()) · 'SIGKILL' 은 잡을 수 없는 강제 종료(SIGTERM 을 무시하는 플러그인 거두기).
+   * 이미 끝난 프로세스면 아무것도 안 한다(pid 재사용으로 남의 프로세스를 죽이지 않게).
+   */
+  kill(signal?: PluginKillSignal): void;
 }
+
+export type PluginKillSignal = 'SIGTERM' | 'SIGKILL';
 
 export interface ProcessLauncher {
   launch(modulePath: string, options: LaunchOptions): PluginChannel;
@@ -85,8 +91,9 @@ export class NodeProcessLauncher implements ProcessLauncher {
       onExit(listener) {
         exitListeners.push(listener);
       },
-      kill() {
-        child.kill();
+      kill(signal = 'SIGTERM') {
+        if (exited) return;
+        child.kill(signal);
       },
     };
   }

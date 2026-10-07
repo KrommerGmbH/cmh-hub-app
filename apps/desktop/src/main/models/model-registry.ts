@@ -2,8 +2,12 @@
 // 코드에 모델 이름을 박지 않는다(원칙 7) — 공급자 구현은 kind 별 공장 함수로 주입받는다.
 // 합의안 권고 «R4 RAM 예산 + LRU 내리기»: 로컬(gguf · onnx · laya)은 모델마다 공급자 하나 · 예산을 넘으면 가장 오래 안 쓴 로컬 모델을 unload().
 // 한 번에 로컬 추론 1개(R4 §9) — 로컬 chat 은 줄을 선다(두 번째는 첫 번째 스트림이 끝나야 시작).
+//   줄이 영원히 막히지 않게(검수 3 차단 4): 줄 대기 상한(queueWaitTimeoutMs · 넘으면 error 조각) · signal 이면 바로 done(aborted) ·
+//   줄을 잡은 이터레이터가 idleHoldTimeoutMs 동안 next() 를 안 부르면(버린 이터레이터) 안쪽 스트림을 끊고 줄을 강제로 푼다(그 이터레이터는 이후 done(aborted)) ·
+//   unloadAll · unload 는 줄을 unloadWaitTimeoutMs 만 기다리고 넘으면 앞사람을 끊고 강제로 내린다.
+//   줄을 풀기 전에 안쪽 스트림의 return() 이 끝나기를 기다린다(ONNX 는 그 안에서 generate 를 멈추고 끝날 때까지 기다린다).
 // 비밀: `apiKeyEnc`(safeStorage blob)는 주입받은 decryptSecret 로만 풀어 공장 함수에 넘기고, 레지스트리는 푼 값을 들고 있지도 내보내지도 않는다.
-import { errorText, isLocalKind, type ChatChunk, type ChatRequest, type ModelProvider, type ProviderKind } from './model-provider.js';
+import { errorText, FINISH_ABORTED, isLocalKind, type ChatChunk, type ChatRequest, type ModelProvider, type ProviderKind } from './model-provider.js';
 
 /** `cmh_ai_provider` 행(research/05) — 앱이 쓰는 칸만 */
 export interface ProviderRow {
@@ -58,6 +62,100 @@ export interface ModelRegistryOptions {
   ramBudgetMB: number;
   /** LRU 로 내린 것을 알린다(로그 · 상태 줄) — 비밀값 없음 */
   onUnload?: (modelCode: string, reason: 'lru') => void;
+  /** 로컬 줄 대기 상한(ms) · 기본 120000 — 넘으면 error 조각 «로컬 추론 대기 시간초과» */
+  queueWaitTimeoutMs?: number;
+  /** 줄을 잡은 이터레이터가 조각을 받고 이만큼(ms) next() 를 안 부르면 줄을 강제로 푼다 · 기본 30000 */
+  idleHoldTimeoutMs?: number;
+  /** unloadAll · unload 가 줄을 기다리는 상한(ms) · 넘으면 앞사람을 끊고 강제로 내린다 · 기본 10000 */
+  unloadWaitTimeoutMs?: number;
+}
+
+const DEFAULT_QUEUE_WAIT_MS = 120_000;
+const DEFAULT_IDLE_HOLD_MS = 30_000;
+const DEFAULT_UNLOAD_WAIT_MS = 10_000;
+
+/** 줄 한 자리 — release 는 여러 번 불러도 한 번만 */
+interface LockTicket {
+  release(): void;
+  /** 줄을 강제로 뺏을 때 부른다(localChat 이 채운다) */
+  revoke: (() => Promise<void>) | null;
+}
+
+/** 로컬 줄(FIFO · 한 번에 하나) — 기다리다 그만둔 사람은 줄에서 빠진다 */
+class LocalLock {
+  private held = false;
+  private readonly waiters: Array<(ticket: LockTicket) => void> = [];
+  /** 지금 줄을 잡은 자리 */
+  current: LockTicket | null = null;
+
+  acquire(timeoutMs: number, signal?: AbortSignal): Promise<LockTicket | 'timeout' | 'aborted'> {
+    if (signal?.aborted) return Promise.resolve('aborted');
+    if (!this.held) {
+      this.held = true;
+      return Promise.resolve(this.issue());
+    }
+    return new Promise((resolve) => {
+      let timer: NodeJS.Timeout | null = null;
+      const cleanup = (): void => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const grant = (ticket: LockTicket): void => {
+        cleanup();
+        resolve(ticket);
+      };
+      const drop = (why: 'timeout' | 'aborted'): void => {
+        const i = this.waiters.indexOf(grant);
+        if (i < 0) return; // 이미 차례를 받았다
+        this.waiters.splice(i, 1);
+        cleanup();
+        resolve(why);
+      };
+      const onAbort = (): void => drop('aborted');
+      this.waiters.push(grant);
+      timer = setTimeout(() => drop('timeout'), timeoutMs);
+      timer.unref?.();
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private issue(): LockTicket {
+    let released = false;
+    const ticket: LockTicket = {
+      revoke: null,
+      release: () => {
+        if (released) return;
+        released = true;
+        if (this.current === ticket) this.current = null;
+        const next = this.waiters.shift();
+        if (next) next(this.issue());
+        else this.held = false;
+      },
+    };
+    this.current = ticket;
+    return ticket;
+  }
+}
+
+/** p 가 끝나거나 ms 가 지나면 끝(어느 쪽이든 던지지 않는다) */
+async function settleWithin(p: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | null = null;
+  await Promise.race([
+    p.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+}
+
+/** max_tokens 가 없으면 모델 행의 outputTokenLimit 을 넣는다 */
+function withOutputLimit(req: ChatRequest, modelRow: ModelRow): ChatRequest {
+  const limit = modelRow.outputTokenLimit;
+  if (req.max_tokens !== undefined || typeof limit !== 'number' || !(limit > 0)) return req;
+  return { ...req, max_tokens: limit };
 }
 
 export interface ResolvedModel {
@@ -86,8 +184,11 @@ export class ModelRegistry {
   /** 로컬 공급자 — model.code 별 하나 */
   private readonly local = new Map<string, LocalSlot>();
   private useCounter = 0;
-  /** 로컬 추론 줄 — 앞사람이 끝나면 풀리는 약속 */
-  private localTail: Promise<void> = Promise.resolve();
+  /** 로컬 추론 줄 */
+  private readonly lock = new LocalLock();
+  private readonly queueWaitTimeoutMs: number;
+  private readonly idleHoldTimeoutMs: number;
+  private readonly unloadWaitTimeoutMs: number;
 
   constructor(opts: ModelRegistryOptions) {
     for (const p of opts.providers) this.providerById.set(p.id, p);
@@ -96,6 +197,9 @@ export class ModelRegistry {
     this.decryptSecret = opts.decryptSecret;
     this.ramBudgetMB = opts.ramBudgetMB;
     this.onUnload = opts.onUnload;
+    this.queueWaitTimeoutMs = opts.queueWaitTimeoutMs ?? DEFAULT_QUEUE_WAIT_MS;
+    this.idleHoldTimeoutMs = opts.idleHoldTimeoutMs ?? DEFAULT_IDLE_HOLD_MS;
+    this.unloadWaitTimeoutMs = opts.unloadWaitTimeoutMs ?? DEFAULT_UNLOAD_WAIT_MS;
   }
 
   async resolve(modelCode: string): Promise<ResolvedModel> {
@@ -116,7 +220,7 @@ export class ModelRegistry {
         slot = { inner: factory({ provider: providerRow, model: modelRow, apiKey: null }), ramMB, loaded: false, lastUsed: 0 };
         this.local.set(modelCode, slot);
       }
-      return { provider: this.wrapLocal(modelCode, slot), modelRow };
+      return { provider: this.wrapLocal(modelCode, slot, modelRow), modelRow };
     }
 
     let remote = this.remote.get(providerRow.id);
@@ -127,7 +231,16 @@ export class ModelRegistry {
       // 복호화 실패는 남겨 두지 않는다(키를 고친 뒤 다시 resolve 할 수 있게)
       remote.catch(() => this.remote.delete(providerRow.id));
     }
-    return { provider: await remote, modelRow };
+    const shared = await remote;
+    const limit = modelRow.outputTokenLimit;
+    if (typeof limit !== 'number' || !(limit > 0)) return { provider: shared, modelRow };
+    // 모델마다 출력 상한이 다르다 — 공급자는 같이 쓰고 요청만 고쳐 넘기는 얇은 감싸개
+    const limited: ModelProvider = {
+      id: shared.id,
+      kind: shared.kind,
+      chat: (req, signal) => shared.chat(withOutputLimit(req, modelRow), signal),
+    };
+    return { provider: limited, modelRow };
   }
 
   /** 지금 RAM 에 있다고 보는 로컬 모델(오래된 것부터) */
@@ -138,9 +251,9 @@ export class ModelRegistry {
       .map(([code, s]) => ({ code, ramMB: s.ramMB }));
   }
 
-  /** 앱 끝날 때 — 로컬 모델을 모두 내린다(줄이 비기를 기다린 뒤) */
+  /** 앱 끝날 때 — 로컬 모델을 모두 내린다(줄을 unloadWaitTimeoutMs 만 기다리고 넘으면 앞사람을 끊고 강제로) */
   async unloadAll(): Promise<void> {
-    await this.runExclusive(async () => {
+    await this.runExclusiveForced(async () => {
       for (const s of this.local.values()) {
         if (s.loaded) {
           s.loaded = false;
@@ -150,14 +263,14 @@ export class ModelRegistry {
     });
   }
 
-  private wrapLocal(modelCode: string, slot: LocalSlot): ModelProvider {
+  private wrapLocal(modelCode: string, slot: LocalSlot, modelRow: ModelRow): ModelProvider {
     return {
       id: slot.inner.id,
       kind: slot.inner.kind,
-      // 줄은 첫 next() 때 선다 — 부르는 쪽은 끝까지 읽거나 for-await 를 break 해서(return) 줄을 풀어야 한다
-      chat: (req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk> => this.localChat(modelCode, slot, req, signal),
+      // 줄은 첫 next() 때 선다 — 끝까지 읽거나 break(return) 하면 바로 풀린다 · 버려도 idleHoldTimeoutMs 뒤 풀린다
+      chat: (req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk> => this.localChat(modelCode, slot, withOutputLimit(req, modelRow), signal),
       unload: async () => {
-        await this.runExclusive(async () => {
+        await this.runExclusiveForced(async () => {
           if (!slot.loaded) return;
           slot.loaded = false;
           await slot.inner.unload?.();
@@ -167,24 +280,113 @@ export class ModelRegistry {
   }
 
   private async *localChat(modelCode: string, slot: LocalSlot, req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk> {
-    const release = await this.acquire();
-    try {
-      if (slot.ramMB > this.ramBudgetMB) {
-        yield { type: 'error', message: `RAM 부족: ${modelCode} 는 ${slot.ramMB}MB 인데 예산이 ${this.ramBudgetMB}MB 입니다` };
-        return;
+    const ticket = await this.lock.acquire(this.queueWaitTimeoutMs, signal);
+    if (ticket === 'aborted') {
+      yield { type: 'done', finishReason: FINISH_ABORTED };
+      return;
+    }
+    if (ticket === 'timeout') {
+      yield { type: 'error', message: `로컬 추론 대기 시간초과(${this.queueWaitTimeoutMs}ms): ${modelCode} — 앞선 로컬 추론이 끝나지 않았습니다` };
+      return;
+    }
+    const inner = new AbortController();
+    const onOuterAbort = (): void => inner.abort();
+    signal?.addEventListener('abort', onOuterAbort, { once: true });
+    if (signal?.aborted) inner.abort();
+    let iter: AsyncIterator<ChatChunk> | null = null;
+    let closing: Promise<void> | null = null;
+    /** 안쪽 스트림을 끊고 그 return()(= 안쪽 finally) 이 끝날 때까지 */
+    const closeInner = (): Promise<void> => {
+      if (!closing) {
+        inner.abort();
+        const it = iter;
+        closing = (async () => {
+          try {
+            await it?.return?.();
+          } catch {
+            // 안쪽이 던져도 줄은 푼다
+          }
+        })();
       }
-      if (!slot.loaded) {
-        const failed = await this.makeRoom(modelCode, slot.ramMB);
-        if (failed) {
-          yield { type: 'error', message: failed };
-          return;
-        }
+      return closing;
+    };
+    const wasLoaded = slot.loaded;
+    let produced = false;
+    let errored = false;
+    let started = false;
+    const settleLoaded = (): void => {
+      if (!started) return;
+      if (slot.inner.isLoaded) slot.loaded = slot.inner.isLoaded();
+      else if (!wasLoaded && errored && !produced) slot.loaded = false; // 처음 적재하던 chat 이 글 없이 실패 = 적재 실패
+    };
+    let revoked = false;
+    let idleTimer: NodeJS.Timeout | null = null;
+    const disarm = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+    };
+    const revoke = async (): Promise<void> => {
+      if (revoked) return;
+      revoked = true;
+      disarm();
+      // 엔진이 signal 을 무시해도 줄을 영원히 붙들지 않게 상한을 둔다
+      await settleWithin(closeInner(), this.unloadWaitTimeoutMs);
+      settleLoaded();
+      ticket.release();
+    };
+    ticket.revoke = revoke;
+    /** 조각 하나를 내기 직전 — 부르는 쪽이 idleHoldTimeoutMs 안에 next() 를 안 부르면 줄을 뺏는다 */
+    const arm = (): void => {
+      disarm();
+      idleTimer = setTimeout(() => void revoke(), this.idleHoldTimeoutMs);
+      idleTimer.unref?.();
+    };
+    try {
+      let refused: string | null = null;
+      if (slot.ramMB > this.ramBudgetMB) refused = `RAM 부족: ${modelCode} 는 ${slot.ramMB}MB 인데 예산이 ${this.ramBudgetMB}MB 입니다`;
+      else if (!slot.loaded) refused = await this.makeRoom(modelCode, slot.ramMB);
+      if (refused !== null) {
+        arm();
+        yield { type: 'error', message: refused };
+        disarm();
+        return;
       }
       slot.loaded = true;
       slot.lastUsed = ++this.useCounter;
-      yield* slot.inner.chat(req, signal);
+      started = true;
+      iter = slot.inner.chat(req, inner.signal)[Symbol.asyncIterator]();
+      for (;;) {
+        let r: IteratorResult<ChatChunk>;
+        try {
+          r = await iter.next();
+        } catch (e) {
+          // 약속(던지지 않음)을 어긴 공급자도 줄을 붙들지 않게
+          errored = true;
+          arm();
+          yield { type: 'error', message: errorText(e) };
+          disarm();
+          break;
+        }
+        if (r.done) break;
+        const c = r.value;
+        if (c.type === 'error') errored = true;
+        else if (c.type !== 'done') produced = true;
+        arm();
+        yield c;
+        disarm();
+        if (revoked) {
+          yield { type: 'done', finishReason: FINISH_ABORTED };
+          return;
+        }
+      }
     } finally {
-      release();
+      disarm();
+      signal?.removeEventListener('abort', onOuterAbort);
+      if (!revoked) {
+        await closeInner();
+        settleLoaded();
+        ticket.release();
+      }
     }
   }
 
@@ -207,24 +409,18 @@ export class ModelRegistry {
     return null;
   }
 
-  /** 로컬 줄에 선다 — 돌려받은 함수를 부르면 다음 사람 차례 */
-  private async acquire(): Promise<() => void> {
-    let release!: () => void;
-    const mine = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const before = this.localTail;
-    this.localTail = before.then(() => mine);
-    await before;
-    return release;
-  }
-
-  private async runExclusive(fn: () => Promise<void>): Promise<void> {
-    const release = await this.acquire();
+  /** 줄을 unloadWaitTimeoutMs 만 기다려 fn 을 돌린다 — 넘으면 지금 줄을 잡은 chat 을 끊고(revoke) 줄 없이 돌린다 */
+  private async runExclusiveForced(fn: () => Promise<void>): Promise<void> {
+    const ticket = await this.lock.acquire(this.unloadWaitTimeoutMs);
+    if (ticket === 'timeout' || ticket === 'aborted') {
+      await this.lock.current?.revoke?.();
+      await fn();
+      return;
+    }
     try {
       await fn();
     } finally {
-      release();
+      ticket.release();
     }
   }
 }

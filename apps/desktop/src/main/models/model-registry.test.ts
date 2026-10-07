@@ -207,3 +207,157 @@ describe('ModelRegistry — 로컬 추론 한 번에 하나', () => {
     expect(reg.loadedLocalModels()).toEqual([]);
   });
 });
+
+describe('ModelRegistry — 줄이 막히지 않는다(버린 이터레이터 · 대기 상한 · 강제 내리기)', () => {
+  /** 조각 둘 사이에서 오래 쉬는 가짜 로컬 — signal 을 보면 바로 멈춘다 · 끝까지 갔는지 남긴다 */
+  function slowLocal(code: string, log: string[]): ModelProvider & { unloads: number } {
+    const p = {
+      id: code,
+      kind: 'gguf' as const,
+      unloads: 0,
+      async *chat(_req: ChatRequest, signal?: AbortSignal): AsyncIterable<ChatChunk> {
+        log.push(`start:${code}`);
+        try {
+          yield { type: 'delta', text: 'a' };
+          yield { type: 'delta', text: 'b' };
+          yield { type: 'done', finishReason: 'stop' };
+        } finally {
+          log.push(`finally:${code}:${signal?.aborted ? 'aborted' : 'ok'}`);
+        }
+      },
+      async unload(): Promise<void> {
+        p.unloads += 1;
+      },
+    };
+    return p;
+  }
+  const rows = {
+    providers: [{ id: 'g', code: 'g', name: 'g', kind: 'gguf' as const }],
+    models: [
+      { providerId: 'g', code: 'm1', estimatedRamMB: 100 },
+      { providerId: 'g', code: 'm2', estimatedRamMB: 100, outputTokenLimit: 77 },
+    ],
+  };
+  function make(extra: Partial<ConstructorParameters<typeof ModelRegistry>[0]> = {}) {
+    const log: string[] = [];
+    const made: Record<string, ModelProvider & { unloads: number }> = {};
+    const reg = new ModelRegistry({
+      ...rows,
+      factories: { gguf: ({ model }) => (made[model.code] = slowLocal(model.code, log)) },
+      decryptSecret: (b) => b,
+      ramBudgetMB: 1_000,
+      ...extra,
+    });
+    return { reg, log, made };
+  }
+
+  it('registry: 버린 이터레이터가 다음 로컬 chat·unloadAll 을 막지 않는다', async () => {
+    const { reg, log, made } = make({ idleHoldTimeoutMs: 50, unloadWaitTimeoutMs: 100 });
+    const it1 = (await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] })[Symbol.asyncIterator]();
+    expect(await it1.next()).toEqual({ done: false, value: { type: 'delta', text: 'a' } });
+    // it1 을 return() 없이 버린다 — 줄을 잡은 채 next() 가 안 온다
+    const started = Date.now();
+    const r2 = await collectChat((await reg.resolve('m2')).provider.chat({ model: 'm2', messages: [] }));
+    expect(r2).toMatchObject({ text: 'ab', finishReason: 'stop', error: null });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    // 버린 쪽은 안쪽 스트림이 중단(signal)으로 닫혔고 · 다시 읽으면 done(aborted)
+    expect(log).toEqual(['start:m1', 'finally:m1:aborted', 'start:m2', 'finally:m2:ok']);
+    expect(await it1.next()).toEqual({ done: false, value: { type: 'done', finishReason: 'aborted' } });
+    expect((await it1.next()).done).toBe(true);
+    // 다시 버린다 — unloadAll 도 막히지 않는다
+    const it3 = (await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] })[Symbol.asyncIterator]();
+    await it3.next();
+    await reg.unloadAll();
+    expect(made['m1']?.unloads).toBe(1);
+    expect(made['m2']?.unloads).toBe(1);
+    expect(reg.loadedLocalModels()).toEqual([]);
+  });
+
+  it('unloadAll 은 줄을 오래 잡은 chat 을 unloadWaitTimeoutMs 뒤 끊고 강제로 내린다', async () => {
+    // idle 상한은 길게 — 대신 unloadAll 쪽 상한이 먼저 온다
+    const { reg, log, made } = make({ idleHoldTimeoutMs: 60_000, unloadWaitTimeoutMs: 50 });
+    const it1 = (await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] })[Symbol.asyncIterator]();
+    await it1.next();
+    const started = Date.now();
+    await reg.unloadAll();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(made['m1']?.unloads).toBe(1);
+    expect(log).toContain('finally:m1:aborted');
+    expect(await it1.next()).toEqual({ done: false, value: { type: 'done', finishReason: 'aborted' } });
+  });
+
+  it('줄 대기 상한을 넘으면 error 조각 · 기다리는 중 abort 면 바로 done(aborted)', async () => {
+    const { reg } = make({ queueWaitTimeoutMs: 30, idleHoldTimeoutMs: 60_000 });
+    const holder = (await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] })[Symbol.asyncIterator]();
+    await holder.next();
+    const timedOut = await collectChat((await reg.resolve('m2')).provider.chat({ model: 'm2', messages: [] }));
+    expect(timedOut.error).toMatch(/^로컬 추론 대기 시간초과\(30ms\): m2/);
+    const ctrl = new AbortController();
+    const waiting = collectChat((await reg.resolve('m2')).provider.chat({ model: 'm2', messages: [] }, ctrl.signal));
+    await new Promise((r) => setTimeout(r, 5));
+    ctrl.abort();
+    expect(await waiting).toMatchObject({ finishReason: 'aborted', error: null });
+    await holder.return?.();
+    // 줄이 풀렸다
+    expect((await collectChat((await reg.resolve('m2')).provider.chat({ model: 'm2', messages: [] }))).text).toBe('ab');
+  });
+
+  it('registry: 적재 실패면 loaded=false', async () => {
+    const failing: ModelProvider = {
+      id: 'bad',
+      kind: 'gguf',
+      async *chat(): AsyncIterable<ChatChunk> {
+        yield { type: 'error', message: 'load failed' };
+      },
+      async unload(): Promise<void> {},
+    };
+    const reg = new ModelRegistry({ ...rows, factories: { gguf: () => failing }, decryptSecret: (b) => b, ramBudgetMB: 1_000 });
+    const r = await collectChat((await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] }));
+    expect(r.error).toBe('load failed');
+    expect(reg.loadedLocalModels()).toEqual([]);
+  });
+
+  it('isLoaded 를 주는 공급자면 그 값을 따른다', async () => {
+    let loaded = false;
+    const p: ModelProvider = {
+      id: 'x',
+      kind: 'gguf',
+      async *chat(): AsyncIterable<ChatChunk> {
+        loaded = true;
+        yield { type: 'error', message: '생성 실패(적재는 됨)' };
+      },
+      isLoaded: () => loaded,
+    };
+    const reg = new ModelRegistry({ ...rows, factories: { gguf: () => p }, decryptSecret: (b) => b, ramBudgetMB: 1_000 });
+    await collectChat((await reg.resolve('m1')).provider.chat({ model: 'm1', messages: [] }));
+    expect(reg.loadedLocalModels()).toEqual([{ code: 'm1', ramMB: 100 }]);
+  });
+
+  it('outputTokenLimit — 요청에 max_tokens 가 없으면 넣는다(로컬 · 원격)', async () => {
+    const seen: Array<number | undefined> = [];
+    const capture = (id: string, kind: ProviderKind): ModelProvider => ({
+      id,
+      kind,
+      async *chat(req: ChatRequest): AsyncIterable<ChatChunk> {
+        seen.push(req.max_tokens);
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    });
+    const reg = new ModelRegistry({
+      providers: [...rows.providers, { id: 'r', code: 'r', name: 'r', kind: 'openai-compat' }],
+      models: [...rows.models, { providerId: 'r', code: 'r1', outputTokenLimit: 55 }, { providerId: 'r', code: 'r2' }],
+      factories: { gguf: () => capture('g', 'gguf'), 'openai-compat': () => capture('r', 'openai-compat') },
+      decryptSecret: (b) => b,
+      ramBudgetMB: 1_000,
+    });
+    const run = async (code: string, max?: number) =>
+      collectChat((await reg.resolve(code)).provider.chat({ model: code, messages: [], ...(max !== undefined ? { max_tokens: max } : {}) }));
+    await run('m2');
+    await run('m2', 5);
+    await run('m1');
+    await run('r1');
+    await run('r1', 9);
+    await run('r2');
+    expect(seen).toEqual([77, 5, undefined, 55, 9, undefined]);
+  });
+});
