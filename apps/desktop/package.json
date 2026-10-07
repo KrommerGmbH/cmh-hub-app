@@ -20,7 +20,8 @@
     "electron-updater": "^6.8.9",
     "ghost-cursor": "catalog:",
     "node-llama-cpp": "catalog:",
-    "ws": "catalog:"
+    "ws": "catalog:",
+    "@modelcontextprotocol/client": "catalog:"
   },
   "devDependencies": {
     "electron": "catalog:",
@@ -29,6 +30,8 @@
     "typescript": "catalog:",
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
+    "zod": "catalog:"
   }
 }
