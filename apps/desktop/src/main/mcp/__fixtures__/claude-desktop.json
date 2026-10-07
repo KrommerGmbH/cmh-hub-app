@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "cmh-shop-api-mcp": {
+      "command": "node",
+      "args": ["E:/Kang/project/cmh-mcp/packages/cmh-shop-api-mcp/dist/index.js"],
+      "env": {
+        "SHOPWARE_API_CLIENT_ID": "${SHOPWARE_API_CLIENT_ID}",
+        "SHOPWARE_API_SECRET": "literal-secret-value-should-not-leak"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/Desktop"]
+    },
+    "remote-example": {
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${TOKEN}" }
+    }
+  },
+  "globalShortcut": "Ctrl+Space"
+}
