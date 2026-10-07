@@ -3,22 +3,36 @@
 //   (research/04 §3). 밖으로는 MCP prompts 꼴(`prompts/list` 의 name · description · arguments[{name, required}])로 낸다.
 // 프런트매터: name(스킬과 같은 규칙 · 예약어 검사 없음) · description · 선택 locale(ko-KR|en-GB|de-DE) · arguments(목록)
 // 본문 자리표 `{{arg}}` 는 arguments 에 다 있어야 한다. 1차는 arguments 가 전부 필수(required: true).
+// `\{{` 는 이스케이프 — 자리표가 아니라 `{{` 글자 그대로(render 가 `\` 를 뗀다).
 // errors 는 R8 스니펫 키 그대로(화면 글자).
 import path from 'node:path';
-import { FrontmatterError, isListValue, isStringValue, parseYamlSubset, splitFrontmatter, type FrontmatterValue } from '../util/frontmatter.js';
+import {
+  FrontmatterError,
+  FrontmatterTooLargeError,
+  isListValue,
+  isStringValue,
+  parseYamlSubset,
+  splitFrontmatter,
+  type FrontmatterValue,
+} from '../util/frontmatter.js';
 import { charLength, DESCRIPTION_MAX, nameRuleViolations, type NameRule } from '../skills/skill-manifest.js';
 
 export const PROMPT_FILE_SUFFIX = '.prompt.md';
 export const PROMPT_LOCALES = ['ko-KR', 'en-GB', 'de-DE'] as const;
 export type PromptLocale = (typeof PROMPT_LOCALES)[number];
 export const ARGUMENT_NAME = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-/** `{{ name }}` — 안쪽 공백은 허용 */
-const PLACEHOLDER = /\{\{\s*([^{}]*?)\s*\}\}/g;
+/**
+ * `{{ name }}`(안쪽 공백은 trim) 또는 이스케이프 `\{{`. 안쪽은 `[^{}]*` 하나뿐 — 겹치는 수량자가 없어 되돌림이 선형이다
+ * (예전 `\s*([^{}]*?)\s*` 는 닫히지 않은 `{{` + 공백 n 개에서 O(n²) · 검수 차단 3).
+ */
+const PLACEHOLDER = /\\\{\{|\{\{([^{}]*)\}\}/g;
+const ESCAPED_OPEN = '\\{{';
 const KNOWN_KEYS = new Set(['name', 'description', 'locale', 'arguments']);
 
 export const PROMPT_ERROR = {
   frontmatterMissing: 'cmh-hub-app.prompt.frontmatterMissing',
   frontmatterInvalid: 'cmh-hub-app.prompt.frontmatterInvalid',
+  fileTooLarge: 'cmh-hub-app.prompt.fileTooLarge',
   fileNameInvalid: 'cmh-hub-app.prompt.fileNameInvalid',
   nameMissing: 'cmh-hub-app.prompt.nameMissing',
   nameTooLong: 'cmh-hub-app.prompt.nameTooLong',
@@ -83,7 +97,10 @@ export const PROMPT_RENDER_SNIPPET = {
 /** 본문의 자리표 이름(나온 차례 · 중복 없음) — 이름이 틀린 것도 그대로 돌려준다(검사는 parsePromptFile) */
 export function placeholdersIn(body: string): string[] {
   const seen = new Set<string>();
-  for (const m of body.matchAll(PLACEHOLDER)) seen.add(m[1] ?? '');
+  for (const m of body.matchAll(PLACEHOLDER)) {
+    if (m[0] === ESCAPED_OPEN) continue;
+    seen.add((m[1] ?? '').trim());
+  }
   return [...seen];
 }
 
@@ -99,6 +116,7 @@ export function parsePromptFile(text: string, fileName?: string): PromptValidati
     data = parseYamlSubset(split.header, 2);
     body = split.body;
   } catch (e) {
+    if (e instanceof FrontmatterTooLargeError) return { ok: false, errors: [PROMPT_ERROR.fileTooLarge], warnings: [e.message], prompt: null };
     if (!(e instanceof FrontmatterError)) throw e;
     return { ok: false, errors: [PROMPT_ERROR.frontmatterInvalid], warnings: [e.message], prompt: null };
   }
@@ -152,7 +170,7 @@ export function parsePromptFile(text: string, fileName?: string): PromptValidati
 }
 
 /**
- * 자리표를 값으로 바꾼다 — 한 번만 훑으므로 값 안의 `{{x}}` 는 다시 바뀌지 않는다.
+ * 자리표를 값으로 바꾼다 — 한 번만 훑으므로 값 안의 `{{x}}` 는 다시 바뀌지 않는다. `\{{` 는 `{{` 글자로.
  * 빠진 argument · 모르는 argument 는 예외(조용히 비워 두지 않는다).
  */
 export function render(prompt: PromptFile, args: Readonly<Record<string, string>>): string {
@@ -166,7 +184,9 @@ export function render(prompt: PromptFile, args: Readonly<Record<string, string>
       throw new PromptRenderError(PROMPT_RENDER_SNIPPET.argumentUnknown, `Unknown argument "${k}" for prompt "${prompt.name}"`);
     }
   }
-  return prompt.body.replace(PLACEHOLDER, (_whole, inner: string) => args[inner] ?? '');
+  return prompt.body.replace(PLACEHOLDER, (whole: string, inner: string | undefined) =>
+    whole === ESCAPED_OPEN ? '{{' : (args[(inner ?? '').trim()] ?? ''),
+  );
 }
 
 /** MCP prompts 와 같은 꼴 — 챗 `/` 목록에서 MCP 서버 프롬프트와 나란히 놓는다(PromptStore · R3-b) */

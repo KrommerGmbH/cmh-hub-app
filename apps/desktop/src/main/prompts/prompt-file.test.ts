@@ -84,3 +84,41 @@ describe('.prompt.md 읽기(R3-a · VS Code 프롬프트 파일 꼴)', () => {
     expect(render(r.prompt!, { who: 'Welt' })).toBe('Hallo Welt\n');
   });
 });
+
+describe('검수 차단 3 — 자리표 ReDoS · 권고 \\{{ 이스케이프', () => {
+  it("닫히지 않은 '{{' + 공백 10000 개가 50ms 안에", () => {
+    const body = '{{' + ' '.repeat(10000);
+    const t0 = performance.now();
+    expect(placeholdersIn(body)).toEqual([]);
+    expect(parsePromptFile(file('name: a\ndescription: x', body)).ok).toBe(true);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it("'{{' + 공백 50 개를 200 번 되풀이해도 50ms 안에", () => {
+    const body = ('{{' + ' '.repeat(50)).repeat(200);
+    const t0 = performance.now();
+    expect(placeholdersIn(body)).toEqual([]);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it('안쪽 공백은 trim — {{ a }} · {{a}} 는 같은 자리표', () => {
+    expect(placeholdersIn('{{a}} {{  a  }} {{\tb\t}}')).toEqual(['a', 'b']);
+  });
+
+  it('\\{{ 는 이스케이프 — 자리표가 아니고 render 가 {{ 글자로 남긴다', () => {
+    const r = parsePromptFile(file('name: a\ndescription: x\narguments:\n  - who', 'Vue: \\{{ item.name }} · Hallo {{who}}'));
+    expect(r.errors).toEqual([]);
+    expect(placeholdersIn(r.prompt!.body)).toEqual(['who']);
+    expect(render(r.prompt!, { who: 'Welt' })).toBe('Vue: {{ item.name }} · Hallo Welt');
+  });
+
+  it('값 안의 $& · $1 은 그대로(replace 함수꼴)', () => {
+    const p = parsePromptFile(file('name: a\ndescription: x\narguments:\n  - v', '[{{v}}]')).prompt as PromptFile;
+    expect(render(p, { v: '$& $1 {{v}}' })).toBe('[$& $1 {{v}}]');
+  });
+
+  it('256KB 를 넘는 파일 = fileTooLarge', () => {
+    const r = parsePromptFile(file('name: a\ndescription: x', 'x'.repeat(256 * 1024)));
+    expect(r.errors).toEqual([PROMPT_ERROR.fileTooLarge]);
+  });
+});

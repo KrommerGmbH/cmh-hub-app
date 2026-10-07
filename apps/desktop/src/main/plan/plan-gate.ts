@@ -59,14 +59,45 @@ function isPlanFeature(value: string): value is PlanFeature {
   return (PLAN_FEATURES as readonly string[]).includes(value);
 }
 
+/** 서버가 앱이 모르는 plan 을 보냈을 때(검수 권고: 예외 대신 경고 · free 기본 표 + 서버 features) */
+export interface PlanGateWarning {
+  readonly code: 'unknownPlan';
+  /** 받은 값이 글자면 그 글자(64자까지) · 아니면 typeof */
+  readonly received: string;
+}
+
+export interface PlanGateOptions {
+  readonly onWarning?: (warning: PlanGateWarning) => void;
+}
+
+/** 모르는 plan 은 free 로 — 가장 좁은 기본 표에서 시작하고 서버 features 가 덮어쓴다 */
+export const UNKNOWN_PLAN_FALLBACK: Plan = 'free';
+
+function describeReceived(value: unknown): string {
+  return typeof value === 'string' ? value.slice(0, 64) : typeof value;
+}
+
 export class PlanGate {
   readonly plan: Plan;
+  /** 서버가 보낸 plan 이 모르는 값이었으면 true(plan 은 free 로 맞춘 것) */
+  readonly planWasUnknown: boolean;
   private readonly features: PlanFeatureMap;
 
-  constructor(payload: PlanLoginPayload) {
-    if (!isPlan(payload.plan)) throw new Error(`plan gate: unknown plan ${JSON.stringify(payload.plan)}`);
-    this.plan = payload.plan;
-    const merged: Record<PlanFeature, boolean> = { ...DEFAULT_PLAN_FEATURES[payload.plan] };
+  /**
+   * payload.plan 은 타입상 Plan 이지만 서버 값이 그대로 올 수 있다 — 모르는 값이면 예외 대신 onWarning 을 부르고
+   * free 기본 표 위에 서버 features 를 덮어쓴다(서버가 새 등급을 더해도 앱이 죽지 않게 · 원칙 7 서버 값이 이긴다).
+   */
+  constructor(payload: PlanLoginPayload, options: PlanGateOptions = {}) {
+    const rawPlan: unknown = payload.plan;
+    if (isPlan(rawPlan)) {
+      this.plan = rawPlan;
+      this.planWasUnknown = false;
+    } else {
+      this.plan = UNKNOWN_PLAN_FALLBACK;
+      this.planWasUnknown = true;
+      options.onWarning?.({ code: 'unknownPlan', received: describeReceived(rawPlan) });
+    }
+    const merged: Record<PlanFeature, boolean> = { ...DEFAULT_PLAN_FEATURES[this.plan] };
     for (const [key, value] of Object.entries(payload.features ?? {})) {
       // 서버가 새 기능 키를 더해도 앱이 죽지 않게 모르는 키는 건너뛴다(앱이 묻지 않는 기능이다)
       if (!isPlanFeature(key)) continue;
@@ -76,15 +107,14 @@ export class PlanGate {
     this.features = merged;
   }
 
-  /** 로그인 응답 JSON(모양 모름)에서 만든다. plan 이 없거나 모르는 값 · features 가 객체가 아니면 예외 */
-  static fromLoginResponse(raw: unknown): PlanGate {
+  /** 로그인 응답 JSON(모양 모름)에서 만든다. 객체가 아니거나 features 가 객체가 아니면 예외 · plan 이 없거나 모르는 값이면 경고 + free */
+  static fromLoginResponse(raw: unknown, options: PlanGateOptions = {}): PlanGate {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new Error('plan gate: response must be an object');
-    const plan = (raw as { plan?: unknown }).plan;
-    if (!isPlan(plan)) throw new Error(`plan gate: unknown plan ${JSON.stringify(plan)}`);
+    const plan = (raw as { plan?: unknown }).plan as Plan;
     const features = (raw as { features?: unknown }).features;
-    if (features === undefined || features === null) return new PlanGate({ plan });
+    if (features === undefined || features === null) return new PlanGate({ plan }, options);
     if (typeof features !== 'object' || Array.isArray(features)) throw new Error('plan gate: features must be an object');
-    return new PlanGate({ plan, features: features as Partial<Record<PlanFeature, boolean>> });
+    return new PlanGate({ plan, features: features as Partial<Record<PlanFeature, boolean>> }, options);
   }
 
   can(feature: PlanFeature): boolean {

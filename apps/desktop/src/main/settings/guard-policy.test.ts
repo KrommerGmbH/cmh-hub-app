@@ -3,8 +3,11 @@ import {
   APPROVAL_ENTITY_PATTERN,
   credentialAccessFor,
   evaluateGuard,
+  isReadActionName,
   matchToolPattern,
+  mcpToolName,
   parseGuardPolicy,
+  wildcardMatch,
   type GuardPolicy,
   type GuardResult,
 } from './guard-policy.js';
@@ -168,5 +171,172 @@ describe('parseGuardPolicy (정책 JSON 검증)', () => {
   it('JSON 키 "__proto__" 규칙도 잃지 않는다', () => {
     const p = parseGuardPolicy(JSON.parse('{"defaultMode":"full","tools":{"__proto__":"deny"}}'));
     expect(Object.keys(p.tools)).toEqual(['__proto__']);
+  });
+});
+
+describe('검수 차단 1 — 승인 엔티티 deny 우회', () => {
+  const open = policy({ '**': 'allow' }, 'full');
+  const denied = result('deny', APPROVAL_ENTITY_PATTERN);
+
+  it('이름 마디에 공백 · 제어문자 · zero-width · 전각 · 비ASCII 가 있으면 deny(matchedPattern null)', () => {
+    for (const tool of [
+      'entity:cmh_ai_approval :update',
+      'entity: cmh_ai_approval:update',
+      'entity:cmh_ai_approval​:update',
+      'entity:cmh＿ai＿approval:update',
+      'entity:cmh_ai_approval\t:update',
+      'entity:cmh_ai_approval\u0000:update',
+      'market:naver:save ',
+      'marKet:naver:save', // Kelvin 기호 — toLowerCase 하면 ASCII k
+      'browser:navigaté',
+      'x'.repeat(513),
+    ]) {
+      expect(evaluateGuard(open, { tool, known: true }), JSON.stringify(tool)).toEqual(result('deny', null));
+    }
+  });
+
+  it('하이픈 꼴 · 대문자 · 이름 안 어느 마디든 승인 엔티티 쓰기는 deny', () => {
+    for (const tool of [
+      'entity:cmh-ai-approval:update',
+      'entity:CMH_AI_APPROVAL:update',
+      'plugin:foo:entity:cmh_ai_approval:update',
+      'plugin:foo:cmh_ai_approval',
+      'mcp:x:cmh_ai_approval_update',
+      'mcp:x:cmh_ai_approval:dal_update',
+      'mcp:x:cmh-ai-approval:read:more',
+    ]) {
+      expect(evaluateGuard(open, { tool, known: true }), tool).toEqual(denied);
+    }
+    // 읽기 꼴로 끝나면 정책대로
+    expect(evaluateGuard(open, { tool: 'plugin:foo:entity:cmh_ai_approval:read', known: true })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(open, { tool: 'entity:cmh-ai-approval:dal_search', known: true })).toEqual(result('allow', '**'));
+  });
+
+  it('target.entity 가 cmh_ai_approval 이면 범용 DAL 쓰기 도구(dal_update · dal_create · dal_delete · dal_upsert · dal_sync)는 deny', () => {
+    for (const action of ['dal_update', 'dal_create', 'dal_delete', 'dal_upsert', 'dal_sync', 'dal_write', 'execute']) {
+      for (const entity of ['cmh_ai_approval', ' CMH-AI-APPROVAL ', 'Cmh_Ai_Approval']) {
+        expect(evaluateGuard(open, { tool: `mcp:cmh-shop-api-mcp:${action}`, known: true, target: { entity } }), `${action} ${entity}`).toEqual(denied);
+      }
+    }
+  });
+
+  it('target.entity 가 cmh_ai_approval 이어도 읽기 꼴 도구(dal_search · dal_get · dal_aggregate · read · list)는 정책대로', () => {
+    for (const action of ['dal_search', 'dal_get', 'dal_aggregate', 'read', 'search', 'get', 'list', 'dal-search']) {
+      expect(evaluateGuard(open, { tool: `mcp:cmh-shop-api-mcp:${action}`, known: true, target: { entity: 'cmh_ai_approval' } }), action).toEqual(result('allow', '**'));
+    }
+    expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_update', known: true, target: { entity: 'product' } })).toEqual(result('allow', '**'));
+  });
+
+  it('target.entity 이름이 깨졌으면(전각 · zero-width · 안쪽 공백) deny', () => {
+    for (const entity of ['cmh＿ai＿approval', 'cmh_ai_approval​', 'cmh ai approval', '']) {
+      expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_update', known: true, target: { entity } }), JSON.stringify(entity)).toEqual(result('deny', null));
+    }
+  });
+
+  it('isReadActionName — 읽기 표에 없으면 쓰기', () => {
+    for (const a of ['read', 'search', 'get', 'list', 'dal_search', 'dal_get', 'dal_aggregate', 'DAL-GET']) expect(isReadActionName(a), a).toBe(true);
+    for (const a of ['update', 'dal_update', 'dal_upsert', 'dal_sync', 'save', 'field_save', 'draft', 'readwrite']) expect(isReadActionName(a), a).toBe(false);
+  });
+});
+
+describe('검수 차단 2 — 마켓 쓰기 · needsApproval 은 requiresApproval', () => {
+  const full = policy({ '**': 'allow' }, 'full');
+
+  it('market:* 은 읽기 동작 목록에 없으면 모두 쓰기(save · send · delete · update · upload · submit · field_save · save:draft · 대문자)', () => {
+    for (const tool of [
+      'market:naver:save',
+      'market:naver:send',
+      'market:naver:delete',
+      'market:naver:update',
+      'market:naver:upload',
+      'market:naver:submit',
+      'market:naver:field_save',
+      'market:naver:save:draft',
+      'market:naver:SAVE',
+      'market:naver:product:list', // 동작 마디가 전부 읽기 꼴이 아니면 쓰기로 본다(모르면 막는 쪽)
+      'market:naver',
+    ]) {
+      expect(evaluateGuard(full, { tool, known: true }), tool).toEqual(result('allow', '**', true));
+    }
+    for (const tool of ['market:naver:read', 'market:naver:list', 'market:naver:search', 'market:naver:get', 'market:naver:dal_search']) {
+      expect(evaluateGuard(full, { tool, known: true }), tool).toEqual(result('allow', '**'));
+    }
+  });
+
+  it('needsApproval(cmh_ai_mcp_tool.needs_approval) 은 OR — MCP 마켓 쓰기 도구도 승인 관문', () => {
+    for (const tool of ['mcp:cmh-camoufox-mcp:browser_field_save', 'mcp:cmh-market-mcp:naver_product_save']) {
+      expect(evaluateGuard(full, { tool, known: true, needsApproval: true })).toEqual(result('allow', '**', true));
+      expect(evaluateGuard(full, { tool, known: true, needsApproval: false })).toEqual(result('allow', '**'));
+      expect(evaluateGuard(full, { tool, known: true })).toEqual(result('allow', '**'));
+    }
+    // deny 면 승인 관문까지 가지 않는다
+    expect(evaluateGuard(policy({ 'mcp:**': 'deny' }), { tool: 'mcp:a:b', known: true, needsApproval: true })).toEqual(result('deny', 'mcp:**'));
+    // ask 여도 승인 관문은 따로
+    expect(evaluateGuard(policy({}), { tool: 'mcp:a:b', known: false, needsApproval: true })).toEqual(result('ask', null, true));
+  });
+});
+
+describe('권고 — 글롭 지수 시간 · deny 마디 수 우회 · mcpToolName · credentials 중복', () => {
+  it('** 열 개 + 30 마디가 50ms 안에', () => {
+    const pattern = Array(10).fill('**').join(':') + ':z';
+    const tool = Array(30).fill('a').join(':');
+    const t0 = performance.now();
+    expect(matchToolPattern(pattern, tool)).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(matchToolPattern(pattern, `${tool}:z`)).toBe(true);
+  });
+
+  it('*a 열 개 + 60자 마디가 50ms 안에', () => {
+    const pattern = '*a'.repeat(10) + '*b';
+    const t0 = performance.now();
+    expect(matchToolPattern(pattern, 'a'.repeat(60))).toBe(false);
+    expect(matchToolPattern(`x:${pattern}`, 'x:' + 'a'.repeat(60))).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it.each([
+    ['*', '', true],
+    ['*', 'abc', true],
+    ['a*', 'abc', true],
+    ['*c', 'abc', true],
+    ['a*c', 'abbbc', true],
+    ['a*b*c', 'axbxc', true],
+    ['a*b*c', 'axbx', false],
+    ['abc', 'abd', false],
+    ['**', 'x', true],
+    ['dal_*', 'dal_update', true],
+  ])('wildcardMatch(%s, %s) → %s', (pattern, text, expected) => {
+    expect(wildcardMatch(pattern, text)).toBe(expected);
+  });
+
+  it('deny 규칙의 마디 전체 * 는 «한 마디 이상» — mcp:evil:* 가 mcp:evil:a:b 도 막는다 · allow 는 한 마디 그대로', () => {
+    const p = policy({ 'mcp:evil:*': 'deny', '**': 'allow' }, 'full');
+    expect(evaluateGuard(p, { tool: 'mcp:evil:a', known: true })).toEqual(result('deny', 'mcp:evil:*'));
+    expect(evaluateGuard(p, { tool: 'mcp:evil:a:b', known: true })).toEqual(result('deny', 'mcp:evil:*'));
+    expect(evaluateGuard(p, { tool: 'mcp:evil', known: true })).toEqual(result('allow', '**'));
+    const m = policy({ 'market:*:save': 'deny' }, 'full');
+    expect(evaluateGuard(m, { tool: 'market:naver:product:save', known: true })).toEqual(result('deny', 'market:*:save'));
+    // allow 규칙은 넓히지 않는다
+    const a = policy({ 'browser:*': 'allow' }, 'guard');
+    expect(evaluateGuard(a, { tool: 'browser:tab:open', known: true })).toEqual(result('ask', null));
+    expect(matchToolPattern('mcp:evil:*', 'mcp:evil:a:b')).toBe(false);
+  });
+
+  it('mcpToolName — 서버 code · 도구 이름에 : 가 있으면 예외', () => {
+    expect(mcpToolName('cmh-shop-api-mcp', 'dal_update')).toBe('mcp:cmh-shop-api-mcp:dal_update');
+    expect(() => mcpToolName('evil', 'a:b')).toThrow(/guard/);
+    expect(() => mcpToolName('ev:il', 'a')).toThrow(/guard/);
+    expect(() => mcpToolName('evil', 'a b')).toThrow(/guard/);
+    expect(() => mcpToolName('', 'a')).toThrow(/guard/);
+  });
+
+  it('credentials 대소문자만 다른 중복 → 예외', () => {
+    expect(() => parseGuardPolicy({ defaultMode: 'guard', credentials: { Naver: 'never', naver: 'always' } })).toThrow(/duplicate credential/);
+    expect(() => parseGuardPolicy({ defaultMode: 'guard', credentials: { naver: 'never', ' naver ': 'always' } })).toThrow(/duplicate credential/);
+  });
+
+  it('정책 글롭에 도구 이름에 올 수 없는 글자가 있으면 예외', () => {
+    expect(() => parseGuardPolicy({ defaultMode: 'guard', tools: { 'entity:cmh＿ai:*': 'deny' } })).toThrow(/invalid character/);
+    expect(() => parseGuardPolicy({ defaultMode: 'guard', tools: { 'a​:*': 'deny' } })).toThrow(/invalid character/);
   });
 });

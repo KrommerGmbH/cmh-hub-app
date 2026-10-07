@@ -12,6 +12,9 @@ import {
   resolveSnippetLocale,
   type SnippetMissing,
 } from './snippet.js';
+import { MCP_IMPORT_SNIPPET } from '../mcp/mcp-config-import.js';
+import { PROMPT_ERROR, PROMPT_RENDER_SNIPPET } from '../prompts/prompt-file.js';
+import { SKILL_ERROR, SKILL_WARNING } from '../skills/skill-manifest.js';
 
 describe('셸 스니펫 세 장 (R8)', () => {
   const files = SNIPPET_LOCALES.map((locale) => ({ locale, map: readSnippetFile(locale) }));
@@ -57,7 +60,32 @@ describe('셸 스니펫 세 장 (R8)', () => {
       expect(ko.has(key), key).toBe(true);
     }
     expect(ko.t('cmh-hub-app.toolbar.guard')).toBe('Guard');
+    // 검수 권고 — ko-KR 낱말
+    expect(ko.t('cmh-hub-app.toolbar.agentTabsCount', { count: 3 })).toBe('에이전트 탭 3');
+    expect(ko.t('cmh-hub-app.toolbar.runLocal')).toBe('로컬');
+    expect(ko.t('cmh-hub-app.toolbar.runServer')).toBe('서버');
+    expect([ko.t('cmh-hub-app.toolbar.reasoningLow'), ko.t('cmh-hub-app.toolbar.reasoningMedium'), ko.t('cmh-hub-app.toolbar.reasoningHigh')]).toEqual(['낮음', '보통', '높음']);
+    expect(ko.t('cmh-hub-app.composer.placeholder')).toBe('답장 입력, @ 로 컨텍스트 추가');
     expect(loadSnippets('en-GB').t('cmh-hub-app.composer.placeholder')).toBe('Reply, @ for context');
+  });
+});
+
+describe('검수 차단 6 — 코드가 쓰는 스니펫 키가 세 장에 다 있다', () => {
+  const groups: Record<string, Readonly<Record<string, string>>> = {
+    MCP_IMPORT_SNIPPET,
+    SKILL_ERROR,
+    SKILL_WARNING,
+    PROMPT_ERROR,
+    PROMPT_RENDER_SNIPPET,
+  };
+
+  it.each(SNIPPET_LOCALES)('%s 에 MCP · 스킬 · 프롬프트 상수 키가 전부 있다', (locale) => {
+    const map = readSnippetFile(locale);
+    const missing: string[] = [];
+    for (const [group, keys] of Object.entries(groups)) {
+      for (const key of Object.values(keys)) if (!map.has(key)) missing.push(`${group}: ${key}`);
+    }
+    expect(missing).toEqual([]);
   });
 });
 
@@ -67,10 +95,14 @@ describe('loadSnippets · t', () => {
   writeFileSync(join(dir, 'de-DE.json'), JSON.stringify({ app: { hello: 'Hallo {name}' } }));
   writeFileSync(join(dir, 'ko-KR.json'), JSON.stringify({ app: { hello: '안녕 {name}' } }));
 
-  it('locale 은 세 값만 · 나머지는 en-GB', () => {
-    expect(resolveSnippetLocale('de-DE')).toBe('de-DE');
-    for (const raw of ['ko', 'de', 'fr-FR', 'EN-gb', '', null, undefined]) expect(resolveSnippetLocale(raw)).toBe(FALLBACK_LOCALE);
+  it('locale 은 세 값으로 — ko · ko-* → ko-KR · de · de-* → de-DE · en* · 나머지 → en-GB', () => {
+    for (const raw of ['ko', 'ko-KR', 'KO-kr', 'ko_KR.UTF-8', 'ko-KP']) expect(resolveSnippetLocale(raw), raw).toBe('ko-KR');
+    for (const raw of ['de', 'de-DE', 'de-AT', 'de-CH', 'de_DE.UTF-8', 'DE']) expect(resolveSnippetLocale(raw), raw).toBe('de-DE');
+    for (const raw of ['en', 'en-US', 'en-GB', 'EN-gb', 'fr-FR', 'kor', 'deu', '', '  ', null, undefined]) {
+      expect(resolveSnippetLocale(raw), String(raw)).toBe(FALLBACK_LOCALE);
+    }
     expect(loadSnippets('fr-FR', { dir }).locale).toBe('en-GB');
+    expect(loadSnippets('ko', { dir }).locale).toBe('ko-KR');
   });
 
   it('자리표 {name} 을 바꾼다 · 없는 자리표는 그대로', () => {

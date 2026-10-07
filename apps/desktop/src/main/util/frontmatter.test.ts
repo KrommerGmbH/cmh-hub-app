@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { FrontmatterError, normalizeText, parseFrontmatter, parseScalar, parseYamlSubset, splitFrontmatter } from './frontmatter.js';
+import {
+  FRONTMATTER_MAX_BYTES,
+  FrontmatterError,
+  FrontmatterTooLargeError,
+  normalizeText,
+  parseFrontmatter,
+  parseScalar,
+  parseYamlSubset,
+  splitFrontmatter,
+} from './frontmatter.js';
 
 describe('프런트매터 나누기(R3-a · SKILL.md · .prompt.md 공용)', () => {
   it('BOM · CRLF 를 떼고 LF 로 맞춘다', () => {
@@ -56,12 +65,18 @@ describe('작은 YAML 부분집합', () => {
     expect(data['__proto__']).toBe('x');
   });
 
-  it('지원하지 않는 꼴은 예외 — 흐름 목록 · 흐름 맵 · 블록 글자 · 앵커 · 두 단계 · 탭 · 중복 키', () => {
+  it('지원하지 않는 꼴은 예외 — 흐름 목록 · 흐름 맵 · 들여쓰기 숫자 · 앵커 · 두 단계 · 탭 · 중복 키', () => {
     const bad = [
       'a: [x, y]',
       'a: {b: c}',
-      'a: |\n  text',
-      'a: >',
+      'a: |2\n  text',
+      'a: |x',
+      'a: >\n\ttext',
+      'a: x\n  # 주석 줄',
+      'a: x # c\n  more',
+      'a: x\n  b: y',
+      'a:\n  b: c\n  - d',
+      'a:\n  b:\n    - c',
       'a: &anchor x',
       'a: *ref',
       'a:\n  b:\n    c: d',
@@ -93,5 +108,56 @@ describe('작은 YAML 부분집합', () => {
     expect(parseScalar('')).toBe('');
     expect(parseScalar("'x' # c")).toBe('x');
     expect(parseScalar('a#b')).toBe('a#b');
+  });
+});
+
+describe('검수 권고 — plain 여러 줄 · 블록 글자(| >) · 256KB 상한', () => {
+  it('plain 여러 줄 이어쓰기(들여쓴 다음 줄) — 공백 하나로 접는다 · 빈 줄은 줄바꿈', () => {
+    const data = parseYamlSubset('description: first line\n  continues here\n    and here\nnext: x');
+    expect(data['description']).toBe('first line continues here and here');
+    expect(data['next']).toBe('x');
+    expect(parseYamlSubset('a: one\n\n  two\nb: c')['a']).toBe('one\ntwo');
+    expect(parseYamlSubset('a: one\n  two\n\nb: c')).toEqual({ a: 'one two', b: 'c' });
+  });
+
+  it('key: 다음 줄부터 시작하는 plain 여러 줄', () => {
+    expect(parseYamlSubset('description:\n  long text\n  more text\nname: x')).toEqual({ description: 'long text more text', name: 'x' });
+  });
+
+  it('| 블록(그대로) — clip · strip(-) · keep(+)', () => {
+    const src = (h: string): string => `a: ${h}\n  line 1\n    indented\n\n  line 3\n\nb: x`;
+    expect(parseYamlSubset(src('|'))['a']).toBe('line 1\n  indented\n\nline 3\n');
+    expect(parseYamlSubset(src('|-'))['a']).toBe('line 1\n  indented\n\nline 3');
+    expect(parseYamlSubset(src('|+'))['a']).toBe('line 1\n  indented\n\nline 3\n\n');
+    expect(parseYamlSubset(src('|'))['b']).toBe('x');
+  });
+
+  it('> 블록(접기) — 한 줄 바꿈은 공백 · 빈 줄은 줄바꿈 · 더 들여쓴 줄은 그대로', () => {
+    expect(parseYamlSubset('a: >\n  folded\n  text\n\n  para two\nb: y')).toEqual({ a: 'folded text\npara two\n', b: 'y' });
+    expect(parseYamlSubset('a: >-\n  one\n  two\n')['a']).toBe('one two');
+    expect(parseYamlSubset('a: >\n  one\n    more\n  two\n')['a']).toBe('one\n  more\ntwo\n');
+    expect(parseYamlSubset('a: > # 주석\n  x\n')['a']).toBe('x\n');
+  });
+
+  it('내용 없는 블록은 빈 글자 · 블록 안 # 은 글자', () => {
+    expect(parseYamlSubset('a: >\nb: c')).toEqual({ a: '', b: 'c' });
+    expect(parseYamlSubset('a: |\n  # not a comment\n  x: y\n')['a']).toBe('# not a comment\nx: y\n');
+  });
+
+  it('SKILL.md 꼴 — description: > 블록이 그대로 읽힌다', () => {
+    const fm = parseFrontmatter('---\nname: s\ndescription: >\n  Extract text\n  from PDFs.\n---\n# body\n');
+    expect(fm.data['description']).toBe('Extract text from PDFs.\n');
+    expect(fm.body).toBe('# body\n');
+  });
+
+  it('256KB 를 넘는 파일은 FrontmatterTooLargeError(FrontmatterError 의 한 갈래)', () => {
+    const big = `---\na: b\n---\n${'x'.repeat(FRONTMATTER_MAX_BYTES)}`;
+    expect(() => splitFrontmatter(big)).toThrow(FrontmatterTooLargeError);
+    expect(() => splitFrontmatter(big)).toThrow(FrontmatterError);
+    // 한글은 3 바이트 — 글자 수가 아니라 바이트로 센다
+    const ko = `---\na: b\n---\n${'가'.repeat(Math.ceil(FRONTMATTER_MAX_BYTES / 3) + 1)}`;
+    expect(() => splitFrontmatter(ko)).toThrow(FrontmatterTooLargeError);
+    const ok = `---\na: b\n---\n${'x'.repeat(FRONTMATTER_MAX_BYTES - 20)}`;
+    expect(splitFrontmatter(ok)?.header).toBe('a: b');
   });
 });

@@ -42,6 +42,55 @@
       "ok": "OK",
       "cancel": "Abbrechen",
       "error": "Fehler: {message}"
+    },
+    "mcp": {
+      "importInvalidJson": "Die MCP-Konfigurationsdatei ist kein gültiges JSON.",
+      "importInvalid": "Die MCP-Konfigurationsdatei hat eine ungültige Struktur."
+    },
+    "skill": {
+      "fileMissing": "Im Skill-Ordner fehlt die Datei SKILL.md.",
+      "fileTooLarge": "SKILL.md ist zu groß (max. 256 KB).",
+      "symlink": "Der Skill-Ordner enthält einen symbolischen Link und kann nicht installiert werden.",
+      "specialFile": "Der Skill-Ordner enthält einen Eintrag, der keine normale Datei ist (Gerät, Pipe usw.).",
+      "tooDeep": "Der Skill-Ordner ist zu tief verschachtelt (max. 8 Ebenen).",
+      "tooManyFiles": "Der Skill-Ordner enthält zu viele Dateien (max. 2000).",
+      "frontmatterMissing": "SKILL.md beginnt nicht mit einem ----Frontmatter-Block.",
+      "frontmatterInvalid": "Das Frontmatter von SKILL.md kann nicht gelesen werden.",
+      "nameMissing": "Der Name fehlt.",
+      "nameTooLong": "Der Name darf höchstens 64 Zeichen lang sein.",
+      "nameInvalid": "Der Name darf nur Kleinbuchstaben, Ziffern und Bindestriche enthalten.",
+      "nameHyphen": "Der Name darf nicht mit einem Bindestrich beginnen oder enden und keine zwei Bindestriche hintereinander enthalten.",
+      "nameFolderMismatch": "Der Name stimmt nicht mit dem Ordnernamen überein.",
+      "nameReserved": "Der Name darf kein reserviertes Wort (anthropic, claude) enthalten.",
+      "descriptionMissing": "Die Beschreibung fehlt.",
+      "descriptionTooLong": "Die Beschreibung darf höchstens 1024 Zeichen lang sein.",
+      "descriptionTooLongForServer": "Die Beschreibung ist länger als 1000 Zeichen und kann beim Speichern auf dem Server gekürzt werden.",
+      "descriptionXml": "Die Beschreibung darf keine XML-Tags enthalten.",
+      "licenseInvalid": "Die Lizenz muss ein Text sein.",
+      "compatibilityInvalid": "Die Kompatibilität muss ein Text mit 1 bis 500 Zeichen sein.",
+      "metadataInvalid": "Die Metadaten müssen eine Liste von Schlüssel: Wert-Paaren sein.",
+      "allowedToolsInvalid": "allowed-tools muss ein Text oder eine Liste sein."
+    },
+    "prompt": {
+      "frontmatterMissing": "Die Prompt-Datei beginnt nicht mit einem ----Frontmatter-Block.",
+      "frontmatterInvalid": "Das Frontmatter der Prompt-Datei kann nicht gelesen werden.",
+      "fileTooLarge": "Die Prompt-Datei ist zu groß (max. 256 KB).",
+      "fileNameInvalid": "Der Dateiname muss auf .prompt.md enden.",
+      "nameMissing": "Der Name fehlt.",
+      "nameTooLong": "Der Name darf höchstens 64 Zeichen lang sein.",
+      "nameInvalid": "Der Name darf nur Kleinbuchstaben, Ziffern und Bindestriche enthalten.",
+      "nameHyphen": "Der Name darf nicht mit einem Bindestrich beginnen oder enden und keine zwei Bindestriche hintereinander enthalten.",
+      "nameFileMismatch": "Der Name stimmt nicht mit dem Dateinamen (<name>.prompt.md) überein.",
+      "descriptionMissing": "Die Beschreibung fehlt.",
+      "descriptionTooLong": "Die Beschreibung darf höchstens 1024 Zeichen lang sein.",
+      "localeInvalid": "Die Locale muss ko-KR, en-GB oder de-DE sein.",
+      "argumentsInvalid": "arguments muss eine Liste sein.",
+      "argumentNameInvalid": "Argumentnamen müssen mit einem Buchstaben oder _ beginnen und dürfen nur Buchstaben, Ziffern und _ enthalten.",
+      "argumentDuplicate": "Ein Argumentname kommt doppelt vor.",
+      "placeholderInvalid": "Ein Platzhalter im Text hat einen ungültigen Namen.",
+      "placeholderUndeclared": "Ein Platzhalter im Text ist nicht in arguments aufgeführt.",
+      "argumentMissing": "Ein für den Prompt erforderlicher Wert fehlt.",
+      "argumentUnknown": "Der Prompt hat einen unbekannten Wert erhalten."
     }
   }
 }

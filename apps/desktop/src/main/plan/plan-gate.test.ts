@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PLAN_FEATURES, PLAN_FEATURES, PlanGate, type PlanFeature } from './plan-gate.js';
+import { DEFAULT_PLAN_FEATURES, PLAN_FEATURES, PlanGate, type PlanFeature, type PlanGateWarning } from './plan-gate.js';
 
 describe('PlanGate (R9 · 임시 결정 ⏸ ⑫⑭)', () => {
   it('free 기본 표: localData · localModels · flowRunShared 만 true', () => {
@@ -40,9 +40,6 @@ describe('PlanGate (R9 · 임시 결정 ⏸ ⑫⑭)', () => {
   });
 
   it.each<[string, unknown]>([
-    ['모르는 plan', { plan: 'enterprise' }],
-    ['plan 없음', { features: {} }],
-    ['plan 대소문자 다름', { plan: 'Free' }],
     ['객체 아님', 'free'],
     ['null', null],
     ['features 가 배열', { plan: 'free', features: [] }],
@@ -51,8 +48,32 @@ describe('PlanGate (R9 · 임시 결정 ⏸ ⑫⑭)', () => {
     expect(() => PlanGate.fromLoginResponse(raw)).toThrow(/plan gate/);
   });
 
-  it('생성자에 모르는 plan · can 에 모르는 기능 → 예외', () => {
-    expect(() => new PlanGate({ plan: 'gold' as never })).toThrow(/unknown plan/);
+  it('can 에 모르는 기능 → 예외', () => {
     expect(() => new PlanGate({ plan: 'free' }).can('teleport' as PlanFeature)).toThrow(/unknown feature/);
+  });
+
+  it.each<[string, unknown, string]>([
+    ['모르는 plan', { plan: 'enterprise' }, 'enterprise'],
+    ['plan 없음', { features: {} }, 'undefined'],
+    ['plan 대소문자 다름', { plan: 'Free' }, 'Free'],
+    ['plan 이 숫자', { plan: 3 }, 'number'],
+  ])('모르는 plan(%s) → 예외 대신 경고 콜백 + free 기본 표', (_label, raw, received) => {
+    const warnings: PlanGateWarning[] = [];
+    const gate = PlanGate.fromLoginResponse(raw, { onWarning: (w) => warnings.push(w) });
+    expect(warnings).toEqual([{ code: 'unknownPlan', received }]);
+    expect(gate.plan).toBe('free');
+    expect(gate.planWasUnknown).toBe(true);
+    expect(gate.snapshot()).toEqual(DEFAULT_PLAN_FEATURES.free);
+  });
+
+  it('모르는 plan 이어도 서버 features 가 free 기본 표를 덮어쓴다 · 콜백 없이도 죽지 않는다', () => {
+    const gate = PlanGate.fromLoginResponse({ plan: 'enterprise', features: { multiUser: true, serverData: true, localModels: false } });
+    expect(gate.can('multiUser')).toBe(true);
+    expect(gate.can('serverData')).toBe(true);
+    expect(gate.can('localModels')).toBe(false);
+    expect(gate.can('flowEdit')).toBe(false);
+    const ctor = new PlanGate({ plan: 'gold' as never });
+    expect(ctor.plan).toBe('free');
+    expect(new PlanGate({ plan: 'premium' }).planWasUnknown).toBe(false);
   });
 });

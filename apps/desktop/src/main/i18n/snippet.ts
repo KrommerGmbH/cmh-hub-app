@@ -38,9 +38,15 @@ export function defaultSnippetDir(): string {
   return join(here, '..', '..', 'shell', 'snippet');
 }
 
-/** 세 locale 말고는 전부 en-GB(OS 의 'ko' 같은 짧은 꼴도 en-GB — 짝 맞추기는 부르는 쪽 몫) */
+/**
+ * OS · 브라우저 locale → 세 장 중 하나. 언어 부분만 본다(대소문자 · `-` · `_` 무시):
+ * `ko` · `ko-*` → ko-KR · `de` · `de-*`(de-AT · de-CH …) → de-DE · `en*`(en-US …) → en-GB · 나머지 · 빈 값 → en-GB.
+ */
 export function resolveSnippetLocale(raw: string | null | undefined): SnippetLocale {
-  return (SNIPPET_LOCALES as readonly (string | null | undefined)[]).includes(raw) ? (raw as SnippetLocale) : FALLBACK_LOCALE;
+  const language = (raw ?? '').trim().toLowerCase().split(/[-_.@]/)[0] ?? '';
+  if (language === 'ko') return 'ko-KR';
+  if (language === 'de') return 'de-DE';
+  return FALLBACK_LOCALE;
 }
 
 /** 중첩 객체 → 점 키 평평한 표. 잎은 문자열만 · 배열 · 숫자 · 빈 객체는 예외(스니펫 파일이 깨진 것) */

@@ -42,6 +42,55 @@
       "ok": "OK",
       "cancel": "Cancel",
       "error": "Error: {message}"
+    },
+    "mcp": {
+      "importInvalidJson": "The MCP configuration file is not valid JSON.",
+      "importInvalid": "The MCP configuration file has an invalid structure."
+    },
+    "skill": {
+      "fileMissing": "The skill folder has no SKILL.md file.",
+      "fileTooLarge": "SKILL.md is too large (max. 256 KB).",
+      "symlink": "The skill folder contains a symbolic link and cannot be installed.",
+      "specialFile": "The skill folder contains an entry that is not a regular file (device, pipe, etc.).",
+      "tooDeep": "The skill folder is nested too deeply (max. 8 levels).",
+      "tooManyFiles": "The skill folder contains too many files (max. 2000).",
+      "frontmatterMissing": "SKILL.md does not start with a --- frontmatter block.",
+      "frontmatterInvalid": "The SKILL.md frontmatter cannot be read.",
+      "nameMissing": "The name is missing.",
+      "nameTooLong": "The name may be at most 64 characters long.",
+      "nameInvalid": "The name may only contain lowercase letters, digits and hyphens.",
+      "nameHyphen": "The name must not start or end with a hyphen or contain two hyphens in a row.",
+      "nameFolderMismatch": "The name does not match the folder name.",
+      "nameReserved": "The name must not contain a reserved word (anthropic, claude).",
+      "descriptionMissing": "The description is missing.",
+      "descriptionTooLong": "The description may be at most 1024 characters long.",
+      "descriptionTooLongForServer": "The description is longer than 1000 characters and may be cut when saved to the server.",
+      "descriptionXml": "The description must not contain XML tags.",
+      "licenseInvalid": "The license must be text.",
+      "compatibilityInvalid": "The compatibility must be text of 1 to 500 characters.",
+      "metadataInvalid": "The metadata must be a list of key: value pairs.",
+      "allowedToolsInvalid": "allowed-tools must be text or a list."
+    },
+    "prompt": {
+      "frontmatterMissing": "The prompt file does not start with a --- frontmatter block.",
+      "frontmatterInvalid": "The prompt file frontmatter cannot be read.",
+      "fileTooLarge": "The prompt file is too large (max. 256 KB).",
+      "fileNameInvalid": "The file name must end with .prompt.md.",
+      "nameMissing": "The name is missing.",
+      "nameTooLong": "The name may be at most 64 characters long.",
+      "nameInvalid": "The name may only contain lowercase letters, digits and hyphens.",
+      "nameHyphen": "The name must not start or end with a hyphen or contain two hyphens in a row.",
+      "nameFileMismatch": "The name does not match the file name (<name>.prompt.md).",
+      "descriptionMissing": "The description is missing.",
+      "descriptionTooLong": "The description may be at most 1024 characters long.",
+      "localeInvalid": "The locale must be one of ko-KR, en-GB, de-DE.",
+      "argumentsInvalid": "arguments must be a list.",
+      "argumentNameInvalid": "Argument names must start with a letter or _ and contain only letters, digits and _.",
+      "argumentDuplicate": "An argument name appears twice.",
+      "placeholderInvalid": "A placeholder in the body has an invalid name.",
+      "placeholderUndeclared": "A placeholder in the body is not listed in arguments.",
+      "argumentMissing": "A value required by the prompt is missing.",
+      "argumentUnknown": "The prompt received an unknown value."
     }
   }
 }
