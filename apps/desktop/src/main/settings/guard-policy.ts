@@ -236,9 +236,10 @@ function approvalTargetWrite(target: GuardTarget | undefined, segments: readonly
  * 3차 검수 차단 4: 마지막 마디가 `dal_` 로 시작하는 범용 DAL 쓰기 도구인데 target.entity 가 없으면 deny.
  * 어느 엔티티를 쓰는지 모르면 승인 엔티티 보호를 할 수 없다(dal_update({}) · entity 를 다른 칸 이름으로 넘기기 등).
  */
-function isUntargetedDalWrite(target: GuardTarget | undefined, segments: readonly string[]): boolean {
+function isUntargetedDalWrite(target: GuardTarget | undefined, segments: readonly string[], rawTool: string): boolean {
   if (target?.entity !== undefined) return false;
-  const action = segments[segments.length - 1];
+  // 소문자로 바꾸기 전 이름의 마지막 마디로 본다 — segments 는 이미 소문자라 camelCase `dalUpdate` 가 `dalupdate` 로 뭉개진다(RA 검수 4 남은 것)
+  const action = rawTool.split(':').pop() ?? segments[segments.length - 1];
   if (action === undefined || !normalizeEntityName(action).startsWith('dal_')) return false;
   return !isReadActionName(action);
 }
@@ -270,7 +271,7 @@ export function evaluateGuard(policy: GuardPolicy, request: GuardRequest): Guard
   }
   const nameWrite = approvalEntityWriteSegment(segments);
   if (nameWrite !== null) return { decision: 'deny', requiresApproval: false, matchedPattern: protectedPattern(nameWrite) };
-  if (request.listing !== true && isUntargetedDalWrite(request.target, segments)) {
+  if (request.listing !== true && isUntargetedDalWrite(request.target, segments, request.tool)) {
     return { decision: 'deny', requiresApproval: false, matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN };
   }
 

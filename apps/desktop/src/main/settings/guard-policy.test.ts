@@ -369,3 +369,13 @@ describe('3차 검수 차단 4 — target 없는 범용 DAL 쓰기', () => {
     expect(evaluateGuard(open, { tool: 'mcp:x:cmhAiApproval:update', known: true })).toEqual(result('deny', APPROVAL_ENTITY_PATTERN));
   });
 });
+
+describe('Guard — camelCase 범용 DAL 쓰기도 target 없으면 deny (2026-10-07 RA 검수 4 남은 것)', () => {
+  const policy = parseGuardPolicy({ defaultMode: 'full', tools: { '**': 'allow' } });
+  it.each(['mcp:shop:dalUpdate', 'mcp:shop:DalDelete', 'mcp:shop:dal-create', 'mcp:shop:DAL_UPDATE'])('%s 는 target 없으면 deny', (tool) => {
+    expect(evaluateGuard(policy, { tool, known: true }).decision).toBe('deny');
+  });
+  it('camelCase 읽기 꼴 dalSearch 는 target 없어도 정책대로', () => {
+    expect(evaluateGuard(policy, { tool: 'mcp:shop:dalSearch', known: true }).decision).toBe('allow');
+  });
+});
