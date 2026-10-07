@@ -48,6 +48,11 @@ export interface RpcEndpointOptions {
   readonly maxConcurrentIncoming?: number;
   /** 상대가 보낸 글 한 통의 JSON 바이트 상한 — 넘으면 버린다(요청이면 Invalid Request 로 답) · 없으면 상한 없음 */
   readonly maxMessageBytes?: number;
+  /**
+   * methods 에 없는 이름이 왔을 때 돌려줄 오류를 고른다(R2-b). null 이면 Method not found.
+   * 플러그인 호스트는 `host:` 로 시작하는 모르는 이름을 permissionDenied 로 답한다(deny by default).
+   */
+  readonly unknownMethod?: (method: string) => RpcError | null;
 }
 
 interface Pending {
@@ -186,7 +191,7 @@ export class RpcEndpoint {
 
   private async dispatch(method: string, params: unknown): Promise<unknown> {
     const handler = Object.prototype.hasOwnProperty.call(this.options.methods, method) ? this.options.methods[method] : undefined;
-    if (!handler) throw new RpcError(RPC_ERROR.methodNotFound, `method "${method}" not found`);
+    if (!handler) throw this.options.unknownMethod?.(method) ?? new RpcError(RPC_ERROR.methodNotFound, `method "${method}" not found`);
     return handler(params);
   }
 

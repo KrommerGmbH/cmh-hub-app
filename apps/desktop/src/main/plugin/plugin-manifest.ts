@@ -14,6 +14,11 @@ export const ENTITY_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 export const CONTRIBUTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 /** 도구 이름 — MCP 도구 이름 꼴(예 mcp:cmh-shop-api-mcp:dal_search) */
 export const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:*-]{0,127}$/;
+/**
+ * 플러그인이 내놓는 도구 이름(R2-b) — Guard 이름 `plugin:<플러그인>:<도구>` 의 마지막 한 마디라 `:` 가 없다(guard-policy.ts TOOL_SEGMENT 안쪽).
+ * 【AI 임시 결정】 64자 상한 · 첫 글자는 영숫자.
+ */
+export const PLUGIN_TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 /** 호스트 — 소문자 도메인 · 맨 앞 `*.` 하나 허용(하위 도메인 전부) */
 export const HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)+$/;
 /** semver 간단 검사 — MAJOR.MINOR.PATCH(-pre)(+build) · 앞자리 0 금지 */
@@ -31,10 +36,16 @@ export const SNIPPET_LOCALES = ['ko-KR', 'en-GB', 'de-DE'] as const;
 export type SnippetLocale = (typeof SNIPPET_LOCALES)[number];
 export const ENTITY_ACCESS = ['read', 'crud'] as const;
 export type EntityAccess = (typeof ENTITY_ACCESS)[number];
+/** 도구 성격(R2-b) — read 가 아니면 쓰기 꼴로 보고 needsApproval: true. 빠지면 write(모르면 막는 쪽 · 【AI 임시 결정】) */
+export const TOOL_ACCESS = ['read', 'write'] as const;
+export type ToolAccess = (typeof TOOL_ACCESS)[number];
+/** 도구 설명 글 상한 · parameters(JSON Schema) JSON 글자 상한 — 【AI 임시 결정】 모델에게 가는 토큰 상한(원칙 2) */
+export const TOOL_DESCRIPTION_MAX = 1_000;
+export const TOOL_PARAMETERS_MAX_CHARS = 8_000;
 
 export type ActivationEvent =
   | { readonly kind: 'onStartup'; readonly raw: 'onStartup' }
-  | { readonly kind: 'onView' | 'onCommand' | 'onEntity'; readonly target: string; readonly raw: string };
+  | { readonly kind: 'onView' | 'onCommand' | 'onEntity' | 'onTool'; readonly target: string; readonly raw: string };
 
 export type PluginPermission =
   | { readonly kind: 'entity'; readonly entity: string; readonly access: EntityAccess; readonly raw: string }
@@ -51,6 +62,14 @@ export interface CommandContribution { readonly id: string; readonly title: stri
 export interface MenuContribution { readonly command: string; readonly location: string }
 export interface SettingContribution { readonly key: string; readonly type: SettingType; readonly title?: string; readonly default?: string | number | boolean }
 export interface SnippetContribution { readonly locale: SnippetLocale; readonly path: string }
+/** 에이전트가 부를 수 있는 도구(R2-b) — 앱 → 플러그인 RPC `tool:<name>` · Guard 이름 `plugin:<플러그인>:<name>` */
+export interface ToolContribution {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema(type: object) — 모델에게 그대로 간다 */
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly access: ToolAccess;
+}
 
 export interface PluginContributes {
   readonly entities: readonly EntityContribution[];
@@ -62,6 +81,7 @@ export interface PluginContributes {
   readonly menus: readonly MenuContribution[];
   readonly settings: readonly SettingContribution[];
   readonly snippets: readonly SnippetContribution[];
+  readonly tools: readonly ToolContribution[];
 }
 
 export interface PluginManifest {
@@ -95,7 +115,7 @@ export interface ManifestParseOptions {
 }
 
 const TOP_KEYS = new Set(['name', 'version', 'minAppVersion', 'main', 'ui', 'description', 'activationEvents', 'contributes', 'permissions']);
-const CONTRIBUTES_KEYS = ['entities', 'entityExtensions', 'services', 'subscribers', 'views', 'commands', 'menus', 'settings', 'snippets'] as const;
+const CONTRIBUTES_KEYS = ['entities', 'entityExtensions', 'services', 'subscribers', 'views', 'commands', 'menus', 'settings', 'snippets', 'tools'] as const;
 
 // ───────────── 작은 도우미 ─────────────
 
@@ -174,11 +194,11 @@ export function isSafeRelativePath(value: string): boolean {
 
 export function parseActivationEvent(raw: string): ActivationEvent | null {
   if (raw === 'onStartup') return { kind: 'onStartup', raw };
-  const match = /^(onView|onCommand|onEntity):(.+)$/.exec(raw);
+  const match = /^(onView|onCommand|onEntity|onTool):(.+)$/.exec(raw);
   if (!match) return null;
-  const kind = match[1] as 'onView' | 'onCommand' | 'onEntity';
+  const kind = match[1] as 'onView' | 'onCommand' | 'onEntity' | 'onTool';
   const target = match[2] ?? '';
-  const pattern = kind === 'onEntity' ? ENTITY_NAME_PATTERN : CONTRIBUTION_ID_PATTERN;
+  const pattern = kind === 'onEntity' ? ENTITY_NAME_PATTERN : kind === 'onTool' ? PLUGIN_TOOL_NAME_PATTERN : CONTRIBUTION_ID_PATTERN;
   if (!pattern.test(target)) return null;
   return { kind, target, raw };
 }
@@ -394,7 +414,40 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     snippets.push({ locale: locale as SnippetLocale, path });
   });
 
-  return { entities, entityExtensions, services, subscribers, views, commands, menus, settings, snippets };
+  const tools: ToolContribution[] = [];
+  readArray(c, contributes, 'tools').forEach((item, index) => {
+    const at = `contributes.tools[${index}]`;
+    c.unknownKeys(item, ['name', 'description', 'parameters', 'access'], at);
+    const name = requireString(c, item, 'name', at, PLUGIN_TOOL_NAME_PATTERN);
+    const description = requireString(c, item, 'description', at);
+    if (description !== null && description.length > TOOL_DESCRIPTION_MAX) {
+      c.error(`${at}.description: longer than ${TOOL_DESCRIPTION_MAX} characters`);
+      return;
+    }
+    const accessValue = own(item, 'access');
+    if (accessValue !== undefined && !(TOOL_ACCESS as readonly unknown[]).includes(accessValue)) {
+      c.error(`${at}.access: must be one of ${TOOL_ACCESS.join(', ')}`);
+      return;
+    }
+    const parametersValue = own(item, 'parameters');
+    let parameters: Record<string, unknown> = { type: 'object', properties: {} };
+    if (parametersValue !== undefined) {
+      if (!isObject(parametersValue) || parametersValue['type'] !== 'object') {
+        c.error(`${at}.parameters: must be a JSON Schema object with "type": "object"`);
+        return;
+      }
+      if (JSON.stringify(parametersValue).length > TOOL_PARAMETERS_MAX_CHARS) {
+        c.error(`${at}.parameters: longer than ${TOOL_PARAMETERS_MAX_CHARS} characters as JSON`);
+        return;
+      }
+      parameters = parametersValue;
+    }
+    if (name === null || description === null) return;
+    tools.push({ name, description, parameters, access: accessValue === 'read' ? 'read' : 'write' });
+  });
+  uniqueIds(c, tools.map((t) => t.name), 'contributes.tools');
+
+  return { entities, entityExtensions, services, subscribers, views, commands, menus, settings, snippets, tools };
 }
 
 // ───────────── 본체 ─────────────
@@ -425,8 +478,10 @@ export function parseManifest(input: unknown, options: ManifestParseOptions = {}
   if (own(input, 'ui') !== undefined) {
     const value = requireString(c, input, 'ui', 'plugin.json');
     if (value !== null) {
-      if (isSafeRelativePath(value)) ui = value;
-      else c.error('plugin.json.ui: must be a relative path inside the plugin folder');
+      if (!isSafeRelativePath(value)) c.error('plugin.json.ui: must be a relative path inside the plugin folder');
+      // R2-b — 플러그인 화면은 따로 된 WebContentsView 가 여는 HTML 한 장(App 꼴 · 합의안 5) · 【AI 임시 결정】 .html 만
+      else if (!/\.html$/.test(value)) c.error('plugin.json.ui: must end with .html');
+      else ui = value;
     }
   }
 
@@ -448,7 +503,7 @@ export function parseManifest(input: unknown, options: ManifestParseOptions = {}
     eventsValue.forEach((raw, index) => {
       const event = typeof raw === 'string' ? parseActivationEvent(raw) : null;
       if (!event) {
-        c.error(`plugin.json.activationEvents[${index}]: unknown activation event ${JSON.stringify(raw)} (onStartup | onView:<id> | onCommand:<id> | onEntity:<name>)`);
+        c.error(`plugin.json.activationEvents[${index}]: unknown activation event ${JSON.stringify(raw)} (onStartup | onView:<id> | onCommand:<id> | onEntity:<name> | onTool:<name>)`);
         return;
       }
       if (seen.has(event.raw)) return;
@@ -461,7 +516,18 @@ export function parseManifest(input: unknown, options: ManifestParseOptions = {}
       if (event.kind === 'onCommand' && !contributes.commands.some((cmd) => cmd.id === event.target)) {
         c.warn(`plugin.json.activationEvents[${index}]: command "${event.target}" is not declared in contributes.commands`);
       }
+      if (event.kind === 'onTool' && !contributes.tools.some((t) => t.name === event.target)) {
+        c.warn(`plugin.json.activationEvents[${index}]: tool "${event.target}" is not declared in contributes.tools`);
+      }
     });
+  }
+
+  // 도구를 내놓았는데 그 도구로 깨어날 길(onTool:<name> · onStartup)이 없으면 에이전트가 불러도 «안 떠 있음» 만 받는다
+  const startsAlways = activationEvents.some((e) => e.kind === 'onStartup');
+  for (const tool of contributes.tools) {
+    if (!startsAlways && !activationEvents.some((e) => e.kind === 'onTool' && e.target === tool.name)) {
+      c.warn(`contributes.tools: tool "${tool.name}" has no activation event (add "onTool:${tool.name}")`);
+    }
   }
 
   const permissions: PluginPermission[] = [];

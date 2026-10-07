@@ -35,6 +35,8 @@ export interface PluginRuntime {
   start(): Promise<void>;
   stop(): Promise<void>;
   onExit(listener: (info: PluginExitInfo) => void): void;
+  /** 앱 → 플러그인 요청(R2-b · tool:<name> 등). 없으면 그 런타임은 요청을 못 받는다(시험 가짜) */
+  request?(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
 }
 export type PluginRuntimeFactory = (plugin: { readonly manifest: PluginManifest; readonly pluginDir: string }) => PluginRuntime;
 
@@ -65,6 +67,14 @@ export interface PluginRegistryOptions {
   readonly services?: ServiceContainer;
   /** state 가 error 로 바뀔 때(H05 보고 자리) */
   readonly onError?: (name: string, message: string) => void;
+}
+
+/** 플러그인 하나의 매니페스트 · 폴더(R2-b — 도구 목록 · 화면 열기가 쓴다). 매니페스트가 깨졌으면 manifest null */
+export interface PluginDescriptor {
+  readonly name: string;
+  readonly state: PluginState;
+  readonly manifest: PluginManifest | null;
+  readonly pluginDir: string;
 }
 
 export interface PluginSummary {
@@ -166,6 +176,28 @@ export class PluginRegistry {
     return record ? this.summary(record) : null;
   }
 
+  /** 매니페스트 · 폴더까지(R2-b). 모르는 이름이면 null */
+  describe(name: string): PluginDescriptor | null {
+    const record = this.records.get(name);
+    return record ? { name: record.name, state: record.state, manifest: record.manifest, pluginDir: record.dir } : null;
+  }
+
+  /** 지금 state = active 인 플러그인(떠 있지 않아도) — 에이전트 도구 목록이 쓴다 */
+  activePlugins(): PluginDescriptor[] {
+    return [...this.records.values()]
+      .filter((record) => record.state === 'active' && record.manifest !== null)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((record) => ({ name: record.name, state: record.state, manifest: record.manifest, pluginDir: record.dir }));
+  }
+
+  /** 떠 있는 플러그인에 요청 하나(R2-b · tool:<name>). 안 떠 있거나 런타임이 요청을 못 받으면 예외 */
+  request(name: string, method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
+    const runtime = this.records.get(name)?.runtime;
+    if (!runtime) return Promise.reject(new Error(`plugin "${name}" is not running`));
+    if (!runtime.request) return Promise.reject(new Error(`plugin "${name}" runtime does not accept requests`));
+    return runtime.request(method, params, timeoutMs);
+  }
+
   install(name: string): Promise<void> {
     return this.lifecycle(name, 'install', async (record, manifest) => {
       await this.checkFolder(record, true);
@@ -228,8 +260,10 @@ export class PluginRegistry {
    * activation event 를 알린다(예 'onView:hello.view' · 'onCommand:hello.say' · 'onEntity:cmh_ai_task').
    * active 이고 아직 안 떠 있으며 그 이벤트를 선언한 플러그인만 띄운다. 새로 띄운(또는 이미 뜨는 중이던) 이름을 돌려준다.
    */
-  async fire(event: string): Promise<string[]> {
-    const wants = (record: PluginRecord): boolean => record.state === 'active' && record.runtime === null && !record.stopping
+  async fire(event: string, only?: string): Promise<string[]> {
+    // only = 그 플러그인 하나만(R2-b — 도구 이름은 플러그인마다 따로라 onTool:<name> 이 남의 플러그인까지 깨우지 않게)
+    const wants = (record: PluginRecord): boolean => (only === undefined || record.name === only)
+      && record.state === 'active' && record.runtime === null && !record.stopping
       && record.manifest?.activationEvents.some((e) => e.raw === event) === true;
     const targets = [...this.records.values()].filter(wants);
     const started = await Promise.all(targets.map((record) => {

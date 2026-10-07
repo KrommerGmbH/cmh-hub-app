@@ -1,0 +1,15 @@
+{
+  "name": "host-rpc",
+  "version": "0.1.0",
+  "minAppVersion": "0.1.0",
+  "main": "main.mjs",
+  "activationEvents": ["onTool:echo", "onTool:save"],
+  "contributes": {
+    "settings": [{ "key": "greeting", "type": "string", "default": "hi" }],
+    "tools": [
+      { "name": "echo", "description": "Return the given text.", "access": "read", "parameters": { "type": "object", "properties": { "text": { "type": "string" } } } },
+      { "name": "save", "description": "Pretend to write something." }
+    ]
+  },
+  "permissions": ["entity:cmh_ai_prompt:read"]
+}

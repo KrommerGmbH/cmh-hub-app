@@ -4,11 +4,9 @@
 //   선언 없으면 거부(-32001) · 승인 엔티티 쓰기는 늘 거부(합의안 5). 플러그인 쪽 코드는 믿지 않는다.
 // electron 을 import 하지 않는다(Electron 은 ProcessLauncher 어댑터 뒤에 있다).
 //
-// 플러그인 → 앱 메서드(1차):
-//   repository.search { entity, criteria? }   읽기 · repository.get { entity, id } 읽기
-//   repository.upsert { entity, rows[] }      쓰기 · repository.delete { entity, ids[] } 쓰기
-//   log (알림) { level: 'info'|'warn'|'error', message }
-// 앱 → 플러그인: activate { name, version } · deactivate · event (알림) { event, payload } · 그 밖은 플러그인이 정한 메서드(예 ping)
+// 플러그인 → 앱 메서드: plugin-host-api.ts 의 표 하나(host:log · host:settings.get · host:data.* + R2-a 옛 이름 repository.* · log).
+//   표에 없는 `host:*` 는 permissionDenied(deny by default · R2-b).
+// 앱 → 플러그인: activate { name, version } · deactivate · event (알림) { event, payload } · tool:<name> (R2-b · plugin-tools.ts) · 그 밖은 플러그인이 정한 메서드(예 ping)
 //
 // 내리기(검수 3 차단 6): deactivate 요청(stopTimeoutMs) → SIGTERM → killTimeoutMs → SIGKILL → killTimeoutMs 만 exit 대기 → 그래도 안 끝나면 포기하고 stopped.
 //   start 실패 길도 같은 차례로 거둔다. SIGTERM 을 무시하는 플러그인도 stop() 이 끝나고 고아가 남지 않는다.
@@ -21,27 +19,15 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { scanFolderNoFollow, type FolderScanProblemKind } from '../util/folder-scan.js';
 import type { PluginManifest } from './plugin-manifest.js';
-import { checkEntityAccess, type EntityOperation } from './plugin-permissions.js';
+import { createHostMethods, unknownHostMethod, type PermissionDeniedInfo, type PluginDataAccess, type PluginSettingsReader } from './plugin-host-api.js';
 import type { ProcessLauncher, PluginChannel } from './process-launcher.js';
-import { RPC_ERROR, RpcEndpoint, RpcError, type RpcMethodHandler } from './plugin-rpc.js';
+import { RPC_ERROR, RpcEndpoint, RpcError } from './plugin-rpc.js';
 import type { EventBus } from './event-bus.js';
 import type { PluginRuntime, PluginRuntimeFactory, PluginExitInfo } from './plugin-registry.js';
 
-/** 플러그인이 RPC 로 쓰는 자료층(R1 Repository 를 엔티티 이름으로 감싼 것). 1차는 주입 — 앱 쪽 연결은 다음 차례. */
-export interface PluginDataAccess {
-  search(entity: string, criteria: unknown): Promise<unknown>;
-  get(entity: string, id: string): Promise<unknown>;
-  upsert(entity: string, rows: readonly unknown[]): Promise<unknown>;
-  delete(entity: string, ids: readonly string[]): Promise<unknown>;
-}
-
-export interface PermissionDeniedInfo {
-  readonly plugin: string;
-  readonly method: string;
-  readonly entity: string;
-  readonly operation: EntityOperation;
-  readonly reason: string;
-}
+// 옛 자리에서 import 하던 쪽을 위해(정본은 plugin-host-api.ts)
+export type { PermissionDeniedInfo, PluginDataAccess, PluginSettingsReader } from './plugin-host-api.js';
+export { PLUGIN_LOG_PER_SECOND } from './plugin-host-api.js';
 
 export interface PluginProcessOptions {
   readonly manifest: PluginManifest;
@@ -49,6 +35,8 @@ export interface PluginProcessOptions {
   readonly pluginDir: string;
   readonly launcher: ProcessLauncher;
   readonly data?: PluginDataAccess;
+  /** host:settings.get 이 읽는 곳(R2-b) — 없으면 선언한 default 만 */
+  readonly settings?: PluginSettingsReader;
   /** 앱 → 플러그인 요청 기본 시간초과 · 기본 10초 */
   readonly requestTimeoutMs?: number;
   /** 'activate' 답을 기다리는 시간 · 기본 10초 */
@@ -68,13 +56,10 @@ export interface PluginProcessOptions {
 
 export type PluginProcessStatus = 'idle' | 'starting' | 'running' | 'stopping' | 'stopped' | 'crashed';
 
-const MAX_LOG_LENGTH = 4_000;
 /** 플러그인 → 앱 동시 요청 상한 */
 export const PLUGIN_MAX_CONCURRENT_REQUESTS = 16;
 /** 플러그인이 보내는 글 한 통 상한(JSON 바이트) */
 export const PLUGIN_MAX_MESSAGE_BYTES = 1024 * 1024;
-/** log 알림 초당 상한 */
-export const PLUGIN_LOG_PER_SECOND = 20;
 
 const FOLDER_PROBLEM_TEXT: Readonly<Record<FolderScanProblemKind, string>> = {
   symlink: 'symbolic links are not allowed inside a plugin folder (the fs sandbox follows them)',
@@ -121,25 +106,6 @@ function settlesWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
   });
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function invalidParams(message: string): RpcError {
-  return new RpcError(RPC_ERROR.invalidParams, message);
-}
-
-function readEntity(params: unknown): { entity: string; params: Record<string, unknown> } {
-  if (!isObject(params) || typeof params['entity'] !== 'string' || params['entity'].length === 0) {
-    throw invalidParams('params.entity must be a non-empty string');
-  }
-  return { entity: params['entity'], params };
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
 /** 플러그인 폴더 안의 실제 파일인가(심볼릭 링크로 밖을 가리키는 것 거부) */
 export async function resolveInside(pluginDir: string, entry: string): Promise<string> {
   const realDir = await realpath(pluginDir);
@@ -157,10 +123,6 @@ export class PluginProcess implements PluginRuntime {
   private exitPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
   private exitNotified = false;
-  /** log 빈도 상한 — 지금 1초 창의 시작 · 개수 · 버린 개수 */
-  private logWindowStart = 0;
-  private logCount = 0;
-  private logDropped = 0;
 
   constructor(private readonly options: PluginProcessOptions) {}
 
@@ -208,7 +170,18 @@ export class PluginProcess implements PluginRuntime {
     this.channel = channel;
     const rpc = new RpcEndpoint({
       send: (message) => channel.send(message),
-      methods: this.hostMethods(),
+      methods: createHostMethods({
+        manifest,
+        ...(this.options.data ? { data: this.options.data } : {}),
+        ...(this.options.settings ? { settings: this.options.settings } : {}),
+        ...(this.options.onLog ? { onLog: this.options.onLog } : {}),
+        ...(this.options.onPermissionDenied ? { onPermissionDenied: this.options.onPermissionDenied } : {}),
+      }),
+      unknownMethod: (method) => {
+        const error = unknownHostMethod(method);
+        if (error) this.options.onPermissionDenied?.({ plugin: manifest.name, method: method.slice(0, 128), reason: `host method "${method.slice(0, 128)}" is not available to plugins` });
+        return error;
+      },
       defaultTimeoutMs: this.options.requestTimeoutMs ?? 10_000,
       maxConcurrentIncoming: PLUGIN_MAX_CONCURRENT_REQUESTS,
       maxMessageBytes: PLUGIN_MAX_MESSAGE_BYTES,
@@ -296,68 +269,6 @@ export class PluginProcess implements PluginRuntime {
     channel.kill('SIGKILL');
     return settlesWithin(exited, killTimeoutMs);
   }
-
-  /** log 알림 빈도 상한 — 1초 창마다 PLUGIN_LOG_PER_SECOND 개 · 넘친 개수는 다음 창 첫 줄에 */
-  private acceptLog(): boolean {
-    const now = Date.now();
-    if (now - this.logWindowStart >= 1_000) {
-      if (this.logDropped > 0) this.options.onLog?.(this.name, 'warn', `log rate limited: ${this.logDropped} message(s) dropped`);
-      this.logWindowStart = now;
-      this.logCount = 0;
-      this.logDropped = 0;
-    }
-    if (this.logCount >= PLUGIN_LOG_PER_SECOND) {
-      this.logDropped += 1;
-      return false;
-    }
-    this.logCount += 1;
-    return true;
-  }
-
-  private hostMethods(): Record<string, RpcMethodHandler> {
-    const guard = (method: string, entity: string, operation: EntityOperation): void => {
-      const decision = checkEntityAccess(this.options.manifest.permissions, entity, operation);
-      if (decision.allowed) return;
-      this.options.onPermissionDenied?.({ plugin: this.name, method, entity, operation, reason: decision.reason });
-      throw new RpcError(RPC_ERROR.permissionDenied, `permission denied: ${decision.reason}`);
-    };
-    const data = (): PluginDataAccess => {
-      if (!this.options.data) throw new RpcError(RPC_ERROR.internal, 'no data source attached');
-      return this.options.data;
-    };
-    return {
-      'repository.search': (params) => {
-        const { entity, params: p } = readEntity(params);
-        guard('repository.search', entity, 'read');
-        return data().search(entity, p['criteria'] ?? {});
-      },
-      'repository.get': (params) => {
-        const { entity, params: p } = readEntity(params);
-        if (typeof p['id'] !== 'string') throw invalidParams('params.id must be a string');
-        guard('repository.get', entity, 'read');
-        return data().get(entity, p['id']);
-      },
-      'repository.upsert': (params) => {
-        const { entity, params: p } = readEntity(params);
-        if (!Array.isArray(p['rows'])) throw invalidParams('params.rows must be an array');
-        guard('repository.upsert', entity, 'write');
-        return data().upsert(entity, p['rows']);
-      },
-      'repository.delete': (params) => {
-        const { entity, params: p } = readEntity(params);
-        if (!isStringArray(p['ids'])) throw invalidParams('params.ids must be an array of strings');
-        guard('repository.delete', entity, 'write');
-        return data().delete(entity, p['ids']);
-      },
-      log: (params) => {
-        if (!isObject(params) || !this.acceptLog()) return null;
-        const level = params['level'] === 'warn' || params['level'] === 'error' ? params['level'] : 'info';
-        const message = typeof params['message'] === 'string' ? params['message'].slice(0, MAX_LOG_LENGTH) : '';
-        this.options.onLog?.(this.name, level, message);
-        return null;
-      },
-    };
-  }
 }
 
 export interface ProcessRuntimeFactoryOptions extends Omit<PluginProcessOptions, 'manifest' | 'pluginDir'> {
@@ -381,6 +292,7 @@ export function createProcessRuntimeFactory(options: ProcessRuntimeFactoryOption
       },
       stop: () => child.stop(),
       onExit: (listener) => child.onExit(listener),
+      request: (method, params, timeoutMs) => child.request(method, params, timeoutMs),
     };
     return runtime;
   };
