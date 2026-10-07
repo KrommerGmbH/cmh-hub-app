@@ -75,7 +75,8 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
 
   // ③b sash 를 «진짜 마우스처럼» 끈다 — 셸 view 에 mouseDown → 여러 점 mouseMove → mouseUp(포인터 캡처 · 요소 재사용 경로)
   {
-    const geo = w.engine.computeGeometry({ x: 0, y: 40, width: w.window.getContentSize()[0] ?? 0, height: (w.window.getContentSize()[1] ?? 0) - 40 });
+    // pane 영역은 사이드바 폭만큼 오른쪽에서 시작한다(RD · 2026-10-07) — 창이 쓰는 같은 계산을 쓴다
+    const geo = w.engine.computeGeometry(w.paneViewport());
     const sash = geo.sashes[0];
     if (sash) {
       // 셸이 resize 0.35 를 다시 그려 sash 가 계산한 자리에 왔을 때 누른다

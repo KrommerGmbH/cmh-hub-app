@@ -11,6 +11,8 @@ import {
   type NewTabSpec,
   type Rect,
   type ShellCommand,
+  type ShellSidebarView,
+  type SidebarState,
   type UpdateState,
 } from '@cmh-hub-app/contracts';
 import type { BridgeToApp } from '@cmh-hub-app/driver-core';
@@ -79,11 +81,12 @@ export class ShellWindow {
       minWidth: 800,
       minHeight: 600,
       show: false, // 최대화한 뒤에 보인다(create) — 1440×900 으로 깜빡 떴다가 커지지 않게
-      backgroundColor: '#1b1b1f',
+      backgroundColor: '#f2f5f8', // RD — 셸이 밝은 Aside 꼴(shell.css --frame 근처)
       title: 'CMH Hub',
       icon: APP_ICON,
       titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-      titleBarOverlay: { color: '#141417', symbolColor: '#c7c9cc', height: LAYOUT_LIMITS.titleBarHeight },
+      // Windows 창 단추 자리 — shell.css --titlebar · --muted 와 같은 색(RD 밝은 꼴)
+      titleBarOverlay: { color: '#f7f9fb', symbolColor: '#5f6b7a', height: LAYOUT_LIMITS.titleBarHeight },
     });
 
     this.shellView = new WebContentsView({
@@ -446,7 +449,37 @@ export class ShellWindow {
     return { x: 0, y: 0, width: width ?? 0, height: height ?? 0 };
   }
 
+  /**
+   * RD — 셸 사이드바 접기 · 폭 끌기(ipc.ts shell:sidebar). store 가 폭을 180~400 으로 자르고 layout.json 에 쓴다(debounce) →
+   * pane 영역(viewport)을 다시 계산해 view bounds 를 맞추고 셸에 새 상태를 보낸다. 트리(LayoutEngine)는 건드리지 않는다.
+   */
+  setSidebar(next: SidebarState): void {
+    const before = this.store.getSidebar();
+    this.store.setSidebar(next);
+    const after = this.store.getSidebar();
+    if (before.collapsed === after.collapsed && before.width === after.width) return;
+    this.relayout();
+    this.sendState();
+  }
+
+  /** RD — ShellState.sidebar(사이드바 상태 · Agent tabs 묶음 · «New Chat» 이 여는 탭) */
+  private sidebarView(): ShellSidebarView {
+    const sidebar = this.store.getSidebar();
+    return {
+      enabled: SHELL_SIDEBAR_ENABLED,
+      collapsed: sidebar.collapsed,
+      width: sidebar.width,
+      agentTabIds: Object.values(this.engine.getTree().tabs).filter((t) => t.owner === 'agent').map((t) => t.id),
+      newChat: { kind: 'admin', url: CHAT_TAB_URL },
+    };
+  }
+
   /** pane split 영역 — 창 안쪽 − 제목 줄 − 사이드바(RD · store 의 상태 · SHELL_SIDEBAR_ENABLED 가 false 면 0) − 상태 줄 */
+  /** pane 영역(제목 줄 · 사이드바를 뺀 자리) — smoke 가 sash 자리를 같은 계산으로 구한다 */
+  paneViewport(): Rect {
+    return this.viewport();
+  }
+
   private viewport(): Rect {
     return computePaneViewport(this.contentRect(), LAYOUT_LIMITS, this.store.getSidebar(), SHELL_SIDEBAR_ENABLED);
   }
@@ -475,9 +508,8 @@ export class ShellWindow {
   private sendState(): void {
     const wc = this.shellView.webContents;
     if (wc.isDestroyed()) return;
-    wc.send(
-      SHELL_IPC.state,
-      buildState(
+    wc.send(SHELL_IPC.state, {
+      ...buildState(
         this.engine,
         this.geometry,
         this.window,
@@ -486,7 +518,8 @@ export class ShellWindow {
         this.focusOmniboxPaneId,
         (tabId, content) => this.views.devToolsLayoutOf(tabId, content),
       ),
-    );
+      sidebar: this.sidebarView(),
+    });
     this.focusOmniboxPaneId = null;
   }
 

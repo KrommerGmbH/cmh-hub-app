@@ -9,7 +9,9 @@
       "agentTabs": "Agent tabs",
       "bookmarks": "Bookmarks",
       "settings": "Settings",
-      "collapse": "Collapse"
+      "collapse": "Collapse",
+      "expand": "Expand",
+      "resize": "Resize sidebar"
     },
     "composer": {
       "placeholder": "Reply, @ for context",

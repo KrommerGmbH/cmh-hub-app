@@ -117,7 +117,7 @@ export const LAYOUT_LIMITS = {
 } as const;
 
 /** RD 셸 화면(사이드바를 그리는 셸)이 들어오면 true — 그 전에는 pane 영역을 사이드바 폭만큼 줄이지 않는다(지금 보이는 동작 그대로) */
-export const SHELL_SIDEBAR_ENABLED = false;
+export const SHELL_SIDEBAR_ENABLED = true;
 
 /** RD 왼쪽 사이드바 상태 — layout.json(v2)의 sidebar */
 export interface SidebarState {

@@ -229,10 +229,11 @@ describe('computePaneViewport', () => {
   const WIN: Rect = { x: 0, y: 0, width: 1440, height: 900 };
   const open = { collapsed: false, width: 252 };
 
-  it('스위치가 꺼져 있으면(지금 앱) 옛 viewport 와 같다 — 제목 줄만 뺌', () => {
-    expect(SHELL_SIDEBAR_ENABLED).toBe(false);
+  it('스위치가 꺼져 있으면 옛 viewport 와 같다 — 제목 줄만 뺌 · 지금 앱은 켜짐(RD 셸 사이드바 · 2026-10-07)', () => {
+    expect(SHELL_SIDEBAR_ENABLED).toBe(true);
     expect(LAYOUT_LIMITS.statusBarHeight).toBe(0);
-    expect(computePaneViewport(WIN, LAYOUT_LIMITS, open, SHELL_SIDEBAR_ENABLED)).toEqual({
+    expect(computePaneViewport(WIN, LAYOUT_LIMITS, open, SHELL_SIDEBAR_ENABLED)).toEqual({ x: 252, y: 40, width: 1440 - 252, height: 860 });
+    expect(computePaneViewport(WIN, LAYOUT_LIMITS, open, false)).toEqual({
       x: 0,
       y: LAYOUT_LIMITS.titleBarHeight,
       width: 1440,

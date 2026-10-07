@@ -1,5 +1,5 @@
-// U01 · U03 — 셸 페이지 ↔ main 의 IPC. 채널은 이 둘(+덮개 셋)뿐이다. 서버 페이지에는 IPC 가 없다.
-import type { LayoutPreset, Orientation, Rect, SashGeometry, TabKind } from './layout.js';
+// U01 · U03 — 셸 페이지 ↔ main 의 IPC. 채널은 이 셋(+덮개 셋)뿐이다. 서버 페이지에는 IPC 가 없다.
+import type { LayoutPreset, Orientation, Rect, SashGeometry, SidebarState, TabKind } from './layout.js';
 import type { UpdateState } from './update.js';
 
 export const SHELL_IPC = {
@@ -7,6 +7,11 @@ export const SHELL_IPC = {
   cmd: 'shell:cmd',
   /** main → 셸 · ShellState (바뀔 때마다 통째로) */
   state: 'shell:state',
+  /**
+   * 셸 → main · SidebarState(RD 사이드바 접기 · 폭 끌기). ShellCommand 에 넣지 않은 까닭: LayoutEngine.apply 의 switch 가
+   * ShellCommand 를 빠짐없이 받는다(layout-engine.ts · 합의안 6 «그대로») — 새 명령을 넣으면 그 파일을 고쳐야 한다.
+   */
+  sidebar: 'shell:sidebar',
 } as const;
 
 export const OVERLAY_IPC = {
@@ -92,6 +97,19 @@ export interface ShellPaneView {
   devtools: ShellDevToolsView | null;
 }
 
+/** RD 왼쪽 사이드바 — main(ShellWindow.sendState)이 ShellState 에 붙인다 */
+export interface ShellSidebarView {
+  /** SHELL_SIDEBAR_ENABLED — false 면 셸은 사이드바를 그리지 않는다(pane 영역도 안 줄었다) */
+  enabled: boolean;
+  collapsed: boolean;
+  /** px · LAYOUT_LIMITS.sidebarWidthMin ~ sidebarWidthMax(main 이 자른 값) */
+  width: number;
+  /** owner 'agent' 인 탭 id(«Agent tabs» 묶음) */
+  agentTabIds: string[];
+  /** «New Chat» 이 여는 탭 — «+» 메뉴 «AI 채팅» 과 같은 newTab · 없으면 단추를 끈다 */
+  newChat: { kind: TabKind; url: string } | null;
+}
+
 export interface ShellState {
   panes: ShellPaneView[];
   sashes: SashGeometry[];
@@ -108,12 +126,20 @@ export interface ShellState {
   newTabChoices: Array<{ label: string; kind: TabKind; url: string }>;
   /** 방금 만든 빈 탭의 pane — 셸이 그 주소창에 키보드 포커스를 준다(한 번만 · 다음 상태에서는 null) */
   focusOmniboxPaneId: string | null;
+  /** RD 사이드바 — 없으면(옛 main · 데모) 사이드바를 그리지 않는다 */
+  sidebar?: ShellSidebarView;
 }
 
-/** 셸 preload 가 contextBridge 로 노출하는 것 — 이 둘뿐(U01) */
+/** 셸 preload 가 contextBridge 로 노출하는 것(U01 · RD) */
 export interface HubShellApi {
   send(cmd: ShellCommand): void;
   onState(cb: (state: ShellState) => void): () => void;
+  /** RD — 사이드바 접기 · 폭(main 이 폭을 자르고 pane 영역을 다시 계산한다) */
+  setSidebar(next: SidebarState): void;
+  /** R8 — 화면 글자(셸 스니펫 · preload 가 loadSnippets 로 읽음 · 없는 키는 en-GB → 키 그대로) */
+  t(key: string, params?: Readonly<Record<string, string | number>>): string;
+  /** 스니펫 locale(ko-KR · en-GB · de-DE) — <html lang> 에 쓴다 */
+  readonly locale: string;
 }
 
 /** 덮개 preload 가 노출하는 것 — 셋뿐(U07 ⑥) */

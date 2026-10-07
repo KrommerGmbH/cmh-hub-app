@@ -9,7 +9,9 @@
       "agentTabs": "Agent-Tabs",
       "bookmarks": "Lesezeichen",
       "settings": "Einstellungen",
-      "collapse": "Einklappen"
+      "collapse": "Einklappen",
+      "expand": "Einblenden",
+      "resize": "Seitenleistenbreite ändern"
     },
     "composer": {
       "placeholder": "Antworten, @ für Kontext",

@@ -1,6 +1,6 @@
 // U01 — 셸 페이지. 상태(ShellState)가 정본 · 받을 때마다 다시 그린다. window.hubShell 만 쓴다(Node · electron 없음).
 // 스트립 · sash 요소는 id 로 재사용한다(지우고 새로 만들지 않는다) — 끌고 있는 sash 가 사라지면 포인터 캡처가 끊긴다(2026-10-02 사장님 «넓히고 좁히기가 안 된다»).
-import type { SashGeometry, ShellCommand, ShellDevToolsView, ShellState } from '@cmh-hub-app/contracts';
+import type { SashGeometry, ShellCommand, ShellDevToolsView, ShellSidebarView, ShellState } from '@cmh-hub-app/contracts';
 
 const $ = <T extends Element>(sel: string): T => {
   const el = document.querySelector<T>(sel);
@@ -51,6 +51,31 @@ let drag: Drag | null = null;
 
 function send(cmd: ShellCommand): void {
   window.hubShell?.send(cmd);
+}
+
+/** R8 — 화면 글자. preload 가 스니펫을 읽어 둔다(hubShell 이 없으면 — 브라우저로 연 데모 — 키 그대로) */
+function t(key: string, params?: Readonly<Record<string, string | number>>): string {
+  return window.hubShell?.t(key, params) ?? key;
+}
+
+/** 스니펫에 아직 없는 키(t 가 키 그대로 돌려줌)면 빈 글 — 툴팁 · aria 에 키 글자가 보이지 않게 */
+function tOptional(key: string): string {
+  const text = t(key);
+  return text === key ? '' : text;
+}
+
+/** index.html 의 data-i18n(글자) · data-i18n-label(aria-label + title) — 한 번(스니펫은 실행 중 안 바뀐다) */
+function applyStaticText(): void {
+  if (window.hubShell) document.documentElement.lang = window.hubShell.locale;
+  document.querySelectorAll<HTMLElement>('[data-i18n]').forEach((el) => {
+    el.textContent = t(el.dataset['i18n'] ?? '');
+  });
+  document.querySelectorAll<HTMLElement>('[data-i18n-label]').forEach((el) => {
+    const text = tOptional(el.dataset['i18nLabel'] ?? '');
+    if (!text) return;
+    el.setAttribute('aria-label', text);
+    el.title = text;
+  });
 }
 
 function px(n: number): string {
@@ -172,6 +197,11 @@ function createTabElement(tab: ShellTab, paneId: string): HTMLElement {
   return el;
 }
 
+/** 제목이 아직 없는 탭의 글(탭 줄 · 사이드바 같이) — 빈 탭은 스니펫 «새 탭» */
+function tabTitleText(tab: ShellTab): string {
+  return tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? t('cmh-hub-app.sidebar.newTab') : '불러오는 중');
+}
+
 /** 보이는 값만 고친다 — 같은 값이면 DOM 을 건드리지 않는다 */
 function updateTabElement(el: HTMLElement, tab: ShellTab): void {
   el.classList.toggle('active', tab.active);
@@ -179,7 +209,7 @@ function updateTabElement(el: HTMLElement, tab: ShellTab): void {
   el.tabIndex = tab.active ? 0 : -1;
   el.setAttribute('aria-selected', String(tab.active));
   if (el.title !== tab.title) el.title = tab.title;
-  const titleText = tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? '새 탭' : '불러오는 중');
+  const titleText = tabTitleText(tab);
   const titleEl = el.querySelector<HTMLElement>('.tab-title')!;
   if (titleEl.textContent !== titleText) titleEl.textContent = titleText;
   const favicon = el.querySelector<HTMLImageElement>('.tab-favicon')!;
@@ -546,6 +576,217 @@ function closeMenu(how: 'pick' | 'outside' | 'escape' | 'toggle' | 'omnibox' = '
   popupOpener = null;
 }
 
+// ───────────────────────── 사이드바(RD · Aside 꼴) ─────────────────────────
+// 정본은 main(LayoutStore.sidebar) — 셸은 받은 폭 · 접힘으로 그리고, 접기 · 폭 끌기는 hubShell.setSidebar 로 보낸다(main 이 180~400 으로 자르고
+// pane 영역을 다시 계산한다). 탭 줄은 탭 id 로 재사용한다(누르는 사이 다시 그려져 click 이 사라지지 않게 — 탭 스트립과 같은 까닭).
+
+const sidebarEl = $<HTMLElement>('#sidebar');
+const sidebarCollapseEl = $<HTMLButtonElement>('#sidebar-collapse');
+const sidebarExpandEl = $<HTMLButtonElement>('#sidebar-expand');
+const sidebarExpandBadgeEl = $<HTMLElement>('#sb-expand-badge');
+const sidebarResizerEl = $<HTMLElement>('#sidebar-resizer');
+const sbTabListEl = $<HTMLElement>('#sb-tab-list');
+const sbAgentListEl = $<HTMLElement>('#sb-agent-list');
+const sbAgentToggleEl = $<HTMLButtonElement>('#sb-agent-toggle');
+const sbAgentCountEl = $<HTMLElement>('#sb-agent-count');
+const sbNewTabEl = $<HTMLButtonElement>('#sb-new-tab');
+const sbNewChatEl = $<HTMLButtonElement>('#sb-new-chat');
+const sbTabTemplate = $<HTMLTemplateElement>('#sb-tab-template');
+
+/** 사이드바 폭 — LAYOUT_LIMITS.sidebarWidthMin ~ Max(contracts · 셸은 런타임 import 를 못 해 같은 수를 둔다 · main 이 다시 자른다) */
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 400;
+
+interface SidebarDrag {
+  pointerId: number;
+  width: number;
+  raf: number | null;
+  lastSent: number | null;
+}
+let sidebarDrag: SidebarDrag | null = null;
+/** «Agent tabs» 묶음 펼침 — 셸 안에서만(저장 안 함) */
+let agentListOpen = false;
+
+function setSidebarWidthVar(px: number): void {
+  document.documentElement.style.setProperty('--sidebar-w', `${px}px`);
+}
+
+function sidebarOf(state: ShellState | null): ShellSidebarView | null {
+  return state?.sidebar && state.sidebar.enabled ? state.sidebar : null;
+}
+
+function sendSidebar(collapsed: boolean, width: number): void {
+  window.hubShell?.setSidebar({ collapsed, width });
+}
+
+function focusedOrFirstPaneId(state: ShellState): string | undefined {
+  return state.focusedPaneId ?? state.panes[0]?.id;
+}
+
+function createSidebarTab(tabId: string): HTMLElement {
+  const el = (sbTabTemplate.content.firstElementChild as HTMLElement).cloneNode(true) as HTMLElement;
+  el.dataset['tabId'] = tabId;
+  el.tabIndex = 0;
+  el.addEventListener('click', () => send({ cmd: 'activateTab', tabId }));
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      send({ cmd: 'activateTab', tabId, keepShellFocus: true });
+    }
+  });
+  // 가운데 단추 = 닫기(탭 스트립과 같게)
+  el.addEventListener('mousedown', (e) => {
+    if (e.button === 1) {
+      e.preventDefault();
+      send({ cmd: 'closeTab', tabId });
+    }
+  });
+  return el;
+}
+
+function updateSidebarTab(el: HTMLElement, tab: ShellTab, paneFocused: boolean): void {
+  // current = 포커스 pane 의 활성 탭(흰 바탕) · shown = 다른 pane 에 보이는 탭(옅게)
+  el.classList.toggle('current', tab.active && paneFocused);
+  el.classList.toggle('shown', tab.active && !paneFocused);
+  el.setAttribute('aria-current', String(tab.active && paneFocused));
+  const titleText = tabTitleText(tab);
+  const textEl = el.querySelector<HTMLElement>('.sb-text')!;
+  if (textEl.textContent !== titleText) textEl.textContent = titleText;
+  if (el.title !== tab.title) el.title = tab.title;
+  const favicon = el.querySelector<HTMLImageElement>('.sb-favicon')!;
+  const spinner = el.querySelector<HTMLElement>('.tab-spinner')!;
+  const globe = el.querySelector<SVGElement>('.sb-globe')!;
+  const showFavicon = !tab.loading && !!tab.favicon;
+  spinner.hidden = !tab.loading;
+  if (showFavicon && favicon.getAttribute('src') !== tab.favicon) favicon.src = tab.favicon ?? '';
+  else if (!tab.favicon && favicon.hasAttribute('src')) favicon.removeAttribute('src');
+  favicon.hidden = !showFavicon;
+  globe.style.display = tab.loading || showFavicon ? 'none' : '';
+}
+
+/** 목록 하나를 탭 id 로 맞춘다 — 같은 요소 · 같은 차례면 DOM 차례를 건드리지 않는다 */
+function upsertSidebarList(listEl: HTMLElement, rows: Array<{ tab: ShellTab; paneFocused: boolean }>): void {
+  const existing = new Map<string, HTMLElement>();
+  for (const child of Array.from(listEl.children) as HTMLElement[]) {
+    const id = child.dataset['tabId'];
+    if (id) existing.set(id, child);
+  }
+  const ordered = rows.map(({ tab, paneFocused }) => {
+    const el = existing.get(tab.id) ?? createSidebarTab(tab.id);
+    updateSidebarTab(el, tab, paneFocused);
+    return el;
+  });
+  const current = Array.from(listEl.children);
+  if (current.length === ordered.length && current.every((c, i) => c === ordered[i])) return;
+  const focusedId = listEl.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset['tabId'] : undefined;
+  listEl.replaceChildren(...ordered);
+  if (focusedId) listEl.querySelector<HTMLElement>(`[data-tab-id="${focusedId}"]`)?.focus({ preventScroll: true });
+}
+
+function renderSidebar(state: ShellState): void {
+  const sb = sidebarOf(state);
+  const open = sb !== null && !sb.collapsed;
+  sidebarEl.hidden = !open;
+  // 끄는 중에는 셸이 가진 폭(포인터)이 이긴다 — main 의 답이 한 박자 늦게 와도 사이드바가 떨지 않게
+  const width = sidebarDrag ? sidebarDrag.width : sb ? sb.width : 0;
+  setSidebarWidthVar(open ? width : 0);
+  sidebarExpandEl.hidden = sb === null || !sb.collapsed;
+  sidebarCollapseEl.setAttribute('aria-expanded', String(open));
+  sidebarExpandEl.setAttribute('aria-expanded', String(open));
+  const agentIds = new Set(sb?.agentTabIds ?? []);
+  sidebarExpandBadgeEl.hidden = agentIds.size === 0;
+  sidebarExpandBadgeEl.textContent = String(agentIds.size);
+  if (sb === null) return;
+
+  // Tabs = 사람이 연 탭 전부(pane 차례 → 탭 차례) · Agent tabs = owner 'agent' 탭(PLAN RD 표 «Agent tabs = 에이전트가 연 탭 묶음»)
+  const userRows: Array<{ tab: ShellTab; paneFocused: boolean }> = [];
+  const agentRows: Array<{ tab: ShellTab; paneFocused: boolean }> = [];
+  for (const pane of state.panes) {
+    for (const tab of pane.tabs) (agentIds.has(tab.id) ? agentRows : userRows).push({ tab, paneFocused: pane.focused });
+  }
+  upsertSidebarList(sbTabListEl, userRows);
+  upsertSidebarList(sbAgentListEl, agentRows);
+  sbAgentCountEl.textContent = String(agentRows.length);
+  sbAgentToggleEl.setAttribute('aria-expanded', String(agentListOpen));
+  sbAgentToggleEl.classList.toggle('open', agentListOpen);
+  sbAgentListEl.hidden = !agentListOpen || agentRows.length === 0;
+  sbNewChatEl.disabled = sb.newChat === null;
+}
+
+sidebarCollapseEl.addEventListener('click', () => {
+  const sb = sidebarOf(lastState);
+  if (sb) sendSidebar(true, sb.width);
+});
+sidebarExpandEl.addEventListener('click', () => {
+  const sb = sidebarOf(lastState);
+  if (sb) sendSidebar(false, sb.width);
+});
+sbAgentToggleEl.addEventListener('click', () => {
+  agentListOpen = !agentListOpen;
+  if (lastState) renderSidebar(lastState);
+});
+// «New Tab» = 탭 줄 «+» 와 같은 메뉴(포커스 pane 에 연다)
+sbNewTabEl.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const paneId = lastState ? focusedOrFirstPaneId(lastState) : undefined;
+  if (!lastState || !paneId) return;
+  openNewTabMenu(lastState, paneId, sbNewTabEl.getBoundingClientRect());
+});
+// «New Chat» = «+» 메뉴 «AI 채팅» 과 같은 newTab(포커스 pane · R6 챗 pane 이 오면 그쪽으로 바뀐다)
+sbNewChatEl.addEventListener('click', () => {
+  const chat = sidebarOf(lastState)?.newChat;
+  const paneId = lastState ? focusedOrFirstPaneId(lastState) : undefined;
+  if (chat && paneId) send({ cmd: 'newTab', paneId, kind: chat.kind, url: chat.url });
+});
+
+// 폭 끌기 — 포인터 캡처(sash 와 같은 길) · 한 프레임에 한 번만 보낸다
+function sendSidebarWidth(d: SidebarDrag): void {
+  if (d.lastSent === d.width) return;
+  d.lastSent = d.width;
+  sendSidebar(false, d.width);
+}
+sidebarResizerEl.addEventListener('pointerdown', (e) => {
+  const sb = sidebarOf(lastState);
+  if (e.button !== 0 || !sb) return;
+  e.preventDefault();
+  sidebarDrag = { pointerId: e.pointerId, width: sb.width, raf: null, lastSent: sb.width };
+  sidebarResizerEl.classList.add('dragging');
+  document.body.classList.add('dragging-col');
+  try {
+    sidebarResizerEl.setPointerCapture(e.pointerId);
+  } catch {
+    // 캡처가 안 되어도 window 의 pointermove 로 받는다
+  }
+});
+window.addEventListener('pointermove', (e) => {
+  const d = sidebarDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  d.width = Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, e.clientX)));
+  setSidebarWidthVar(d.width);
+  if (d.raf === null) {
+    d.raf = requestAnimationFrame(() => {
+      d.raf = null;
+      sendSidebarWidth(d);
+    });
+  }
+});
+function endSidebarDrag(e: PointerEvent): void {
+  const d = sidebarDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  sidebarDrag = null;
+  if (d.raf !== null) cancelAnimationFrame(d.raf);
+  sendSidebarWidth(d);
+  sidebarResizerEl.classList.remove('dragging');
+  try {
+    if (sidebarResizerEl.hasPointerCapture(e.pointerId)) sidebarResizerEl.releasePointerCapture(e.pointerId);
+  } catch {
+    // 이미 풀렸으면 그만
+  }
+  document.body.classList.remove('dragging-col');
+}
+window.addEventListener('pointerup', endSidebarDrag);
+window.addEventListener('pointercancel', endSidebarDrag);
+
 // ───────────────────────── 업데이트 모달(G03) ─────────────────────────
 
 function renderUpdate(state: ShellState): void {
@@ -767,6 +1008,7 @@ function render(state: ShellState): void {
   // 포커스가 있던 탭의 pane — 다른 pane 탭을 키보드로 다니던 중이면 그 pane 으로 되돌린다(제미나이 검수 2026-10-05)
   const focusedStripPaneId = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>('.strip')?.dataset['paneId'];
   renderTitle(state);
+  renderSidebar(state);
   syncLayoutMenu();
 
   const paneIds = new Set(state.panes.map((p) => p.id));
@@ -860,15 +1102,16 @@ document.querySelectorAll<HTMLButtonElement>('#window-controls .wc').forEach((b)
 
 /** 개발용 — hubShell 이 없을 때(브라우저로 그냥 열었을 때) 시안과 같은 가짜 상태로 그린다 */
 function renderDemo(): void {
-  const w = window.innerWidth;
+  const sw = 252;
+  const w = window.innerWidth - sw;
   const h = window.innerHeight;
   const left = Math.round((w - 4) * 0.55);
   const demo: ShellState = {
     panes: [
       {
         id: 'p1', focused: true, aiTask: null, splitAllowed: true, canGoBack: true, canGoForward: false, omniboxUrl: null, devtools: null,
-        stripRect: { x: 0, y: 40, width: left, height: 40 },
-        contentRect: { x: 0, y: 80, width: left, height: h - 80 },
+        stripRect: { x: sw, y: 40, width: left, height: 40 },
+        contentRect: { x: sw, y: 80, width: left, height: h - 80 },
         tabs: [
           { id: 't1', kind: 'admin', title: 'Marktplatz-Produkte', favicon: null, loading: false, active: true },
           { id: 't2', kind: 'admin', title: 'Produkt · SW10001', favicon: null, loading: false, active: false },
@@ -876,21 +1119,23 @@ function renderDemo(): void {
       },
       {
         id: 'p2', focused: false, aiTask: null, splitAllowed: true, canGoBack: false, canGoForward: false, omniboxUrl: null, devtools: null,
-        stripRect: { x: left + 4, y: 40, width: w - left - 4, height: 40 },
-        contentRect: { x: left + 4, y: 80, width: w - left - 4, height: h - 80 },
+        stripRect: { x: sw + left + 4, y: 40, width: w - left - 4, height: 40 },
+        contentRect: { x: sw + left + 4, y: 80, width: w - left - 4, height: h - 80 },
         tabs: [{ id: 't3', kind: 'naver', title: '스마트스토어센터 · 상품 목록', favicon: null, loading: true, active: true }],
       },
     ],
-    sashes: [{ id: 's1', splitId: 's1', orientation: 'horizontal', rect: { x: left, y: 40, width: 4, height: h - 40 }, splitRect: { x: 0, y: 40, width: w, height: h - 40 } }],
+    sashes: [{ id: 's1', splitId: 's1', orientation: 'horizontal', rect: { x: sw + left, y: 40, width: 4, height: h - 40 }, splitRect: { x: sw, y: 40, width: w, height: h - 40 } }],
     paneCount: 2, layoutPreset: 'columns2', maxPanes: 4, focusedPaneId: 'p1',
     update: { state: 'none' }, serverHost: 'demo.local', platform: 'win32',
     window: { width: w, height: h, maximized: false },
     newTabChoices: [{ label: '대시보드', kind: 'admin', url: 'about:blank' }],
     focusOmniboxPaneId: null,
+    sidebar: { enabled: true, collapsed: false, width: sw, agentTabIds: [], newChat: { kind: 'admin', url: 'about:blank' } },
   };
   render(demo);
 }
 
+applyStaticText();
 if (window.hubShell) {
   window.hubShell.onState(render);
 } else {
