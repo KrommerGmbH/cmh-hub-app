@@ -45,7 +45,21 @@
     },
     "mcp": {
       "importInvalidJson": "Die MCP-Konfigurationsdatei ist kein gültiges JSON.",
-      "importInvalid": "Die MCP-Konfigurationsdatei hat eine ungültige Struktur."
+      "importInvalid": "Die MCP-Konfigurationsdatei hat eine ungültige Struktur.",
+      "runtimeMissing": "Das Programm zum Starten dieses MCP-Servers wurde nicht gefunden. Bitte installieren Sie die benötigte Laufzeitumgebung (Node.js, Python usw.).",
+      "secretMissing": "Ein für diesen MCP-Server benötigtes Geheimnis (Schlüssel oder Token) ist nicht gespeichert. Bitte geben Sie es in den Einstellungen erneut ein.",
+      "invalidConfig": "Die MCP-Server-Konfiguration ist ungültig (prüfen Sie Befehl oder URL).",
+      "connectFailed": "Verbindung zum MCP-Server fehlgeschlagen.",
+      "connectTimeout": "Zeitüberschreitung beim Verbinden mit dem MCP-Server.",
+      "connectionClosed": "Die Verbindung zum MCP-Server wurde getrennt.",
+      "notConnected": "Der MCP-Server ist nicht verbunden.",
+      "toolNotFound": "Der MCP-Server hat dieses Werkzeug nicht, oder es ist deaktiviert.",
+      "toolFailed": "Das MCP-Werkzeug hat einen Fehler zurückgegeben.",
+      "callTimeout": "Zeitüberschreitung beim Aufruf des MCP-Werkzeugs.",
+      "callAborted": "Der Aufruf des MCP-Werkzeugs wurde abgebrochen.",
+      "callFailed": "Das MCP-Werkzeug konnte nicht aufgerufen werden.",
+      "promptFailed": "Der MCP-Prompt konnte nicht geladen werden.",
+      "insecureHttpSecret": "Geheimnisse können nicht an eine unverschlüsselte http-Adresse gesendet werden. Bitte verwenden Sie eine https-Adresse."
     },
     "skill": {
       "fileMissing": "Im Skill-Ordner fehlt die Datei SKILL.md.",

@@ -13,6 +13,7 @@ import {
   MCP_SNIPPET_KEYS,
   McpManagerError,
   McpServerManager,
+  defaultNeedsApproval,
   findExecutable,
   isAlive,
   redactSecrets,
@@ -261,5 +262,148 @@ describe('도우미', () => {
   it('findExecutable — PATH 에서 찾고 없으면 null', async () => {
     expect(await findExecutable('node', process.env.PATH ?? '', process.platform)).not.toBeNull();
     expect(await findExecutable('cmh-no-such-runtime-7f2c', process.env.PATH ?? '', process.platform)).toBeNull();
+  });
+});
+
+// ── 3차 검수 ─────────────────────────────────────────────
+
+/** 메모리 안 HTTP MCP 서버 — 도구 · 프롬프트를 마음대로 단다 */
+function httpServer(setup: (server: McpServer) => void) {
+  const handler = createMcpHandler(() => {
+    const server = new McpServer({ name: 'cmh-http-fixture-3', version: '1.0.0' });
+    setup(server);
+    return server;
+  });
+  const httpFetch = async (url: string | URL, init?: RequestInit): Promise<Response> => handler.fetch(new Request(url, init));
+  return { handler, httpFetch };
+}
+
+const httpRow = (over: Partial<McpServerRow> = {}): McpServerRow =>
+  row({ id: 'srv-http', code: 'remote', type: 'http', command: null, args: [], url: 'http://127.0.0.1:65531/mcp', envKeys: [], ...over });
+
+const textTool = (server: McpServer, name: string): void => {
+  server.registerTool(name, { description: name, inputSchema: z.object({ text: z.string() }) }, async ({ text }) => ({ content: [{ type: 'text', text }] }));
+};
+
+describe('3차 검수 차단 1 — needsApproval', () => {
+  it('listTools 는 cmh_ai_mcp_tool.needs_approval 값을 실어 준다', async () => {
+    const { handler, httpFetch } = httpServer((s) => {
+      for (const n of ['echo', 'save_draft', 'lookup', 'off_tool']) textTool(s, n);
+    });
+    const stored = [
+      { name: 'echo', needsApproval: true, active: true }, // 사람이 true 로 정함 — 이름 규칙(false)보다 이긴다
+      { name: 'save_draft', needsApproval: false, active: true }, // 사람이 false 로 정함 — 이름 규칙(true)보다 이긴다
+      { name: 'off_tool', needsApproval: false, active: false }, // 꺼 둔 도구는 목록에서 빠지고 부를 수 없다
+    ];
+    const knownToolRows = vi.fn(async (serverId: string) => (serverId === 'srv-http' ? stored : []));
+    const { m } = manager({}, { httpFetch, knownToolRows });
+    expect((await m.connect(httpRow())).status).toBe('connected');
+    const first = await m.listTools('remote');
+    expect(first.tools.map((t) => [t.name, t.needsApproval])).toEqual([
+      ['echo', true],
+      ['save_draft', false],
+      ['lookup', false],
+    ]);
+    expect(first.warnings.join('\n')).toContain('off_tool');
+    expect(knownToolRows).toHaveBeenCalledWith('srv-http');
+    // 캐시에서도 저장 행을 다시 합친다 — 사람이 바꾼 값이 바로 먹는다
+    stored[0] = { name: 'echo', needsApproval: false, active: true };
+    expect((await m.listTools('remote')).tools.find((t) => t.name === 'echo')?.needsApproval).toBe(false);
+    expect(await m.callTool('remote', 'off_tool', { text: 'x' })).toMatchObject({ ok: false, errorKey: MCP_SNIPPET_KEYS.toolNotFound });
+    // 저장 행을 못 읽으면 모두 승인 필요(막는 쪽)
+    knownToolRows.mockRejectedValueOnce(new Error('db down'));
+    expect((await m.listTools('remote')).tools.every((t) => t.needsApproval)).toBe(true);
+    await m.close('remote');
+    await handler.close();
+  }, 30_000);
+
+  it('처음 보는 쓰기 꼴 도구는 needsApproval true', async () => {
+    const names = ['save_draft', 'sendMessage', 'dal_update', 'createOrder', 'file_upload', 'publish_post', 'search', 'get_price', 'list_items'];
+    const { handler, httpFetch } = httpServer((s) => {
+      for (const n of names) textTool(s, n);
+    });
+    const { m } = manager({}, { httpFetch }); // knownToolRows 없음 = 저장 행 없음
+    await m.connect(httpRow());
+    const { tools } = await m.listTools('remote');
+    expect(Object.fromEntries(tools.map((t) => [t.name, t.needsApproval]))).toEqual({
+      save_draft: true,
+      sendMessage: true,
+      dal_update: true,
+      createOrder: true,
+      file_upload: true,
+      publish_post: true,
+      search: false,
+      get_price: false,
+      list_items: false,
+    });
+    for (const n of ['approve_request', 'remove_item', 'write_file', 'pay_invoice', 'submit_form', 'delete_row']) expect(defaultNeedsApproval(n), n).toBe(true);
+    await m.close('remote');
+    await handler.close();
+  }, 30_000);
+});
+
+describe('3차 검수 권고 — connect · close 경합', () => {
+  it('connect 는 close 중이면 close 가 끝나기를 기다린 뒤 새로 띄운다', async () => {
+    const { m } = manager();
+    const first = await m.connect(row());
+    const oldPid = first.pid as number;
+    const closing = m.close('echo');
+    const second = await m.connect(row());
+    expect(await closing).toEqual({ code: 'echo', exited: true });
+    expect(second.status).toBe('connected');
+    expect(second.pid).not.toBe(oldPid);
+    expect(isAlive(oldPid)).toBe(false);
+    expect(m.getState('echo')?.status).toBe('connected');
+    expect(await m.callTool('echo', 'echo', { text: 'again' })).toMatchObject({ ok: true, text: 'again' });
+  }, 30_000);
+
+  it('connect 도중 close 하면 connect 결과는 closed', async () => {
+    const { m } = manager();
+    const connecting = m.connect(row());
+    await new Promise((r) => setTimeout(r, 5));
+    const closed = await m.close('echo');
+    const state = await connecting;
+    expect(closed).toEqual({ code: 'echo', exited: true });
+    expect(state).toMatchObject({ status: 'closed', pid: null });
+    expect(m.getState('echo')?.status).toBe('closed');
+    expect(await m.callTool('echo', 'echo', { text: 'x' })).toMatchObject({ ok: false, errorKey: MCP_SNIPPET_KEYS.notConnected });
+  }, 30_000);
+});
+
+describe('3차 검수 권고 — 토큰 상한 · http 비밀 헤더 · 가리기', () => {
+  it('inputSchema JSON 이 8KB 를 넘는 도구는 건너뛰고 경고 · prompts 는 maxPrompts 까지', async () => {
+    const { handler, httpFetch } = httpServer((s) => {
+      textTool(s, 'small');
+      const shape: Record<string, z.ZodString> = {};
+      for (let i = 0; i < 200; i += 1) shape[`field_${i}`] = z.string().describe('x'.repeat(40));
+      s.registerTool('huge', { description: 'huge schema', inputSchema: z.object(shape) }, async () => ({ content: [{ type: 'text', text: 'h' }] }));
+      for (let i = 0; i < 3; i += 1) s.registerPrompt(`p${i}`, { description: `prompt ${i}` }, () => ({ messages: [{ role: 'user', content: { type: 'text', text: String(i) } }] }));
+    });
+    const { m, warn } = manager({}, { httpFetch, maxPrompts: 2 });
+    await m.connect(httpRow());
+    const { tools, warnings } = await m.listTools('remote');
+    expect(tools.map((t) => t.name)).toEqual(['small']);
+    expect(warnings.join('\n')).toMatch(/skipped tool "huge" — inputSchema larger than 8192 bytes/);
+    expect((await m.listPrompts('remote')).map((p) => p.name)).toEqual(['p0', 'p1']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('kept 2 prompts, dropped 1 (maxPrompts)'));
+    await m.close('remote');
+    await handler.close();
+  }, 30_000);
+
+  it('루프백이 아닌 http: 로 비밀 헤더를 보내야 하면 연결 거부(insecureHttpSecret) · 비밀값을 꺼내지 않는다', async () => {
+    const { m, resolveSecret } = manager({ 'X-Api-Key': TOKEN });
+    const state = await m.connect(httpRow({ url: 'http://mcp.example.com/mcp', envKeys: ['X-Api-Key'] }));
+    expect(state).toMatchObject({ status: 'error', errorKey: MCP_SNIPPET_KEYS.insecureHttpSecret });
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it('redactSecrets — encodeURIComponent · base64 · JSON 이스케이프 · Bearer 뗀 꼴도 가린다', () => {
+    const secret = 'p@ss/w0rd+SECRET=';
+    expect(redactSecrets(`token=${encodeURIComponent(secret)}`, [secret])).toBe('token=***');
+    expect(redactSecrets(`basic ${Buffer.from(secret).toString('base64')}`, [secret])).toBe('basic ***');
+    expect(redactSecrets(`u ${Buffer.from(secret).toString('base64url')}`, [secret])).toBe('u ***');
+    const quoted = 'ab"c\\dSECRETX';
+    expect(redactSecrets(JSON.stringify({ t: quoted }), [quoted])).toBe('{"t":"***"}');
+    expect(redactSecrets('invalid token sk-abc123', ['Bearer sk-abc123'])).toBe('invalid token ***');
   });
 });

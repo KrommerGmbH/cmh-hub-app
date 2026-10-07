@@ -45,7 +45,21 @@
     },
     "mcp": {
       "importInvalidJson": "The MCP configuration file is not valid JSON.",
-      "importInvalid": "The MCP configuration file has an invalid structure."
+      "importInvalid": "The MCP configuration file has an invalid structure.",
+      "runtimeMissing": "The program needed to run this MCP server was not found. Please install the required runtime (Node.js, Python, etc.).",
+      "secretMissing": "A secret (key or token) required by this MCP server is not stored. Please enter it again in Settings.",
+      "invalidConfig": "The MCP server configuration is invalid (check the command or URL).",
+      "connectFailed": "Could not connect to the MCP server.",
+      "connectTimeout": "Connecting to the MCP server timed out.",
+      "connectionClosed": "The connection to the MCP server was closed.",
+      "notConnected": "The MCP server is not connected.",
+      "toolNotFound": "The MCP server does not have this tool, or it is turned off.",
+      "toolFailed": "The MCP tool returned an error.",
+      "callTimeout": "The MCP tool call timed out.",
+      "callAborted": "The MCP tool call was cancelled.",
+      "callFailed": "Could not call the MCP tool.",
+      "promptFailed": "Could not load the MCP prompt.",
+      "insecureHttpSecret": "Secrets cannot be sent to an unencrypted http address. Please use an https address."
     },
     "skill": {
       "fileMissing": "The skill folder has no SKILL.md file.",

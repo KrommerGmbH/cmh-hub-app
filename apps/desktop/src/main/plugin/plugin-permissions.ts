@@ -2,7 +2,8 @@
 // electron 을 import 하지 않는 순수 모듈(vitest 로 시험한다).
 // 원칙 8(촘촘한 제어): 매니페스트 `permissions` 에 선언이 없으면 거부 · 승인 엔티티 쓰기는 선언이 있어도(매니페스트 검증을 우회해도) 늘 거부.
 
-import { WRITE_PROTECTED_ENTITIES, type PluginPermission } from './plugin-manifest.js';
+import { isWriteProtectedEntity } from '../settings/approval-entity.js';
+import type { PluginPermission } from './plugin-manifest.js';
 
 export type EntityOperation = 'read' | 'write';
 
@@ -15,7 +16,7 @@ export interface PermissionDecision {
 const ALLOW: PermissionDecision = Object.freeze({ allowed: true, reason: 'declared' });
 
 export function checkEntityAccess(permissions: readonly PluginPermission[], entity: string, operation: EntityOperation): PermissionDecision {
-  if (operation === 'write' && WRITE_PROTECTED_ENTITIES.includes(entity)) {
+  if (operation === 'write' && isWriteProtectedEntity(entity)) {
     return { allowed: false, reason: `writes to ${entity} are only allowed from the app UI` };
   }
   const granted = permissions.some((p) => p.kind === 'entity' && p.entity === entity && (operation === 'read' || p.access === 'crud'));

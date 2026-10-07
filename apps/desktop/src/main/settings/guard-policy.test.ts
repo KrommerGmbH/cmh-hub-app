@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   APPROVAL_ENTITY_PATTERN,
+  DAL_WRITE_WITHOUT_TARGET_PATTERN,
   credentialAccessFor,
   evaluateGuard,
   isReadActionName,
@@ -68,7 +69,8 @@ describe('evaluateGuard (R7-a 표)', () => {
     ['browser:click', true, result('ask', null)],
     ['market:coupang:delete', true, result('ask', null, true)],
   ])('%s (known=%s)', (tool, known, expected) => {
-    expect(evaluateGuard(base, { tool, known })).toEqual(expected);
+    // 범용 DAL 쓰기는 target 이 없으면 내장 deny(3차 검수 차단 4) — 이 표는 글롭 차례를 보므로 평범한 엔티티 target 을 준다
+    expect(evaluateGuard(base, { tool, known, target: { entity: 'product' } })).toEqual(expected);
   });
 
   it('규칙 차례와 상관없이 deny 가 이긴다', () => {
@@ -338,5 +340,32 @@ describe('권고 — 글롭 지수 시간 · deny 마디 수 우회 · mcpToolNa
   it('정책 글롭에 도구 이름에 올 수 없는 글자가 있으면 예외', () => {
     expect(() => parseGuardPolicy({ defaultMode: 'guard', tools: { 'entity:cmh＿ai:*': 'deny' } })).toThrow(/invalid character/);
     expect(() => parseGuardPolicy({ defaultMode: 'guard', tools: { 'a​:*': 'deny' } })).toThrow(/invalid character/);
+  });
+});
+
+describe('3차 검수 차단 4 — target 없는 범용 DAL 쓰기', () => {
+  const open = policy({ '**': 'allow' }, 'full');
+
+  it('guard: target 없는 dal_update·dal_create·dal_delete 는 deny', () => {
+    for (const action of ['dal_update', 'dal_create', 'dal_delete', 'dal_upsert', 'dal_sync', 'DAL-UPDATE']) {
+      expect(evaluateGuard(open, { tool: `mcp:cmh-shop-api-mcp:${action}`, known: true }), action).toEqual(result('deny', DAL_WRITE_WITHOUT_TARGET_PATTERN));
+    }
+    // 읽기 꼴 dal_ 은 target 이 없어도 정책대로 · target 이 있으면 지금까지처럼 엔티티로 판정
+    expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_search', known: true })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_update', known: true, target: { entity: 'product' } })).toEqual(result('allow', '**'));
+    // dal_ 이 아닌 도구는 이 규칙과 상관없다
+    expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:update_price', known: true })).toEqual(result('allow', '**'));
+  });
+
+  it('listing:true(모델에게 보일지 정하는 평가)는 target 없는 dal_ 쓰기도 정책대로 — 승인 엔티티 이름은 그래도 deny', () => {
+    expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_update', known: true, listing: true })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(open, { tool: 'mcp:x:cmh_ai_approval:dal_update', known: true, listing: true })).toEqual(result('deny', APPROVAL_ENTITY_PATTERN));
+  });
+
+  it('camelCase · 구분 없는 승인 엔티티 이름(cmhAiApproval · cmhaiapproval)도 승인 엔티티로 본다', () => {
+    for (const entity of ['cmhAiApproval', 'CmhAiApproval', 'cmhaiapproval', 'cmh.ai.approval']) {
+      expect(evaluateGuard(open, { tool: 'mcp:cmh-shop-api-mcp:dal_update', known: true, target: { entity } }), entity).toEqual(result('deny', APPROVAL_ENTITY_PATTERN));
+    }
+    expect(evaluateGuard(open, { tool: 'mcp:x:cmhAiApproval:update', known: true })).toEqual(result('deny', APPROVAL_ENTITY_PATTERN));
   });
 });

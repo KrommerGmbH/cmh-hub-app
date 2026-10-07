@@ -208,16 +208,17 @@ describe('검수 차단 4 — 비밀값 평문(url · args · command · 오류 
     expect(dump).not.toContain('SECRET9');
   });
 
-  it('args — 비밀 이름 플래그(--api-key · --token · --password …) 다음 값 · --x=값 · -x=값 의 값은 버리고 secretRef(args)', () => {
+  // 3차 검수 권고로 `--x=값` 은 비밀 이름 플래그일 때만 값을 버린다 — 전에 쓰던 `-p=SECRET10` 은 `--secret=SECRET10` 으로 바꿨다
+  it('args — 비밀 이름 플래그(--api-key · --token · --password …) 다음 값 · 비밀 이름 --x=값 · -x=값 의 값은 버리고 secretRef(args)', () => {
     const { server, warnings, dump } = one({
       command: 'npx',
-      args: ['-y', 'pkg', '--api-key', 'sk-live-SECRET1', '--token=SECRET2', '-p=SECRET10', '--Bearer', 'SECRET11', '--port', '8080', '--auth-token', '${env:AUTH}'],
+      args: ['-y', 'pkg', '--api-key', 'sk-live-SECRET1', '--token=SECRET2', '--secret=SECRET10', '--Bearer', 'SECRET11', '--port', '8080', '--auth-token', '${env:AUTH}'],
     });
-    expect(server.args).toEqual(['-y', 'pkg', '--api-key', '', '--token=', '-p=', '--Bearer', '', '--port', '8080', '--auth-token', '${env:AUTH}']);
+    expect(server.args).toEqual(['-y', 'pkg', '--api-key', '', '--token=', '--secret=', '--Bearer', '', '--port', '8080', '--auth-token', '${env:AUTH}']);
     expect(server.secretRefs).toEqual([
       { field: 'args', name: '--api-key', placeholder: '', syntax: 'literal' },
       { field: 'args', name: '--token', placeholder: '', syntax: 'literal' },
-      { field: 'args', name: '-p', placeholder: '', syntax: 'literal' },
+      { field: 'args', name: '--secret', placeholder: '', syntax: 'literal' },
       { field: 'args', name: '--Bearer', placeholder: '', syntax: 'literal' },
       { field: 'args', name: '--auth-token', placeholder: 'AUTH', syntax: 'env' },
     ]);
@@ -233,7 +234,9 @@ describe('검수 차단 4 — 비밀값 평문(url · args · command · 오류 
 
   it('command 의 NAME=값 env 접두는 값 버리고 경고 · 이름은 envKeys 로', () => {
     const { server, warnings, dump } = one({ command: 'API_KEY=SECRET5 OTHER="a b SECRET13" node server.js' });
-    expect(server.command).toBe('node server.js');
+    // 3차 검수 차단 3 — 공백 든 command 는 첫 낱말만 command · 나머지는 args
+    expect(server.command).toBe('node');
+    expect(server.args).toEqual(['server.js']);
     expect(server.envKeys).toEqual(['API_KEY', 'OTHER']);
     expect(server.secretRefs).toEqual([
       { field: 'command', name: 'API_KEY', placeholder: '', syntax: 'literal' },
@@ -336,5 +339,68 @@ describe('검수 차단 5 — 서버 키(code) 검사 · 권고(별칭 · scheme
     expect(JSON.stringify(r)).not.toContain('SECRET6');
     expect(classifyValue('${userHome}')).toEqual([]);
     expect(classifyValue('${config:editor.tabSize}')).toEqual([]);
+  });
+});
+
+describe('3차 검수 차단 3 — 가져오기 비밀값 평문 7종', () => {
+  it('mcp import: --header·-H 값, args 주소 쿼리, command 안 플래그 값, 토큰 꼴 위치 인자는 결과에 없다', () => {
+    const ghToken = 'Zx9QwErTy7UiOp3AsDfGh5JkLm';
+    const r = parseMcpConfig(JSON.stringify({
+      mcpServers: {
+        header: { command: 'npx', args: ['mcp-remote', 'https://h.example/mcp', '--header', 'Authorization: Bearer SECRET1', '--header=X-Team:SECRET8'] },
+        dash: { command: 'npx', args: ['x', '-H', 'X-Api-Key: SECRET2', '-h'] },
+        inline: { command: 'npx -y pkg --api-key SECRET3 "C:/My Tools/run.js"' },
+        dbq: { command: 'npx', args: ['server-postgres', 'postgresql://h/db?password=SECRET4&sslmode=require#frag'] },
+        path: { url: `https://mcp.zapier.com/api/mcp/s/${ghToken}/mcp` },
+        pat: { command: 'gh-mcp', args: ['--pat', 'ghp_SECRET6', '--githubPat', 'SECRET16', '--cookie', 'SECRET17', '--credential', 'SECRET18', '--session', 'SECRET19'] },
+        pos: { command: 'npx', args: ['slack-mcp', 'xoxb-SECRET7', 'AKIASECRET20', 'sk-SECRET21', ghToken] },
+        keep: { command: 'npx', args: ['-H', 'X-Api-Key: ${env:API_KEY}', '--path', '/home/me/docs', 'GITHUB_PERSONAL_ACCESS_TOKEN'] },
+      },
+    }));
+    const dump = JSON.stringify(r);
+    for (let n = 1; n <= 21; n += 1) {
+      if (n === 5 || n === 9 || (n >= 10 && n <= 15)) continue;
+      expect(dump, `SECRET${n}`).not.toContain(`SECRET${n}`);
+    }
+    expect(dump).not.toContain(ghToken);
+    const by = (code: string): ImportedMcpServer => {
+      const s = r.servers.find((x) => x.code === code);
+      if (!s) throw new Error(code);
+      return s;
+    };
+    // 헤더 이름은 남고 값만 빠진다
+    expect(by('header').args).toEqual(['mcp-remote', 'https://h.example/mcp', '--header', 'Authorization:', '--header=X-Team:']);
+    expect(by('header').secretRefs).toEqual([
+      { field: 'args', name: '--header Authorization', placeholder: '', syntax: 'literal' },
+      { field: 'args', name: '--header X-Team', placeholder: '', syntax: 'literal' },
+    ]);
+    expect(by('dash').args).toEqual(['x', '-H', 'X-Api-Key:', '-h']);
+    // command 는 첫 낱말만 · 나머지는 args 로 옮겨 같은 규칙(따옴표 낱말은 하나로)
+    expect(by('inline')).toMatchObject({ command: 'npx', args: ['-y', 'pkg', '--api-key', '', 'C:/My Tools/run.js'] });
+    // args 주소 — 쿼리 · fragment 를 떼고 키 이름만 secretRef
+    expect(by('dbq').args).toEqual(['server-postgres', 'postgresql://h/db']);
+    expect(by('dbq').secretRefs).toEqual([
+      { field: 'args', name: 'args[1] query:password', placeholder: '', syntax: 'literal' },
+      { field: 'args', name: 'args[1] query:sslmode', placeholder: '', syntax: 'literal' },
+    ]);
+    // url 경로 마디 토큰은 빈 마디로 · 검토 필요 경고
+    expect(by('path').url).toBe('https://mcp.zapier.com/api/mcp/s//mcp');
+    expect(by('path').secretRefs).toEqual([{ field: 'url', name: 'path[4]', placeholder: '', syntax: 'literal' }]);
+    expect(r.warnings).toContain('Server "path": url path segment 4 looks like a token — removed, review needed');
+    expect(by('pat').args).toEqual(['--pat', '', '--githubPat', '', '--cookie', '', '--credential', '', '--session', '']);
+    expect(by('pos').args).toEqual(['slack-mcp', '', '', '', '']);
+    expect(r.warnings.filter((w) => w.startsWith('Server "pos":') && w.includes('looks like a token — value dropped, review needed'))).toHaveLength(4);
+    // 자리표만인 헤더 값 · `--path`(pat 낱말 아님) · 숫자 없는 대문자 env 이름은 남는다
+    expect(by('keep').args).toEqual(['-H', 'X-Api-Key: ${env:API_KEY}', '--path', '/home/me/docs', 'GITHUB_PERSONAL_ACCESS_TOKEN']);
+    expect(by('keep').secretRefs).toEqual([{ field: 'args', name: '-H X-Api-Key', placeholder: 'API_KEY', syntax: 'env' }]);
+  });
+
+  it('mcp import: --port=8080 같은 비밀 아닌 플래그 값은 남는다', () => {
+    const { server, warnings } = one({
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-filesystem', '--port=8080', '--root=/home/me/docs', '--transport=stdio', '--api-key=SECRET1', '--url=https://h.example/x?token=SECRET2'],
+    });
+    expect(server.args).toEqual(['-y', '@modelcontextprotocol/server-filesystem', '--port=8080', '--root=/home/me/docs', '--transport=stdio', '--api-key=', '--url=https://h.example/x']);
+    expect(warnings.some((w) => w.includes('--port') || w.includes('--root') || w.includes('--transport'))).toBe(false);
   });
 });

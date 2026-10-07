@@ -3,6 +3,7 @@
 // API 는 `node_modules/@modelcontextprotocol/client` 2.3.1 의 d.ts 를 읽고 썼다(`Client` · `StreamableHTTPClientTransport` · `/stdio` 의 `StdioClientTransport` · `getDefaultEnvironment`).
 // 🔴 비밀값(env 값 · http 헤더 값)은 `resolveSecret` 로 연결할 때만 꺼내 메모리에만 둔다 — 로그 · 예외 · errorMessage · 도구 결과 글에서 값은 `***` 로 가린다.
 // 🔴 Guard(allow/ask/deny)와 승인 관문은 여기서 부르지 않는다 — 도구 호출 앞단(RA `AgentRunner` · R7 Guard)의 몫이다. 이 모듈은 «켠 서버만 띄운다» 와 «받아들인 도구만 부른다» 까지만 지킨다.
+//    다만 도구 행의 `needsApproval`(= `cmh_ai_mcp_tool.needs_approval`)은 여기서 채운다 — 저장된 행(사람이 정한 값)이 이기고 처음 보는 도구는 이름 규칙(3차 검수 차단 1).
 // 행 꼴은 서버 `cmh_ai_mcp_server` · `cmh_ai_mcp_tool` 칸 이름(camelCase)과 맞춘다(research/05). `mcp-config-import.ts` 와는 일부러 묶지 않았다(입력 꼴을 여기서 따로 정의).
 import { constants as fsConstants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
@@ -59,9 +60,21 @@ export interface McpToolRow {
   description: string | null;
   /** 도구 `inputSchema`(JSON Schema) 그대로 */
   parameters: Record<string, unknown>;
+  /** 저장 행이 active=false 인 도구는 목록에서 빠지므로 늘 true */
   active: true;
-  needsApproval: false;
+  /** = `cmh_ai_mcp_tool.needs_approval`. 저장 행 값이 이기고 · 없으면 이름 규칙(defaultNeedsApproval) */
+  needsApproval: boolean;
 }
+
+/** 저장된 `cmh_ai_mcp_tool` 행 중 매니저가 보는 칸(R1 Repository 가 채워 준다) */
+export interface McpKnownToolRow {
+  name: string;
+  needsApproval: boolean;
+  active: boolean;
+}
+
+/** 서버 id 로 저장된 도구 행을 돌려준다 — 없으면 빈 목록 */
+export type KnownToolRows = (serverId: string) => Promise<McpKnownToolRow[]>;
 
 export interface McpToolList {
   tools: McpToolRow[];
@@ -119,12 +132,18 @@ export interface McpServerManagerOptions {
   maxTools?: number;
   /** 토큰 상한 — 도구 설명 글자 수 */
   maxDescriptionChars?: number;
+  /** 토큰 상한 — 도구 `inputSchema` JSON 크기(UTF-8 바이트) · 넘으면 그 도구를 건너뛴다 */
+  maxSchemaBytes?: number;
+  /** 토큰 상한 — 한 서버에서 받아들일 프롬프트 수 */
+  maxPrompts?: number;
   /** 도구 결과 · 프롬프트 메시지 글 크기 상한(UTF-8 바이트) */
   maxResultBytes?: number;
   /** close 뒤 자식 pid 가 사라지기를 기다리는 시간 · 넘으면 SIGKILL */
   closeTimeoutMs?: number;
   /** http 전송의 fetch(시험 · Electron `net.fetch` 바꿔 끼우기용) */
   httpFetch?: FetchLike;
+  /** 저장된 `cmh_ai_mcp_tool` 행(needs_approval · active) — 없으면 빈 목록으로 보고 이름 규칙만 쓴다 */
+  knownToolRows?: KnownToolRows;
   logger?: { warn: (message: string) => void };
 }
 
@@ -133,6 +152,8 @@ export const MCP_DEFAULTS = {
   callTimeoutMs: 60_000,
   maxTools: 64,
   maxDescriptionChars: 1000,
+  maxSchemaBytes: 8 * 1024,
+  maxPrompts: 64,
   maxResultBytes: 64 * 1024,
   closeTimeoutMs: 5_000,
 } as const;
@@ -155,7 +176,19 @@ export const MCP_SNIPPET_KEYS = {
   callAborted: 'cmh-hub-app.mcp.callAborted',
   callFailed: 'cmh-hub-app.mcp.callFailed',
   promptFailed: 'cmh-hub-app.mcp.promptFailed',
+  insecureHttpSecret: 'cmh-hub-app.mcp.insecureHttpSecret',
 } as const;
+
+/**
+ * 【AI 임시 결정】 저장 행이 없는 처음 보는 도구의 needsApproval 기본값 — 이름에 쓰기 꼴 낱말이 들어 있으면 true.
+ * 낱말 경계를 보지 않는 «들어 있으면» 이라 `display`(pay) · `postgres_query`(post) 처럼 읽기 도구도 true 가 될 수 있다 — 막는 쪽으로 틀린다.
+ * 사람이 `cmh_ai_mcp_tool.needs_approval` 을 정하면 그 값이 이긴다.
+ */
+export const WRITE_LIKE_TOOL_NAME = /save|send|delete|update|upload|submit|create|write|remove|publish|post|order|pay|approve/i;
+
+export function defaultNeedsApproval(toolName: string): boolean {
+  return WRITE_LIKE_TOOL_NAME.test(toolName);
+}
 
 /** 흔한 런타임 — 없으면 «설치 안내» 를 보일 대상(설명용 · 확인은 모든 command 에 한다) */
 export const KNOWN_RUNTIMES = ['node', 'npx', 'npm', 'pnpm', 'uv', 'uvx', 'python', 'python3', 'py', 'deno', 'bun', 'docker'] as const;
@@ -186,11 +219,14 @@ interface Entry {
   tools: McpToolRow[] | null;
   pending: Promise<McpServerState> | null;
   closing: boolean;
+  /** close 진행 중이면 그 결과 — 같은 때 들어온 connect · close 가 기다린다 */
+  closePromise: Promise<McpCloseResult> | null;
 }
 
 export class McpServerManager {
   private readonly entries = new Map<string, Entry>();
-  private readonly opts: Required<Omit<McpServerManagerOptions, 'httpFetch'>> & Pick<McpServerManagerOptions, 'httpFetch'>;
+  private readonly opts: Required<Omit<McpServerManagerOptions, 'httpFetch' | 'knownToolRows'>> & Pick<McpServerManagerOptions, 'httpFetch'>;
+  private readonly knownToolRows: KnownToolRows;
 
   constructor(options: McpServerManagerOptions) {
     this.opts = {
@@ -200,11 +236,14 @@ export class McpServerManager {
       callTimeoutMs: options.callTimeoutMs ?? MCP_DEFAULTS.callTimeoutMs,
       maxTools: options.maxTools ?? MCP_DEFAULTS.maxTools,
       maxDescriptionChars: options.maxDescriptionChars ?? MCP_DEFAULTS.maxDescriptionChars,
+      maxSchemaBytes: options.maxSchemaBytes ?? MCP_DEFAULTS.maxSchemaBytes,
+      maxPrompts: options.maxPrompts ?? MCP_DEFAULTS.maxPrompts,
       maxResultBytes: options.maxResultBytes ?? MCP_DEFAULTS.maxResultBytes,
       closeTimeoutMs: options.closeTimeoutMs ?? MCP_DEFAULTS.closeTimeoutMs,
       logger: options.logger ?? { warn: (m) => console.warn(m) },
       ...(options.httpFetch ? { httpFetch: options.httpFetch } : {}),
     };
+    this.knownToolRows = options.knownToolRows ?? (async () => []);
   }
 
   getState(code: string): McpServerState | null {
@@ -216,9 +255,16 @@ export class McpServerManager {
     return [...this.entries.values()].map((e) => ({ ...e.state }));
   }
 
-  /** `active` 인 행만 띄운다(PLAN R3 §9 «사용자가 켠 것만») · 이미 붙었거나 붙는 중이면 그 결과를 돌려준다 */
+  /**
+   * `active` 인 행만 띄운다(PLAN R3 §9 «사용자가 켠 것만») · 이미 붙었거나 붙는 중이면 그 결과를 돌려준다.
+   * close 가 진행 중이면 그 close 가 끝나기를 기다린 뒤 새로 띄운다(닫히는 연결을 «connected» 로 돌려주지 않게 — 3차 검수).
+   */
   async connect(row: McpServerRow): Promise<McpServerState> {
-    const existing = this.entries.get(row.code);
+    let existing = this.entries.get(row.code);
+    while (existing?.closePromise) {
+      await existing.closePromise;
+      existing = this.entries.get(row.code);
+    }
     if (!row.active) {
       if (existing && (existing.state.status === 'connected' || existing.state.status === 'connecting')) await this.close(row.code);
       const entry = this.newEntry(row);
@@ -237,11 +283,14 @@ export class McpServerManager {
     return entry.pending;
   }
 
-  /** `tools/list` → `cmh_ai_mcp_tool` 꼴로 캐시. `:` 든 이름 · 64자 넘는 이름은 건너뛴다 · maxTools · maxDescriptionChars 로 자른다 */
+  /**
+   * `tools/list` → `cmh_ai_mcp_tool` 꼴로 캐시. `:` 든 이름 · 64자 넘는 이름 · inputSchema 가 maxSchemaBytes 를 넘는 도구는 건너뛴다 · maxTools · maxDescriptionChars 로 자른다.
+   * needsApproval · active 는 부를 때마다 저장 행(knownToolRows)과 다시 합친다 — 사람이 바꾼 값이 캐시 때문에 늦게 먹지 않게.
+   */
   async listTools(code: string, opts: { refresh?: boolean } = {}): Promise<McpToolList> {
     const entry = this.requireConnected(code);
     const client = entry.client as Client;
-    if (entry.tools && !opts.refresh) return { tools: entry.tools.map((t) => ({ ...t })), warnings: [] };
+    if (entry.tools && !opts.refresh) return { tools: await this.mergeKnownRows(entry, entry.tools, null), warnings: [] };
 
     let listed;
     try {
@@ -264,6 +313,11 @@ export class McpServerManager {
         warnings.push(`${code}: skipped tool "${tool.name.slice(0, 80)}" — name must be 1..${MCP_TOOL_NAME_MAX} chars (cmh_ai_mcp_tool.name)`);
         continue;
       }
+      // 토큰 상한 — 큰 스키마 하나가 모델 문맥을 다 먹지 않게(3차 검수 권고)
+      if (Buffer.byteLength(JSON.stringify(tool.inputSchema ?? {}), 'utf8') > this.opts.maxSchemaBytes) {
+        warnings.push(`${code}: skipped tool "${tool.name}" — inputSchema larger than ${this.opts.maxSchemaBytes} bytes (maxSchemaBytes)`);
+        continue;
+      }
       if (tools.length >= this.opts.maxTools) {
         overflow++;
         continue;
@@ -280,7 +334,7 @@ export class McpServerManager {
         description,
         parameters: { ...(tool.inputSchema as Record<string, unknown>) },
         active: true,
-        needsApproval: false,
+        needsApproval: defaultNeedsApproval(tool.name),
       });
     }
     if (overflow > 0) warnings.push(`${code}: kept ${this.opts.maxTools} tools, dropped ${overflow} (maxTools)`);
@@ -288,7 +342,8 @@ export class McpServerManager {
     for (const w of warnings) this.opts.logger.warn(`[mcp] ${w}`);
 
     entry.tools = tools;
-    return { tools: tools.map((t) => ({ ...t })), warnings };
+    const merged = await this.mergeKnownRows(entry, tools, warnings);
+    return { tools: merged, warnings };
   }
 
   /**
@@ -301,7 +356,8 @@ export class McpServerManager {
       return { ok: false, error: `${code}: server is not connected`, errorKey: MCP_SNIPPET_KEYS.notConnected, truncated: false };
     }
     try {
-      const tools = entry.tools ?? (await this.listTools(code)).tools;
+      // 저장 행이 active=false 로 바뀐 도구도 막도록 늘 listTools(캐시 + 저장 행 합치기)를 거친다
+      const tools = (await this.listTools(code)).tools;
       if (!tools.some((t) => t.name === toolName)) {
         return { ok: false, error: `${code}: unknown or skipped tool "${toolName}"`, errorKey: MCP_SNIPPET_KEYS.toolNotFound, truncated: false };
       }
@@ -333,7 +389,10 @@ export class McpServerManager {
   async listPrompts(code: string): Promise<McpPromptRow[]> {
     const entry = this.requireConnected(code);
     try {
-      const { prompts } = await (entry.client as Client).listPrompts(undefined, { timeout: this.opts.callTimeoutMs });
+      const { prompts: all } = await (entry.client as Client).listPrompts(undefined, { timeout: this.opts.callTimeoutMs });
+      // 토큰 상한(3차 검수 권고) — 챗 `/` 목록이 끝없이 늘지 않게
+      const prompts = all.slice(0, this.opts.maxPrompts);
+      if (all.length > prompts.length) this.opts.logger.warn(`[mcp] ${code}: kept ${prompts.length} prompts, dropped ${all.length - prompts.length} (maxPrompts)`);
       return prompts.map((p) => ({
         serverId: entry.row.id,
         code,
@@ -364,18 +423,21 @@ export class McpServerManager {
     }
   }
 
-  /** 연결을 닫고 stdio 자식 pid 가 사라질 때까지 기다린다(넘으면 SIGKILL) */
+  /**
+   * 연결을 닫고 stdio 자식 pid 가 사라질 때까지 기다린다(넘으면 SIGKILL).
+   * 붙는 중이면 그 connect 가 끝나기를 기다린다 — 그 connect 결과는 `closed`. 이미 닫는 중이면 같은 결과를 돌려준다.
+   */
   async close(code: string): Promise<McpCloseResult> {
     const entry = this.entries.get(code);
     if (!entry) return { code, exited: true };
+    if (entry.closePromise) return entry.closePromise;
     entry.closing = true;
-    if (entry.pending) await entry.pending.catch(() => undefined);
-    const exited = await this.teardown(entry);
-    entry.state = { ...entry.state, status: 'closed', pid: null };
-    entry.tools = null;
-    entry.secrets = [];
-    entry.closing = false;
-    return { code, exited };
+    const closing: Promise<McpCloseResult> = this.doClose(entry, code).finally(() => {
+      if (entry.closePromise === closing) entry.closePromise = null;
+      entry.closing = false;
+    });
+    entry.closePromise = closing;
+    return closing;
   }
 
   /** 앱 종료 때 부른다(main `before-quit`) */
@@ -384,6 +446,48 @@ export class McpServerManager {
   }
 
   // ── 안쪽 ───────────────────────────────────────────────
+
+  private async doClose(entry: Entry, code: string): Promise<McpCloseResult> {
+    if (entry.pending) await entry.pending.catch(() => undefined);
+    const exited = await this.teardown(entry);
+    entry.state = { ...entry.state, status: 'closed', pid: null };
+    entry.tools = null;
+    entry.secrets = [];
+    return { code, exited };
+  }
+
+  /**
+   * 서버가 준 도구 + 저장된 `cmh_ai_mcp_tool` 행. 저장 행이 있으면 그 needsApproval 이 이기고 · active=false 면 목록에서 뺀다.
+   * 저장 행을 못 읽으면 【AI 임시 결정】 모든 도구를 needsApproval true 로(사람이 정한 true 를 잃지 않게 막는 쪽).
+   * warnings 가 null 이면(캐시에서 부름) 경고를 쌓지 않는다.
+   */
+  private async mergeKnownRows(entry: Entry, tools: readonly McpToolRow[], warnings: string[] | null): Promise<McpToolRow[]> {
+    let known: McpKnownToolRow[];
+    try {
+      known = await this.knownToolRows(entry.row.id);
+    } catch (e) {
+      this.opts.logger.warn(`[mcp] ${entry.row.code}: stored tool rows unavailable — every tool needs approval: ${this.redact(entry, errorText(e))}`);
+      return tools.map((t) => ({ ...t, needsApproval: true }));
+    }
+    const byName = new Map<string, McpKnownToolRow>();
+    for (const k of known) byName.set(k.name, k);
+    const out: McpToolRow[] = [];
+    const inactive: string[] = [];
+    for (const t of tools) {
+      const k = byName.get(t.name);
+      if (k && !k.active) {
+        inactive.push(t.name);
+        continue;
+      }
+      out.push({ ...t, needsApproval: k ? k.needsApproval : t.needsApproval });
+    }
+    if (warnings && inactive.length > 0) {
+      const w = `${entry.row.code}: skipped ${inactive.length} tools turned off in cmh_ai_mcp_tool (active=false): ${inactive.join(', ')}`;
+      warnings.push(w);
+      this.opts.logger.warn(`[mcp] ${w}`);
+    }
+    return out;
+  }
 
   private newEntry(row: McpServerRow): Entry {
     return {
@@ -397,6 +501,7 @@ export class McpServerManager {
       tools: null,
       pending: null,
       closing: false,
+      closePromise: null,
     };
   }
 
@@ -411,7 +516,14 @@ export class McpServerManager {
   private async doConnect(entry: Entry): Promise<McpServerState> {
     const row = entry.row;
     const fail = (errorKey: string, message: string): McpServerState => {
+      // 붙는 도중 close 가 들어왔으면 결과는 closed(close 가 이긴다)
+      if (entry.closing) return closed();
       entry.state = { ...entry.state, status: 'error', errorKey, errorMessage: this.redact(entry, message), pid: null };
+      entry.secrets = [];
+      return { ...entry.state };
+    };
+    const closed = (): McpServerState => {
+      entry.state = { ...entry.state, status: 'closed', errorKey: null, errorMessage: null, pid: null };
       entry.secrets = [];
       return { ...entry.state };
     };
@@ -424,8 +536,10 @@ export class McpServerManager {
         // 런타임 확인(합의안 S6) — 비밀값을 꺼내기 전에 싼 것부터
         const found = await findExecutable(row.command, baseEnv.PATH ?? '', process.platform, baseEnv.PATHEXT ?? process.env.PATHEXT);
         if (!found) return fail(MCP_SNIPPET_KEYS.runtimeMissing, `${row.code}: command not found on PATH: ${row.command}`);
+        if (entry.closing) return closed();
         const secrets = await this.resolveAll(entry);
         if ('missing' in secrets) return fail(MCP_SNIPPET_KEYS.secretMissing, `${row.code}: secret not available: ${secrets.missing}`);
+        if (entry.closing) return closed();
         // 부모 env 전체를 넘기지 않는다 — SDK 기본 목록(HOME · PATH 등) + envKeys 만
         const stdio = new StdioClientTransport({
           command: row.command,
@@ -453,11 +567,13 @@ export class McpServerManager {
         } catch {
           return fail(MCP_SNIPPET_KEYS.invalidConfig, `${row.code}: invalid url`);
         }
+        // 루프백이 아닌 곳으로 비밀 헤더를 평문(http:)으로 보내지 않는다 — 비밀값을 꺼내기 전에 거부(3차 검수 권고)
+        if (url.protocol !== 'https:' && !isLoopback(url.hostname) && entry.row.envKeys.length > 0) {
+          return fail(MCP_SNIPPET_KEYS.insecureHttpSecret, `${row.code}: refusing to send secret headers over ${url.protocol} to a non-loopback host`);
+        }
         const secrets = await this.resolveAll(entry);
         if ('missing' in secrets) return fail(MCP_SNIPPET_KEYS.secretMissing, `${row.code}: secret not available: ${secrets.missing}`);
-        if (url.protocol !== 'https:' && !isLoopback(url.hostname) && entry.row.envKeys.length > 0) {
-          this.opts.logger.warn(`[mcp] ${row.code}: sending secret headers over ${url.protocol} to a non-loopback host`);
-        }
+        if (entry.closing) return closed();
         const httpOpts: StreamableHTTPClientTransportOptions = { requestInit: { headers: { ...secrets.values } } };
         if (this.opts.httpFetch) httpOpts.fetch = this.opts.httpFetch;
         transport = new StreamableHTTPClientTransport(url, httpOpts);
@@ -487,8 +603,9 @@ export class McpServerManager {
       );
     }
     if (entry.closing) {
+      // connect 도중 close — 띄운 것을 걷고 결과는 closed(3차 검수: 전에는 'connecting' 을 돌려줬다)
       await this.teardown(entry);
-      return { ...entry.state };
+      return closed();
     }
     entry.state = {
       ...entry.state,
@@ -572,13 +689,32 @@ export class McpServerManager {
 
 // ── 순수 도우미(시험에서 직접 부른다) ──────────────────────
 
-/** 비밀값을 `***` 로(긴 값부터 — 짧은 값이 긴 값의 일부일 때) */
+/**
+ * 비밀값을 `***` 로(긴 값부터 — 짧은 값이 긴 값의 일부일 때).
+ * 값마다 서버 · 오류 글에 흔히 되비치는 꼴도 가린다(3차 검수 권고): `encodeURIComponent` · base64(덧붙임 `=` 있고 없고) · base64url ·
+ * JSON 이스케이프(`"` · `\\` · 제어문자) · 앞의 `Bearer ` 를 뗀 값(그 값의 꼴들도).
+ */
 export function redactSecrets(text: string, secrets: readonly string[]): string {
+  const variants = new Set<string>();
+  for (const s of secrets) for (const v of secretVariants(s)) variants.add(v);
   let out = text;
-  for (const s of [...secrets].filter((v) => v.length > 0).sort((a, b) => b.length - a.length)) {
+  for (const s of [...variants].sort((a, b) => b.length - a.length)) {
     out = out.split(s).join(SECRET_MASK);
   }
   return out;
+}
+
+function secretVariants(secret: string): string[] {
+  const bases = [secret];
+  const bearer = /^bearer\s+/i.exec(secret);
+  if (bearer) bases.push(secret.slice(bearer[0].length));
+  const out: string[] = [];
+  for (const b of bases) {
+    if (b.length === 0) continue;
+    const b64 = Buffer.from(b, 'utf8').toString('base64');
+    out.push(b, encodeURIComponent(b), b64, b64.replace(/=+$/, ''), Buffer.from(b, 'utf8').toString('base64url'), JSON.stringify(b).slice(1, -1));
+  }
+  return out.filter((v) => v.length > 0);
 }
 
 /** UTF-8 바이트 상한으로 자르고 끝에 표시를 붙인다 */
@@ -663,7 +799,7 @@ export function isAlive(pid: number): boolean {
 }
 
 function isLoopback(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+  return hostname === 'localhost' || /^127(\.\d{1,3}){3}$/.test(hostname) || hostname === '[::1]' || hostname === '::1';
 }
 
 function errorText(e: unknown): string {

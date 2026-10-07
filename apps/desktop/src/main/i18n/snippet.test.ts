@@ -13,6 +13,7 @@ import {
   type SnippetMissing,
 } from './snippet.js';
 import { MCP_IMPORT_SNIPPET } from '../mcp/mcp-config-import.js';
+import { MCP_SNIPPET_KEYS } from '../mcp/mcp-server-manager.js';
 import { PROMPT_ERROR, PROMPT_RENDER_SNIPPET } from '../prompts/prompt-file.js';
 import { SKILL_ERROR, SKILL_WARNING } from '../skills/skill-manifest.js';
 
@@ -73,6 +74,7 @@ describe('셸 스니펫 세 장 (R8)', () => {
 describe('검수 차단 6 — 코드가 쓰는 스니펫 키가 세 장에 다 있다', () => {
   const groups: Record<string, Readonly<Record<string, string>>> = {
     MCP_IMPORT_SNIPPET,
+    MCP_SNIPPET_KEYS,
     SKILL_ERROR,
     SKILL_WARNING,
     PROMPT_ERROR,

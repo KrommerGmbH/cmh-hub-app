@@ -8,6 +8,9 @@
 //    검수 차단 4: url 의 userinfo(`user:pass@`) · 쿼리 값 · fragment, args 의 비밀 이름 플래그 다음 값 · `--x=값` 의 값,
 //    command 앞 `NAME=값` env 접두의 값도 같은 규칙으로 버리고 secretRefs(field url · args · command) + 경고로 남긴다.
 //    오류 · 경고 글에는 원값을 절대 넣지 않는다(이름 · 칸 · typeof 만).
+//    3차 검수 차단 3: `--header`/`-H` 값(헤더 이름은 남기고 값만) · `--pat`/`cookie`/`credential`/`session` 플래그 값 · args 안 주소의 쿼리 · 토큰 꼴 경로 마디,
+//    공백 든 command(첫 낱말만 command · 나머지는 args 로 옮겨 같은 규칙) · 토큰 꼴 위치 인자(알려진 앞붙이 · 24자 이상 영숫자 섞임)도 버린다.
+//    `--x=값` 은 플래그 이름이 비밀 꼴일 때만 값을 버린다(`--port=8080` · `--root=/home/me/docs` 는 남김 — 3차 검수 권고).
 // 검수 차단 5: 서버 키(code)는 `^[a-z0-9][a-z0-9_.-]{0,63}$` — 아니면 그 서버만 건너뛰고 경고. 서버 하나가 틀려도 나머지는 가져온다.
 // 칸 이름은 서버 `cmh_ai_mcp_server`(code · name · type · command · args · url · env_keys)와 맞춘다(research/05).
 import path from 'node:path';
@@ -105,7 +108,14 @@ const INPUT_ID = /^[A-Za-z0-9_.-]+$/;
 /** RFC 7230 token */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 /** 이 글자가 이름에 들어간 플래그의 다음 값은 비밀로 본다 */
-const SECRET_FLAG = /key|token|secret|password|passwd|auth|bearer/i;
+const SECRET_FLAG = /key|token|secret|password|passwd|auth|bearer|header|cookie|credential|session/i;
+/** 낱말로만 보는 비밀 플래그(`--pat` · `--github-pat` — `--path` 는 아님) */
+const SECRET_FLAG_WORD = /(?:^|[-_.])pat(?:$|[-_.])/i;
+/** 알려진 토큰 앞붙이(OpenAI·Anthropic `sk-` · GitHub `ghp_` `gho_` `github_pat_` · Slack `xoxb-` `xoxp-` · AWS `AKIA`) */
+const TOKEN_PREFIXES = ['sk-', 'ghp_', 'gho_', 'github_pat_', 'xoxb-', 'xoxp-', 'AKIA'] as const;
+const TOKEN_CHARS = /^[A-Za-z0-9_-]+$/;
+/** 앞붙이가 없어도 이 길이 이상 · 영숫자 섞임이면 토큰 꼴로 본다 */
+const TOKEN_MIN_LENGTH = 24;
 /** `--x=값` · `-x=값` */
 const FLAG_WITH_VALUE = /^(--?[^=\s]+)=([\s\S]*)$/;
 /** 주소처럼 생긴 args 의 userinfo */
@@ -252,9 +262,17 @@ function readServer(code: string, entry: unknown, format: McpConfigFormat, warni
   const envKeys: string[] = [];
   let command: string | null = null;
   let url: string | null = null;
+  let commandArgs: string[] = [];
   if (type === 'stdio') {
     if (rawUrl !== undefined) warnings.push(`Server "${code}": "url" ignored for stdio server`);
-    const cmd = stripEnvPrefix(c, (rawCommand ?? '').trim(), envKeys);
+    const stripped = stripEnvPrefix(c, (rawCommand ?? '').trim(), envKeys);
+    // 공백이 든 command 는 첫 낱말만 command · 나머지는 args 앞에 붙여 args 와 같은 규칙으로 거른다(`npx -y pkg --api-key 값` — 3차 검수 차단 3)
+    const parts = /\s/.test(stripped) ? splitCommandLine(stripped) : [stripped];
+    const cmd = parts[0] ?? '';
+    if (parts.length > 1) {
+      commandArgs = parts.slice(1);
+      warnings.push(`Server "${code}": "command" had ${commandArgs.length} arguments — moved to "args" (check the command if its path has spaces)`);
+    }
     if (cmd === '') warnings.push(`Server "${code}": empty "command"`);
     else if (cmd.length > COMMAND_MAX) throw invalid(`Server "${code}": "command" longer than ${COMMAND_MAX}`);
     else command = cmd;
@@ -270,8 +288,11 @@ function readServer(code: string, entry: unknown, format: McpConfigFormat, warni
   let args: string[] = [];
   if (rawArgs !== undefined) {
     if (!Array.isArray(rawArgs) || rawArgs.some((a) => typeof a !== 'string')) throw invalid(`Server "${code}": "args" must be an array of strings`);
-    if (type === 'stdio') args = sanitizeArgs(c, rawArgs as string[]);
-    else if (rawArgs.length > 0) warnings.push(`Server "${code}": "args" ignored for http server`);
+    if (type !== 'stdio' && rawArgs.length > 0) warnings.push(`Server "${code}": "args" ignored for http server`);
+  }
+  if (type === 'stdio') {
+    const all = [...commandArgs, ...((rawArgs as string[] | undefined) ?? [])];
+    if (all.length > 0) args = sanitizeArgs(c, all);
   }
 
   for (const name of readStringMap(c, 'env', entry['env'], 'env')) if (!envKeys.includes(name)) envKeys.push(name);
@@ -392,7 +413,7 @@ function stripEnvPrefix(c: ServerCollector, command: string, envKeys: string[]):
 }
 
 /**
- * 원격 주소 정리 — scheme 은 http: · https: 만(아니면 그 서버 건너뜀). userinfo · 쿼리 값 · fragment 는 떼어 버리고
+ * 원격 주소 정리 — scheme 은 http: · https: 만(아니면 그 서버 건너뜀). userinfo · 쿼리 값 · fragment · 토큰 꼴 경로 마디는 떼어 버리고
  * secretRefs(field url) + 경고. 쿼리 키 이름은 secretRef 이름(`query:<키>`)으로 남는다.
  */
 function sanitizeServerUrl(c: ServerCollector, raw: string): string {
@@ -400,40 +421,7 @@ function sanitizeServerUrl(c: ServerCollector, raw: string): string {
   if (!m) throw invalid(`Server "${c.code}": "url" is not an absolute URL`);
   const scheme = (m[1] as string).toLowerCase();
   if (scheme !== 'http' && scheme !== 'https') throw invalid(`Server "${c.code}": "url" scheme must be http or https`);
-  let authority = m[2] ?? '';
-  let rest = m[3] ?? '';
-
-  const at = authority.lastIndexOf('@');
-  if (at >= 0) {
-    classifySecretValue(c, 'url', 'userinfo', authority.slice(0, at));
-    c.warnings.push(`Server "${c.code}": url userinfo removed`);
-    authority = authority.slice(at + 1);
-  }
-  const hash = rest.indexOf('#');
-  if (hash >= 0) {
-    c.warnings.push(`Server "${c.code}": url fragment removed`);
-    rest = rest.slice(0, hash);
-  }
-  const q = rest.indexOf('?');
-  if (q >= 0) {
-    for (const pair of rest.slice(q + 1).split('&')) {
-      if (pair === '') continue;
-      const eq = pair.indexOf('=');
-      const key = eq >= 0 ? pair.slice(0, eq) : pair;
-      const value = eq >= 0 ? pair.slice(eq + 1) : '';
-      if (value === '') continue;
-      let decoded = value;
-      try {
-        decoded = decodeURIComponent(value);
-      } catch {
-        /* 깨진 %-인코딩 — 원래 글자로 판정 */
-      }
-      classifySecretValue(c, 'url', `query:${safeLabel(key)}`, decoded);
-    }
-    c.warnings.push(`Server "${c.code}": url query values removed (keys kept in secretRefs)`);
-    rest = rest.slice(0, q);
-  }
-  const cleaned = `${scheme}://${authority}${rest}`;
+  const cleaned = stripUrlSecrets(c, 'url', '', 'url', scheme, m[2] ?? '', m[3] ?? '');
   if (cleaned.length > URL_MAX) throw invalid(`Server "${c.code}": "url" longer than ${URL_MAX}`);
   if (/\$\{[^{}]*\}/.test(cleaned)) {
     recordPlaceholders(c, 'url', 'url', cleaned);
@@ -448,7 +436,107 @@ function sanitizeServerUrl(c: ServerCollector, raw: string): string {
   return cleaned;
 }
 
-/** args 정리 — 비밀 이름 플래그 다음 값 · `--x=값` 의 값 · 주소 userinfo 는 버리고 자리표는 기록 */
+/**
+ * 주소 하나에서 비밀일 수 있는 조각을 뗀다 — 서버 url 과 args 안 주소(`postgresql://h/db?password=…`)가 같은 규칙.
+ * namePrefix 는 secretRef 이름 앞(서버 url 은 '' · args 는 `args[<번호>] `) · where 는 경고 글의 자리.
+ */
+function stripUrlSecrets(c: ServerCollector, field: SecretRef['field'], namePrefix: string, where: string, scheme: string, authorityIn: string, restIn: string): string {
+  let authority = authorityIn;
+  let rest = restIn;
+  const at = authority.lastIndexOf('@');
+  if (at >= 0) {
+    classifySecretValue(c, field, `${namePrefix}userinfo`, authority.slice(0, at));
+    c.warnings.push(`Server "${c.code}": ${where} userinfo removed`);
+    authority = authority.slice(at + 1);
+  }
+  const hash = rest.indexOf('#');
+  if (hash >= 0) {
+    c.warnings.push(`Server "${c.code}": ${where} fragment removed`);
+    rest = rest.slice(0, hash);
+  }
+  const q = rest.indexOf('?');
+  if (q >= 0) {
+    for (const pair of rest.slice(q + 1).split('&')) {
+      if (pair === '') continue;
+      const eq = pair.indexOf('=');
+      const key = eq >= 0 ? pair.slice(0, eq) : pair;
+      const value = eq >= 0 ? pair.slice(eq + 1) : '';
+      if (value === '') continue;
+      classifySecretValue(c, field, `${namePrefix}query:${safeLabel(key)}`, decodeLoose(value));
+    }
+    c.warnings.push(`Server "${c.code}": ${where} query values removed (keys kept in secretRefs)`);
+    rest = rest.slice(0, q);
+  }
+  // 경로 마디 토큰(`/api/mcp/s/<토큰>/mcp` 꼴) — 자리는 빈 마디로 남긴다(R3-b 가 다시 채운다)
+  const segments = rest.split('/');
+  segments.forEach((segment, idx) => {
+    if (segment === '' || !looksLikeToken(decodeLoose(segment))) return;
+    classifySecretValue(c, field, `${namePrefix}path[${idx}]`, decodeLoose(segment));
+    c.warnings.push(`Server "${c.code}": ${where} path segment ${idx} looks like a token — removed, review needed`);
+    segments[idx] = '';
+  });
+  return `${scheme}://${authority}${segments.join('/')}`;
+}
+
+function decodeLoose(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value; // 깨진 %-인코딩 — 원래 글자로 판정
+  }
+}
+
+/** 토큰처럼 보이는 글자인가 — 알려진 앞붙이 · 또는 24자 이상 `[A-Za-z0-9_-]` 만이고 숫자와 글자가 섞임 */
+export function looksLikeToken(value: string): boolean {
+  if (!TOKEN_CHARS.test(value)) return false;
+  if (TOKEN_PREFIXES.some((p) => value.startsWith(p) && value.length > p.length)) return true;
+  return value.length >= TOKEN_MIN_LENGTH && /[0-9]/.test(value) && /[A-Za-z]/.test(value);
+}
+
+/** 값이 비밀인 플래그인가 — `-H` 는 정확히(소문자 `-h` 는 help) · camelCase(`--githubPat`)도 낱말로 나눠 본다 */
+function isSecretFlag(flag: string): boolean {
+  if (flag === '-H') return true;
+  const name = flag.replace(/^-+/, '');
+  if (name.length === 0) return false;
+  return SECRET_FLAG.test(name) || SECRET_FLAG_WORD.test(name.replace(/([a-z0-9])([A-Z])/g, '$1-$2'));
+}
+
+function isHeaderFlag(flag: string): boolean {
+  return flag === '-H' || /header/i.test(flag);
+}
+
+/** `Authorization: Bearer 값` → 헤더 이름은 남기고 값만 버린다(`Authorization:`). 이름을 못 가리면 통째로 버린다 */
+function sanitizeHeaderArg(c: ServerCollector, flag: string, value: string): string {
+  const colon = value.indexOf(':');
+  const headerName = colon > 0 ? value.slice(0, colon).trim() : '';
+  if (headerName !== '' && HEADER_NAME.test(headerName)) {
+    const headerValue = value.slice(colon + 1).trim();
+    if (headerValue === '') return value;
+    return classifySecretValue(c, 'args', `${flag} ${headerName}`, headerValue) === 'drop' ? `${headerName}:` : value;
+  }
+  return classifySecretValue(c, 'args', flag, value) === 'drop' ? '' : value;
+}
+
+/** 비밀 이름이 아닌 자리의 값 — 주소면 주소 규칙 · 토큰 꼴이면 버림(검토 필요) · 그 밖은 그대로(자리표만 기록) */
+function sanitizePlainArg(c: ServerCollector, index: number, value: string): string {
+  const label = `args[${index}]`;
+  let out = value;
+  const url = URL_LIKE.exec(value);
+  if (url) {
+    out = stripUrlSecrets(c, 'args', `${label} `, `${label} url`, url[1] as string, url[2] ?? '', url[3] ?? '');
+  } else if (looksLikeToken(value)) {
+    classifySecretValue(c, 'args', label, value);
+    c.warnings.push(`Server "${c.code}": ${label} looks like a token — value dropped, review needed`);
+    return '';
+  }
+  recordPlaceholders(c, 'args', label, out);
+  return out;
+}
+
+/**
+ * args 정리 — 비밀 이름 플래그 다음 값 · 비밀 이름 `--x=값` 의 값 · 헤더 플래그 값(이름만 남김) · 주소의 userinfo/쿼리/fragment/토큰 경로 마디
+ * · 토큰 꼴 위치 인자는 버리고 자리표는 기록. 비밀 이름이 아닌 `--x=값`(`--port=8080`)은 값을 남긴다.
+ */
 function sanitizeArgs(c: ServerCollector, raw: readonly string[]): string[] {
   const out = [...raw];
   for (let i = 0; i < out.length; i += 1) {
@@ -457,27 +545,59 @@ function sanitizeArgs(c: ServerCollector, raw: readonly string[]): string[] {
     if (withValue) {
       const flag = withValue[1] as string;
       const value = withValue[2] ?? '';
-      if (value !== '' && classifySecretValue(c, 'args', flag, value) === 'drop') out[i] = `${flag}=`;
+      if (value === '') continue;
+      if (!isSecretFlag(flag)) out[i] = `${flag}=${sanitizePlainArg(c, i, value)}`;
+      else if (isHeaderFlag(flag)) out[i] = `${flag}=${sanitizeHeaderArg(c, flag, value)}`;
+      else if (classifySecretValue(c, 'args', flag, value) === 'drop') out[i] = `${flag}=`;
       continue;
     }
-    if (/^--?[^-\s]/.test(arg) && SECRET_FLAG.test(arg)) {
-      const next = out[i + 1];
-      if (next !== undefined && !next.startsWith('-')) {
-        if (classifySecretValue(c, 'args', arg, next) === 'drop') out[i + 1] = '';
-        i += 1;
+    if (/^--?[^-\s]/.test(arg)) {
+      if (isSecretFlag(arg)) {
+        const next = out[i + 1];
+        if (next !== undefined && !next.startsWith('-')) {
+          if (isHeaderFlag(arg)) out[i + 1] = sanitizeHeaderArg(c, arg, next);
+          else if (classifySecretValue(c, 'args', arg, next) === 'drop') out[i + 1] = '';
+          i += 1;
+        }
+      } else {
+        recordPlaceholders(c, 'args', `args[${i}]`, arg);
       }
       continue;
     }
-    const url = URL_LIKE.exec(arg);
-    if (url && (url[2] ?? '').includes('@')) {
-      const authority = url[2] as string;
-      const at = authority.lastIndexOf('@');
-      classifySecretValue(c, 'args', `args[${i}]`, authority.slice(0, at));
-      c.warnings.push(`Server "${c.code}": args[${i}] url userinfo removed`);
-      out[i] = `${url[1]}://${authority.slice(at + 1)}${url[3] ?? ''}`;
-    }
-    recordPlaceholders(c, 'args', `args[${i}]`, out[i] as string);
+    out[i] = sanitizePlainArg(c, i, arg);
   }
+  return out;
+}
+
+/** 셸처럼 낱말로 나눈다 — 공백 구분 · `"…"`(안에서 `\"` · `\\` 만 이스케이프) · `'…'`. 따옴표 밖 `\` 는 글자 그대로(Windows 경로) */
+function splitCommandLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let has = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i] as string;
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      else if (quote === '"' && ch === '\\' && (line[i + 1] === '"' || line[i + 1] === '\\')) {
+        cur += line[i + 1];
+        i += 1;
+      } else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+    } else if (/\s/.test(ch)) {
+      if (has) out.push(cur);
+      cur = '';
+      has = false;
+    } else {
+      cur += ch;
+      has = true;
+    }
+  }
+  if (has) out.push(cur);
   return out;
 }
 

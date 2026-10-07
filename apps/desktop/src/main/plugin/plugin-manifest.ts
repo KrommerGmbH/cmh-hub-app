@@ -5,6 +5,8 @@
 //   같은 이유로 이 엔티티를 새로 정의하거나(contributes.entities) 칸을 더하는 것(entityExtensions)도 거부한다.
 // Shopware App manifest 의 `<permissions>`(read / create / update / delete · `<crud>`) 꼴을 줄여 read | crud 둘만 둔다.
 
+import { WRITE_PROTECTED_ENTITIES, isWriteProtectedEntity } from '../settings/approval-entity.js';
+
 export const PLUGIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** 엔티티 이름 — 서버 Shopware 엔티티와 같은 snake_case(예 cmh_ai_prompt) */
 export const ENTITY_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -17,8 +19,8 @@ export const HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?(\.[a-z0-
 /** semver 간단 검사 — MAJOR.MINOR.PATCH(-pre)(+build) · 앞자리 0 금지 */
 export const SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
-/** 플러그인이 쓰기 권한을 가질 수 없는 엔티티(합의안 5 · S3). 쓰기는 main 의 UI IPC 핸들러(사람 클릭)만. */
-export const WRITE_PROTECTED_ENTITIES: readonly string[] = Object.freeze(['cmh_ai_approval']);
+/** 플러그인이 쓰기 권한을 가질 수 없는 엔티티(합의안 5 · S3). 쓰기는 main 의 UI IPC 핸들러(사람 클릭)만. 목록 정본은 settings/approval-entity.ts */
+export { WRITE_PROTECTED_ENTITIES };
 
 export const VIEW_LOCATIONS = ['sidebar', 'pane'] as const;
 export type ViewLocation = (typeof VIEW_LOCATIONS)[number];
@@ -263,7 +265,7 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     const name = requireString(c, item, 'name', at, ENTITY_NAME_PATTERN);
     const fields = readFields(c, item, at);
     if (name === null) return;
-    if (WRITE_PROTECTED_ENTITIES.includes(name)) {
+    if (isWriteProtectedEntity(name)) {
       c.error(`${at}.name: "${name}" is a protected entity and cannot be (re)defined by a plugin`);
       return;
     }
@@ -277,7 +279,7 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     const entity = requireString(c, item, 'entity', at, ENTITY_NAME_PATTERN);
     const fields = readFields(c, item, at);
     if (entity === null) return;
-    if (WRITE_PROTECTED_ENTITIES.includes(entity)) {
+    if (isWriteProtectedEntity(entity)) {
       c.error(`${at}.entity: "${entity}" is a protected entity and cannot be extended by a plugin`);
       return;
     }
@@ -474,7 +476,7 @@ export function parseManifest(input: unknown, options: ManifestParseOptions = {}
         c.error(`plugin.json.permissions[${index}]: unknown permission ${JSON.stringify(raw)} (entity:<name>:read|crud | host:<domain> | tool:<name>)`);
         return;
       }
-      if (permission.kind === 'entity' && permission.access !== 'read' && WRITE_PROTECTED_ENTITIES.includes(permission.entity)) {
+      if (permission.kind === 'entity' && permission.access !== 'read' && isWriteProtectedEntity(permission.entity)) {
         c.error(`plugin.json.permissions[${index}]: "${permission.raw}" denied — writes to ${permission.entity} are only allowed from the app UI (human click)`);
         return;
       }

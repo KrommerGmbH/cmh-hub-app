@@ -6,6 +6,11 @@
 // 도구 이름 규칙(검수 차단 1): `:` 로 나눈 모든 마디가 ASCII `[A-Za-z0-9_.-]+` 여야 한다(소문자로 맞춘 뒤 `^[a-z0-9_.-]+$`).
 // 공백 · 제어문자 · zero-width · 전각 · 비ASCII 가 하나라도 있으면 deny — 겉보기만 같은 이름으로 deny 규칙 · 승인 엔티티 검사를 비껴가지 못하게.
 // (소문자로 바꾸기 «전에» 검사한다 — Kelvin 기호 U+212A 처럼 toLowerCase 하면 ASCII 'k' 가 되는 글자도 막으려고.)
+// 쓰기 보호 엔티티 목록 · 이름 맞추기는 `approval-entity.ts` 한 곳(3차 검수 권고) — 플러그인 매니페스트 · 권한 검사와 같은 목록을 쓴다.
+
+import { WRITE_PROTECTED_ENTITIES, isWriteProtectedEntity, mentionsWriteProtectedEntity, normalizeEntityName } from './approval-entity.js';
+
+export { normalizeEntityName };
 
 export const GUARD_MODES = ['guard', 'full'] as const;
 export type GuardMode = (typeof GUARD_MODES)[number];
@@ -42,6 +47,11 @@ export interface GuardRequest {
   readonly target?: GuardTarget;
   /** 서버 칸 `cmh_ai_mcp_tool.needs_approval` — true 면 결과가 allow/ask 여도 requiresApproval */
   readonly needsApproval?: boolean;
+  /**
+   * true = 모델에게 도구를 보일지 정하는 평가(인자가 아직 없다). 이때만 «target 없는 범용 DAL 쓰기 deny» 를 건너뛴다 —
+   * 실제 호출 때(listing 없음 · 기본) 인자의 entity 로 다시 평가해서 막는다. 빠지면 호출로 보고 막는 쪽이다.
+   */
+  readonly listing?: boolean;
 }
 
 export interface GuardResult {
@@ -52,9 +62,17 @@ export interface GuardResult {
   readonly matchedPattern: string | null;
 }
 
-/** 내장 규칙 — 승인 상태 엔티티. 읽기 말고는 정책과 상관없이 deny(합의안 5) */
+/** 내장 규칙 — 승인 상태 엔티티. 읽기 말고는 정책과 상관없이 deny(합의안 5) · 목록은 approval-entity.ts 의 WRITE_PROTECTED_ENTITIES */
 export const APPROVAL_ENTITY = 'cmh_ai_approval';
 export const APPROVAL_ENTITY_PATTERN = 'entity:cmh_ai_approval:*';
+/** 쓰기 보호 엔티티 deny 의 matchedPattern(`entity:<엔티티>:*`) */
+function protectedPattern(name: string): string {
+  const n = normalizeEntityName(name);
+  const hit = WRITE_PROTECTED_ENTITIES.find((e) => n.replace(/[_.]/g, '').includes(e.replace(/[_.]/g, '')));
+  return `entity:${hit ?? APPROVAL_ENTITY}:*`;
+}
+/** target 없는 범용 DAL 쓰기 deny 의 matchedPattern */
+export const DAL_WRITE_WITHOUT_TARGET_PATTERN = 'builtin:dal-write-without-target';
 
 /**
  * 읽기 꼴 동작 이름. 이름을 `-` → `_` 로 맞추고 앞붙이 `dal_` 를 뗀 것이 이 표에 있어야 읽기다.
@@ -79,11 +97,6 @@ function toolSegments(name: string): string[] | null {
   const raw = name.split(':');
   if (!raw.every((s) => TOOL_SEGMENT.test(s))) return null;
   return raw.map((s) => s.toLowerCase());
-}
-
-/** 엔티티 · 동작 이름 맞추기: trim · 소문자 · `-` → `_` */
-export function normalizeEntityName(name: string): string {
-  return name.trim().toLowerCase().replace(/-/g, '_');
 }
 
 /** 동작 이름이 읽기 꼴인가(`dal_search` · `get` · `list` …) */
@@ -194,18 +207,18 @@ export function matchToolPattern(pattern: string, tool: string): boolean {
 
 // ---------------------------------------------------------------- 내장 규칙
 
-/** 이름 안 어느 마디에 승인 엔티티가 있으면 쓰기인가. 읽기는 `…:cmh_ai_approval:<읽기 동작>` 으로 끝날 때뿐 */
-function isApprovalEntityWrite(segments: readonly string[]): boolean {
+/** 이름 안 어느 마디에 승인 엔티티가 있으면 쓰기인가 — 있으면 그 마디. 읽기는 `…:cmh_ai_approval:<읽기 동작>` 으로 끝날 때뿐 */
+function approvalEntityWriteSegment(segments: readonly string[]): string | null {
   for (let i = 0; i < segments.length; i += 1) {
-    const s = normalizeEntityName(segments[i] ?? '');
-    if (!s.includes(APPROVAL_ENTITY)) continue;
+    const s = segments[i] ?? '';
+    if (!mentionsWriteProtectedEntity(s)) continue;
     // 마디 일부(cmh_ai_approval_update 등)는 동작을 가려낼 수 없어 쓰기로 본다
-    if (s !== APPROVAL_ENTITY) return true;
+    if (!isWriteProtectedEntity(s)) return s;
     const action = segments[i + 1];
     // 동작이 없거나(entity:cmh_ai_approval) · 마지막 마디가 아니거나 · 읽기 꼴이 아니면 쓰기
-    if (action === undefined || i + 2 !== segments.length || !isReadActionName(action)) return true;
+    if (action === undefined || i + 2 !== segments.length || !isReadActionName(action)) return s;
   }
-  return false;
+  return null;
 }
 
 /** target.entity 검사. 엔티티 이름이 깨졌으면(공백 안 · 비ASCII 등) 'malformed' */
@@ -214,9 +227,20 @@ function approvalTargetWrite(target: GuardTarget | undefined, segments: readonly
   if (entity === undefined) return false;
   const n = normalizeEntityName(entity);
   if (!/^[a-z0-9_.]+$/.test(n)) return 'malformed';
-  if (!n.includes(APPROVAL_ENTITY)) return false;
+  if (!mentionsWriteProtectedEntity(n)) return false;
   const action = segments[segments.length - 1];
   return action === undefined || !isReadActionName(action);
+}
+
+/**
+ * 3차 검수 차단 4: 마지막 마디가 `dal_` 로 시작하는 범용 DAL 쓰기 도구인데 target.entity 가 없으면 deny.
+ * 어느 엔티티를 쓰는지 모르면 승인 엔티티 보호를 할 수 없다(dal_update({}) · entity 를 다른 칸 이름으로 넘기기 등).
+ */
+function isUntargetedDalWrite(target: GuardTarget | undefined, segments: readonly string[]): boolean {
+  if (target?.entity !== undefined) return false;
+  const action = segments[segments.length - 1];
+  if (action === undefined || !normalizeEntityName(action).startsWith('dal_')) return false;
+  return !isReadActionName(action);
 }
 
 /** 마켓(market:<마켓>:<동작…>) 쓰기 — 동작 마디가 전부 읽기 꼴일 때만 읽기 · 나머지는 모두 쓰기 */
@@ -229,6 +253,7 @@ function isMarketWrite(segments: readonly string[]): boolean {
 /**
  * 도구 호출 한 번을 평가한다. 차례:
  * ①모양이 깨진 이름 · 깨진 target.entity → deny ②승인 엔티티 쓰기(이름 어느 마디든 · target.entity) → deny(내장)
+ * ②' target 없는 범용 DAL 쓰기(`…:dal_update` 등 · listing 평가 제외) → deny(내장)
  * ③정책 글롭 전부 중 deny > ask > allow ④맞는 규칙 없음 → guard 는 ask · full 은 allow ⑤known=false 면 최소 ask
  * ⑥deny 가 아니면 마켓 쓰기 · needsApproval 은 requiresApproval
  *
@@ -240,8 +265,13 @@ export function evaluateGuard(policy: GuardPolicy, request: GuardRequest): Guard
   if (segments === null) return { decision: 'deny', requiresApproval: false, matchedPattern: null };
   const targetWrite = approvalTargetWrite(request.target, segments);
   if (targetWrite === 'malformed') return { decision: 'deny', requiresApproval: false, matchedPattern: null };
-  if (targetWrite || isApprovalEntityWrite(segments)) {
-    return { decision: 'deny', requiresApproval: false, matchedPattern: APPROVAL_ENTITY_PATTERN };
+  if (targetWrite === true) {
+    return { decision: 'deny', requiresApproval: false, matchedPattern: protectedPattern(request.target?.entity ?? '') };
+  }
+  const nameWrite = approvalEntityWriteSegment(segments);
+  if (nameWrite !== null) return { decision: 'deny', requiresApproval: false, matchedPattern: protectedPattern(nameWrite) };
+  if (request.listing !== true && isUntargetedDalWrite(request.target, segments)) {
+    return { decision: 'deny', requiresApproval: false, matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN };
   }
 
   let decision: ToolDecision | null = null;
