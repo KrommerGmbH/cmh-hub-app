@@ -20,6 +20,8 @@ import { runParallelCheckIfRequested } from './parallel-check.js';
 import { runDriverCheckIfRequested } from './naver/driver-check.js';
 import { runExtCheckIfRequested } from './ext-check.js';
 import { createShellWindow } from './window/shell-window.js';
+import { APP_CONFIG } from '../config.js';
+import { ExtensionBridge } from './extension-bridge.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
 assertNoRemoteDebugging();
@@ -56,6 +58,16 @@ app.whenReady().then(async () => {
     startTaskWorker(appSession, engine, { models: () => installedLocalModels(join(app.getPath('userData'), 'models')) });
   }
   app.on('before-quit', () => void engine.dispose());
+  if (APP_CONFIG.extensionBridge.enabled) {
+    const bridge = new ExtensionBridge({
+      host: APP_CONFIG.extensionBridge.host,
+      port: APP_CONFIG.extensionBridge.port,
+      allowedIds: APP_CONFIG.extensionBridge.allowedExtensionIds,
+    });
+    bridge.start();
+    app.on('before-quit', () => bridge.stop());
+  }
+
   void runSmokeIfRequested(w);
   runFingerprintProbeIfRequested(w);
   runCredentialCheckIfRequested(w.window);

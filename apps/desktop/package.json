@@ -18,7 +18,8 @@
     "@cmh-hub-app/driver-core": "workspace:*",
     "electron-updater": "^6.8.9",
     "ghost-cursor": "catalog:",
-    "node-llama-cpp": "catalog:"
+    "node-llama-cpp": "catalog:",
+    "ws": "catalog:"
   },
   "devDependencies": {
     "electron": "catalog:",
@@ -26,6 +27,7 @@
     "chrome-tabs": "catalog:",
     "typescript": "catalog:",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "vitest": "catalog:"
   }
 }

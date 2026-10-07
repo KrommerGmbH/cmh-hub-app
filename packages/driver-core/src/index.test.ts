@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { isNavigationTarget, isOriginAllowed, validateStep } from './index.js';
+import {
+  isNavigationTarget,
+  isOriginAllowed,
+  parseBridgeToApp,
+  parseBridgeToExtension,
+  validateStep,
+} from './index.js';
 
 describe('driver-core 순수 함수 검증', () => {
   describe('validateStep 경계값 검사', () => {
@@ -458,6 +464,142 @@ describe('driver-core 순수 함수 검증', () => {
           sameOrigin: true,
         }),
       ).toBe(false);
+    });
+  });
+
+  describe('parseBridgeToExtension 메시지 파서', () => {
+    it('정상 ping 메시지를 파싱한다', () => {
+      expect(parseBridgeToExtension('{"type":"ping"}')).toEqual({ type: 'ping' });
+    });
+
+    it('정상 run 메시지를 파싱한다', () => {
+      const raw = JSON.stringify({
+        type: 'run',
+        id: 'job-123',
+        steps: [{ op: 'goto', url: 'https://sell.smartstore.naver.com/' }],
+      });
+      expect(parseBridgeToExtension(raw)).toEqual({
+        type: 'run',
+        id: 'job-123',
+        steps: [{ op: 'goto', url: 'https://sell.smartstore.naver.com/' }],
+      });
+    });
+
+    it('깨진 JSON 이거나 원시값/배열이면 null 을 반환한다', () => {
+      expect(parseBridgeToExtension('{ broken json')).toBeNull();
+      expect(parseBridgeToExtension('')).toBeNull();
+      expect(parseBridgeToExtension('123')).toBeNull();
+      expect(parseBridgeToExtension('"string"')).toBeNull();
+      expect(parseBridgeToExtension('null')).toBeNull();
+      expect(parseBridgeToExtension('[]')).toBeNull();
+    });
+
+    it('모르는 type 이면 null 을 반환한다', () => {
+      expect(parseBridgeToExtension('{"type":"unknown"}')).toBeNull();
+      expect(parseBridgeToExtension('{"type":"pong"}')).toBeNull();
+    });
+
+    it('run 메시지에 필수 필드가 누락되었거나 비어있으면 null 을 반환한다', () => {
+      expect(parseBridgeToExtension('{"type":"run","steps":[]}')).toBeNull();
+      expect(parseBridgeToExtension('{"type":"run","id":"","steps":[]}')).toBeNull();
+      expect(parseBridgeToExtension('{"type":"run","id":"   ","steps":[]}')).toBeNull();
+      expect(parseBridgeToExtension('{"type":"run","id":"job-1"}')).toBeNull();
+      expect(parseBridgeToExtension('{"type":"run","id":"job-1","steps":"invalid"}')).toBeNull();
+    });
+  });
+
+  describe('parseBridgeToApp 메시지 파서', () => {
+    it('정상 pong 메시지를 파싱한다', () => {
+      expect(parseBridgeToApp('{"type":"pong"}')).toEqual({ type: 'pong' });
+    });
+
+    it('정상 hello 메시지를 파싱한다', () => {
+      expect(parseBridgeToApp('{"type":"hello","extVersion":"0.1.0"}')).toEqual({
+        type: 'hello',
+        extVersion: '0.1.0',
+      });
+    });
+
+    it('정상 result 메시지를 파싱한다', () => {
+      const raw = JSON.stringify({
+        type: 'result',
+        id: 'job-123',
+        result: {
+          ok: true,
+          steps: [{ op: 'goto', ok: true }],
+          error: null,
+        },
+      });
+      expect(parseBridgeToApp(raw)).toEqual({
+        type: 'result',
+        id: 'job-123',
+        result: {
+          ok: true,
+          steps: [{ op: 'goto', ok: true }],
+          error: null,
+        },
+      });
+    });
+
+    it('깨진 JSON 이거나 원시값/배열이면 null 을 반환한다', () => {
+      expect(parseBridgeToApp('{ broken json')).toBeNull();
+      expect(parseBridgeToApp('')).toBeNull();
+      expect(parseBridgeToApp('123')).toBeNull();
+      expect(parseBridgeToApp('"hello"')).toBeNull();
+      expect(parseBridgeToApp('null')).toBeNull();
+      expect(parseBridgeToApp('[]')).toBeNull();
+    });
+
+    it('모르는 type 이면 null 을 반환한다', () => {
+      expect(parseBridgeToApp('{"type":"unknown"}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"run"}')).toBeNull();
+    });
+
+    it('hello 메시지에 extVersion 이 없거나 비어있으면 null 을 반환한다', () => {
+      expect(parseBridgeToApp('{"type":"hello"}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"hello","extVersion":123}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"hello","extVersion":""}')).toBeNull();
+    });
+
+    it('result 메시지에 필수 필드가 누락되었거나 비어있으면 null 을 반환한다', () => {
+      expect(parseBridgeToApp('{"type":"result","result":{"ok":true,"steps":[]}}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"result","id":"","result":{"ok":true,"steps":[]}}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"result","id":"job-1"}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"result","id":"job-1","result":{"steps":[]}}')).toBeNull();
+      expect(parseBridgeToApp('{"type":"result","id":"job-1","result":{"ok":true}}')).toBeNull();
+      expect(
+        parseBridgeToApp('{"type":"result","id":"job-1","result":{"ok":"not-boolean","steps":[]}}'),
+      ).toBeNull();
+      expect(
+        parseBridgeToApp('{"type":"result","id":"job-1","result":{"ok":true,"steps":"not-array"}}'),
+      ).toBeNull();
+    });
+
+    it('result 메시지의 error 필드를 엄격하게 검증한다', () => {
+      // 1. error 없음 -> null
+      expect(
+        parseBridgeToApp('{"type":"result","id":"job-1","result":{"ok":true,"steps":[]}}'),
+      ).toBeNull();
+
+      // 2. error null -> 통과
+      expect(
+        parseBridgeToApp('{"type":"result","id":"job-1","result":{"ok":true,"steps":[],"error":null}}'),
+      ).toEqual({
+        type: 'result',
+        id: 'job-1',
+        result: {
+          ok: true,
+          steps: [],
+          error: null,
+        },
+      });
+
+      // 3. error 의 code 가 숫자 -> null
+      expect(
+        parseBridgeToApp(
+          '{"type":"result","id":"job-1","result":{"ok":false,"steps":[],"error":{"code":123,"message":"m"}}}',
+        ),
+      ).toBeNull();
     });
   });
 });

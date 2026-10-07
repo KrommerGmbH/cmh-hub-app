@@ -131,3 +131,87 @@ export function isNavigationTarget(info: NavigationTargetInfo): boolean {
 
   return false;
 }
+
+/** U11 앱 ↔ 확장 WebSocket 메시지(JSON 한 줄) */
+export const BRIDGE_DEFAULT_PORT = 47900;
+export type BridgeToExtension = { type: 'run'; id: string; steps: unknown[] } | { type: 'ping' };
+export type BridgeToApp =
+  | { type: 'hello'; extVersion: string }
+  | { type: 'result'; id: string; result: DriverRunResult }
+  | { type: 'pong' };
+
+export function parseBridgeToExtension(raw: string): BridgeToExtension | null {
+  if (typeof raw !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj['type'] === 'ping') {
+    return { type: 'ping' };
+  }
+  if (obj['type'] === 'run') {
+    if (typeof obj['id'] !== 'string' || obj['id'].trim() === '') {
+      return null;
+    }
+    if (!Array.isArray(obj['steps'])) {
+      return null;
+    }
+    return { type: 'run', id: obj['id'], steps: obj['steps'] };
+  }
+  return null;
+}
+
+export function parseBridgeToApp(raw: string): BridgeToApp | null {
+  if (typeof raw !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj['type'] === 'pong') {
+    return { type: 'pong' };
+  }
+  if (obj['type'] === 'hello') {
+    if (typeof obj['extVersion'] !== 'string' || obj['extVersion'].trim() === '') {
+      return null;
+    }
+    return { type: 'hello', extVersion: obj['extVersion'] };
+  }
+  if (obj['type'] === 'result') {
+    if (typeof obj['id'] !== 'string' || obj['id'].trim() === '') {
+      return null;
+    }
+    const res = obj['result'];
+    if (!res || typeof res !== 'object' || Array.isArray(res)) {
+      return null;
+    }
+    const resObj = res as Record<string, unknown>;
+    if (typeof resObj['ok'] !== 'boolean' || !Array.isArray(resObj['steps'])) {
+      return null;
+    }
+    const err = resObj['error'];
+    const isErrorValid =
+      err === null ||
+      (typeof err === 'object' &&
+        err !== null &&
+        !Array.isArray(err) &&
+        typeof (err as Record<string, unknown>)['code'] === 'string' &&
+        typeof (err as Record<string, unknown>)['message'] === 'string');
+    if (!isErrorValid) {
+      return null;
+    }
+    return { type: 'result', id: obj['id'], result: res as DriverRunResult };
+  }
+  return null;
+}

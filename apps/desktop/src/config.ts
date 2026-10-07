@@ -1,3 +1,4 @@
+import { BRIDGE_DEFAULT_PORT } from '@cmh-hub-app/driver-core';
 import { SERVER_ORIGIN } from './build-target.js';
 
 /** 서버 호스트 이름(포트 없음) — url-policy.ts · login-pages.ts 가 URL.hostname 과 견준다. 서버 주소 하나(build-target.ts)에서 나온다 */
@@ -34,6 +35,13 @@ export const APP_CONFIG = {
   naverTabEnabled: false,
   /** 네이버 pane 세션 — 우리 어드민 쿠키와 한 바구니에 두지 않는다 */
   naverPartition: 'persist:naver',
+  /** U11 · id = manifest key 로 고정한 압축 해제판 · 웹스토어 Unlisted 판 id 는 올린 뒤 더한다(셋 합의 2026-10-07) */
+  extensionBridge: {
+    enabled: true,
+    host: '127.0.0.1',
+    port: BRIDGE_DEFAULT_PORT,
+    allowedExtensionIds: ['njdfehbchcmplpbjddcjopbceieajona'] as const,
+  },
   /** W04 — 기본 로컬 모델(unsloth Gemma 4 E4B QAT · UD-Q4_K_XL 4.2 GB · 사장님 2026-10-02 «sloth 거로»). RAM 이 적은 PC 는 E2B(2.6 GB) */
   localModels: {
     default: 'hf:unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL',

@@ -1,6 +1,10 @@
-// 앱 WebSocket 연결(U11 4번)은 다음 단계 · 서비스 워커는 30초 쉬면 잠든다
+// 앱 WebSocket 연결(U11 4번) · 서비스 워커는 30초 쉬면 잠든다
 
 import type { DriverErrorCode, DriverRunResult } from '@cmh-hub-app/driver-core';
+import { BRIDGE_DEFAULT_PORT } from '@cmh-hub-app/driver-core';
+
+import type { WebSocketLike } from './bridge-client.js';
+import { BridgeClient } from './bridge-client.js';
 
 export type BackgroundErrorCode =
   | DriverErrorCode
@@ -17,15 +21,13 @@ function extractErrorMessage(err: unknown): string {
   return (msg.split('\n')[0] ?? '').slice(0, 200);
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== 'cmh-run-in-tab') {
-    return;
-  }
+export function runInSellerTab(steps: unknown[]): Promise<BackgroundRunResult> {
+  const matches = chrome.runtime.getManifest().content_scripts?.[0]?.matches;
+  const urlPattern =
+    matches && matches.length > 0 ? matches : ['https://sell.smartstore.naver.com/*'];
 
-  const steps = message.steps;
-
-  chrome.tabs
-    .query({ url: 'https://sell.smartstore.naver.com/*' })
+  return chrome.tabs
+    .query({ url: urlPattern })
     .then((tabs) => {
       // 활성(active) 상태인 탭을 먼저 고르고, 없으면 유효한 id를 가진 첫 번째 탭을 선택한다
       const targetTab =
@@ -41,11 +43,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             message: '판매자센터 탭이 없습니다',
           },
         };
-        sendResponse(failure);
-        return;
+        return failure;
       }
 
-      chrome.tabs
+      return chrome.tabs
         .sendMessage(targetTab.id, { type: 'cmh-run', steps })
         .then((result: BackgroundRunResult | undefined) => {
           if (!result) {
@@ -57,10 +58,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 message: 'content script 응답이 없습니다',
               },
             };
-            sendResponse(failure);
-            return;
+            return failure;
           }
-          sendResponse(result);
+          return result;
         })
         .catch((err: unknown) => {
           const failure: BackgroundRunResult = {
@@ -71,7 +71,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
               message: extractErrorMessage(err),
             },
           };
-          sendResponse(failure);
+          return failure;
         });
     })
     .catch((err: unknown) => {
@@ -83,8 +83,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message: extractErrorMessage(err),
         },
       };
-      sendResponse(failure);
+      return failure;
     });
+}
 
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== 'cmh-run-in-tab') {
+    return;
+  }
+
+  runInSellerTab(message.steps).then(sendResponse);
   return true;
+});
+
+const client = new BridgeClient('ws://127.0.0.1:' + BRIDGE_DEFAULT_PORT, {
+  createSocket: (u) => new WebSocket(u) as unknown as WebSocketLike,
+  runSteps: (steps) => runInSellerTab(steps) as Promise<DriverRunResult>,
+  extVersion: chrome.runtime.getManifest().version,
+  log: (m) => console.info('[cmh-bridge] ' + m),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+});
+client.connect();
+
+// Chrome 116+ 는 WebSocket 송수신이 잠듦 타이머를 되돌린다 · alarms 는 최소 30초(공식 문서)
+chrome.alarms.create('cmh-bridge-wake', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name === 'cmh-bridge-wake' && !client.isOpen()) {
+    client.connect();
+  }
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  client.connect();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  client.connect();
 });

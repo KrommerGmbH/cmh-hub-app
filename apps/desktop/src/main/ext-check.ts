@@ -2,6 +2,7 @@ import { app, BrowserWindow, session } from 'electron';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { APP_CONFIG } from '../config.js';
+import { getExtensionBridge } from './extension-bridge.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,6 +45,11 @@ export function runExtCheckIfRequested(): void {
       ses = session.fromPartition('persist:ext-check');
       const ext = await ses.extensions.loadExtension(extDir);
       extId = ext.id;
+      console.info('[ext-check] ext.id=' + ext.id);
+
+      const bridge = getExtensionBridge();
+      const bridgeConnected = bridge ? await bridge.waitForConnection(20_000) : false;
+      console.info('[ext-check] bridge connected=' + bridgeConnected);
 
       win = new BrowserWindow({
         show: false,
@@ -57,6 +63,18 @@ export function runExtCheckIfRequested(): void {
       });
 
       await win.loadURL(APP_CONFIG.serverOrigin + '/#cmh-ext-check');
+
+      if (bridge && bridgeConnected) {
+        try {
+          const runRes = await bridge.run([{ op: 'read', selector: 'title' }], 20_000);
+          console.info('[ext-check] bridge-run ' + JSON.stringify(runRes));
+        } catch (runErr) {
+          console.warn(
+            '[ext-check] bridge-run 실패',
+            runErr instanceof Error ? runErr.message : String(runErr),
+          );
+        }
+      }
 
       let resultValue: string | null = null;
       const startTime = Date.now();
