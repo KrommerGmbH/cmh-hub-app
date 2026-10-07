@@ -7,8 +7,11 @@
 //   ②실패하면 status `failed` 로 두고 다음 차례를 다시 잡는다. Shopware 기본(shouldRescheduleOnFailure=false)은 failed 가 영영 안 도는데
 //     CmhCore 가 같은 함정을 이미 겪고 true 로 덮었다(`CmhCore/src/Service/ScheduledTask/CrawlPriceRefresh/CmhCrawlPriceRefreshTask.php:42-53`).
 //   ③`inactive` 는 절대 돌지 않는다(runNow 도)
-//   ④앱이 켜져 있을 때만 돈다(PLAN R7 §9 · 꺼져 있으면 서버 큐) — start() 전에는 아무것도 안 돌고, stop() 은 타이머를 지우고
+//   ④앱이 켜져 있을 때만 돈다(PLAN R7 §9 · 꺼져 있으면 서버 큐) — start() 전에는 아무것도 안 돌고(runNow 도 'not-started'), stop() 은 타이머를 지우고
 //     도는 handler 에 abort 를 보낸 뒤 stopTimeoutMs 만 기다린다(플러그인 호스트 `plugin-process.ts` settlesWithin 꼴 — stop 이 영영 안 끝나는 버그를 막는다).
+//     stop() 이 끝난 뒤에는 onRowChange 를 부르지 않는다 — 늦게 끝난 handler 의 행 변화는 메모리에만 남는다(저장 계층이 이미 닫혔을 수 있다).
+//     stop() 이 기다리는 동안 끝난 handler 의 행 변화는 알린다(다음 실행의 next_execution_time 을 저장할 수 있게).
+//   ⑥task.running 은 status 를 running 으로 알리기(onRowChange) «전에» 잡는다 — 그 listener 가 runNow 를 불러도 겹쳐 돌지 않는다.
 //   ⑤앱이 꺼져 있던 동안 놓친 차례는 몰아서 돌리지 않는다 — 시작 때 next_execution_time 이 지났으면 한 번만 바로 돈다.
 //
 // 【AI 임시 결정】 status `queued` 는 Shopware 꼴을 맞추려고 타입에만 둔다(로컬은 큐 없이 바로 running) — 서버에서 온 행을 그대로 담을 수 있게.
@@ -66,7 +69,8 @@ export interface SchedulerOptions {
   readonly onRowChange?: (row: ScheduledTaskRow) => void;
 }
 
-export type RunNowResult = 'ran' | 'failed' | 'skipped-running' | 'inactive' | 'stopped';
+/** runNow 결과. failed = 이번 handler 가 던졌거나 거부됐다(도는 사이 inactive 로 바뀌어도 failed) · not-started = start() 전(【AI 임시 결정】 거부) */
+export type RunNowResult = 'ran' | 'failed' | 'skipped-running' | 'inactive' | 'stopped' | 'not-started';
 
 /** 【AI 임시 결정】 최소 주기 60초 — 실수로 1초 주기를 넣어 CPU · 네트워크를 태우지 않게(원칙 1) */
 export const MIN_RUN_INTERVAL_SECONDS = 60;
@@ -80,7 +84,8 @@ interface TaskState {
   readonly handler: ScheduledTaskHandler;
   timer: unknown;
   hasTimer: boolean;
-  running: Promise<void> | null;
+  /** 도는 handler — 풀리면 true = 실패 */
+  running: Promise<boolean> | null;
 }
 
 const defaultTimer: SchedulerTimer = {
@@ -97,6 +102,8 @@ export class Scheduler {
   private readonly onRowChange: ((row: ScheduledTaskRow) => void) | undefined;
   private readonly abort = new AbortController();
   private state: 'idle' | 'running' | 'stopped' = 'idle';
+  /** stop() 이 끝나면 true — 그 뒤 onRowChange 를 부르지 않는다 */
+  private rowEventsClosed = false;
 
   constructor(options: SchedulerOptions = {}) {
     this.timer = options.timer ?? defaultTimer;
@@ -166,15 +173,20 @@ export class Scheduler {
     if (task.running === null && this.state === 'running') this.arm(task);
   }
 
-  /** 지금 한 번 돌린다(설정 화면 «지금 실행»). 돌고 있으면 겹치지 않고 건너뛴다 */
+  /**
+   * 지금 한 번 돌린다(설정 화면 «지금 실행»). 돌고 있으면 겹치지 않고 건너뛴다.
+   * 【AI 임시 결정】 start() 전에는 돌리지 않고 'not-started'(머리 주석 ④ «start() 전에는 아무것도 안 돈다»와 맞춤).
+   * 결과는 이번 handler 의 성패로 정한다 — 도는 사이 setActive(false) 로 status 가 inactive 여도 던졌으면 'failed'.
+   */
   async runNow(name: string): Promise<RunNowResult> {
     const task = this.require(name);
     if (this.state === 'stopped') return 'stopped';
+    if (this.state === 'idle') return 'not-started';
     if (task.row.status === 'inactive') return 'inactive';
     if (task.running !== null) return 'skipped-running';
     this.disarm(task);
-    await this.execute(task);
-    return task.row.status === 'failed' ? 'failed' : 'ran';
+    const failed = await this.execute(task);
+    return failed ? 'failed' : 'ran';
   }
 
   /**
@@ -187,6 +199,7 @@ export class Scheduler {
     this.abort.abort();
     const running = [...this.tasks.values()].filter((t) => t.running !== null);
     const results = await Promise.all(running.map(async (t) => ({ name: t.row.name, done: await this.settlesWithin(t.running ?? Promise.resolve(), this.stopTimeoutMs) })));
+    this.rowEventsClosed = true;
     return { unfinished: results.filter((r) => !r.done).map((r) => r.name) };
   }
 
@@ -227,10 +240,9 @@ export class Scheduler {
     void this.execute(task);
   }
 
-  /** handler 한 번. 예외 · 거부는 failed 로 · 끝나면(stop · inactive 가 아니면) 다음 차례를 건다 */
-  private execute(task: TaskState): Promise<void> {
+  /** handler 한 번. 예외 · 거부는 failed 로 · 끝나면(stop · inactive 가 아니면) 다음 차례를 건다 · 풀리면 true = 실패 */
+  private execute(task: TaskState): Promise<boolean> {
     const startedAt = this.timer.now();
-    this.update(task, { status: 'running', last_execution_time: startedAt });
     const context: ScheduledTaskContext = { name: task.row.name, signal: this.abort.signal };
     // handler 는 다음 microtask 에 부른다 — 동기로 던져도 task.running 이 먼저 잡혀 있어야 «끝남» 처리가 어긋나지 않는다
     const run = Promise.resolve()
@@ -248,12 +260,15 @@ export class Scheduler {
         // 도는 사이 inactive 로 바뀌었으면 그대로 둔다(다시 안 잡는다)
         if (task.row.status === 'inactive') {
           this.update(task, { next_execution_time: next });
-          return;
+          return failed;
         }
         this.update(task, { status: failed ? 'failed' : 'scheduled', next_execution_time: next });
         this.arm(task);
+        return failed;
       });
+    // running 을 먼저 잡고 나서 running 을 알린다(검수 7 🟢1) — onRowChange 안의 runNow 는 skipped-running
     task.running = run;
+    this.update(task, { status: 'running', last_execution_time: startedAt });
     return run;
   }
 
@@ -263,7 +278,7 @@ export class Scheduler {
   }
 
   private emitRow(task: TaskState): void {
-    if (this.onRowChange === undefined) return;
+    if (this.onRowChange === undefined || this.rowEventsClosed) return;
     try {
       this.onRowChange({ ...task.row });
     } catch (error) {

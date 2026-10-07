@@ -9,9 +9,18 @@
 // 줄을 빠져나온 뒤 onChange listener 를 부른다(set · delete 의 Promise 는 listener 가 끝난 뒤 풀린다).
 // backend 쓰기가 실패하면 캐시는 그대로 · 이벤트 없음 · 그 호출만 거부된다.
 //
-// 【AI 임시 결정】 비밀값(API 키 · 비밀번호 · 토큰 · 시크릿)은 여기 넣지 않는다 — PLAN R7 §9 «저장은 safeStorage».
-//   키 마지막 마디가 비밀처럼 보이면(SECRET_KEY_SUFFIXES 로 끝남 · 대소문자 · `_` `-` 무시) set 이 예외를 던진다.
-//   `maxTokens` 처럼 «tokens» 로 끝나는 보통 설정은 막지 않으려고 «포함»이 아니라 «끝남»으로 본다.
+// 【AI 임시 결정】 비밀값(API 키 · 비밀번호 · 토큰 · 시크릿 · 쿠키)은 여기 넣지 않는다 — PLAN R7 §9 «저장은 safeStorage».
+//   이름이 비밀처럼 보이면 예외(검수 7 🟡4). 이름 = 키의 «모든» 마디 + 값 객체 안 칸 이름(대소문자 · `_` `-` `.` 무시):
+//     ①SECRET_NAME_WORDS 가 «들어 있으면»(password · passwd · secret · privatekey · credential · cookie · apikey …)
+//     ②`token` 은 «끝날 때만»(`accessToken` 은 막고 `maxTokens` · `tokenLimit` 은 받는다)
+//   값 안 칸은 그 값이 보통 객체가 아닐 때(글 · 숫자 · 배열 …)만 막는다 — Guard 정책 `credentials: { naver: "ask" }` 처럼
+//   «비밀이 아닌 지도»를 담는 칸 이름은 그대로 두고 안으로 들어가 본다. 칸 이름에 `:` 가 있으면(Guard 도구 글롭 같은 지도 키) 보지 않는다.
+//   한계: 비밀처럼 보이는 이름 아래 객체에 «비밀 아닌 이름»으로 비밀을 담으면(`cookie: { value: "…" }`) 못 막는다.
+//   open() 도 같은 검사를 한다 — 이미 들어 있는 비밀값 행은 깨진 행으로 친다.
+//
+// 깨진 행(검수 7 🟡5): open() 이 모든 행의 키 모양 · `{"_value": …}` 풀기 · 비밀값 이름을 보고, 하나라도 깨졌으면 깨진 키를 모두 적어 예외.
+//   【AI 임시 결정】 고치는 길: `SettingsStore.open(backend, { repair: true })` 로 열면 깨진 행도 캐시에 올리고(invalidKeys()),
+//   get 은 그 키에서 예외 · set 은 덮어쓰기(oldValue null) · delete 는 지우기(oldValue null · 키 모양이 깨진 행도 지운다)만 된다.
 
 import { randomUUID } from 'node:crypto';
 import type { Disposable } from '../plugin/event-bus.js';
@@ -75,8 +84,13 @@ export interface SettingsStoreOptions {
   readonly now?: () => string;
   /** 시험용 — 기본 하이픈 없는 32자 hex(Shopware id 꼴) */
   readonly newId?: () => string;
-  /** listener 예외 · 거부된 Promise 를 받는다. 주지 않으면 console.error(조용히 버리지 않는다 — EventBus 와 같은 꼴) */
+  /** listener 예외 · 거부된 Promise 를 받는다. 주지 않으면 console.error(조용히 버리지 않는다 — EventBus 와 같은 꼴) · 이것이 던져도 set 은 실패하지 않는다 */
   readonly onListenerError?: (error: unknown, event: SettingsChangeEvent) => void;
+  /**
+   * 【AI 임시 결정】 true = 깨진 행이 있어도 연다(고치기 · 지우기용). 기본 false = 깨진 행이 하나라도 있으면 open 이 예외.
+   * 깨진 행은 invalidKeys() 로 보고 set(덮어쓰기) · delete(지우기)로만 다룬다.
+   */
+  readonly repair?: boolean;
 }
 
 // ---------------------------------------------------------------- 키 규칙
@@ -88,14 +102,39 @@ export const SETTINGS_KEY_MIN_SEGMENTS = 3;
 export const SETTINGS_KEY_MAX_SEGMENTS = 8;
 /** 마디 한 개 — ASCII 글자 · 숫자 · `_` 만(공백 · 비ASCII · 빈 마디 금지) */
 const KEY_SEGMENT = /^[A-Za-z0-9_]+$/;
-/** 【AI 임시 결정】 비밀값으로 보는 마지막 마디 끝(소문자 · `_` `-` 를 뗀 꼴로 견준다) */
-export const SECRET_KEY_SUFFIXES: readonly string[] = Object.freeze(['apikey', 'password', 'token', 'secret']);
+/**
+ * 【AI 임시 결정】 이름 안에 «들어 있으면» 비밀값으로 보는 낱말(소문자 · `_` `-` `.` 를 뗀 꼴로 견준다).
+ * 앞 일곱은 검수 7 🟡4 수정안 · 뒤 넷은 `refreshTokens` 처럼 «tokens» 로 끝나 ②에 안 걸리는 비밀값 이름을 막으려고 더했다.
+ */
+export const SECRET_NAME_WORDS: readonly string[] = Object.freeze([
+  'password',
+  'passwd',
+  'secret',
+  'privatekey',
+  'credential',
+  'cookie',
+  'apikey',
+  'accesstoken',
+  'refreshtoken',
+  'authtoken',
+  'sessiontoken',
+]);
+/** 【AI 임시 결정】 이름이 이것으로 «끝나면» 비밀값(`token` 을 «포함»으로 보면 `maxTokens` · `tokenLimit` 까지 막는다) */
+export const SECRET_KEY_SUFFIXES: readonly string[] = Object.freeze(['token']);
 
-/** 키 마지막 마디가 비밀값처럼 보이나(`naver.login.password` · `ai.openai.apiKey` · `x.y.accessToken`) */
+/** 이름 하나(키 마디 · 값 칸 이름)가 비밀값처럼 보이나 */
+export function looksLikeSecretName(name: string): boolean {
+  const compact = name.toLowerCase().replace(/[_.-]/g, '');
+  return SECRET_NAME_WORDS.some((word) => compact.includes(word)) || SECRET_KEY_SUFFIXES.some((suffix) => compact.endsWith(suffix));
+}
+
+/** 키의 어느 마디든 비밀값처럼 보이나(`naver.login.password` · `ai.openai.apiKey` · `x.y.accessToken` · `ai.apiKeys.list`) */
 export function looksLikeSecretKey(key: string): boolean {
-  const last = key.split('.').pop() ?? '';
-  const compact = last.toLowerCase().replace(/[_-]/g, '');
-  return SECRET_KEY_SUFFIXES.some((suffix) => compact.endsWith(suffix));
+  return key.split('.').some(looksLikeSecretName);
+}
+
+function secretKeyError(key: string): Error {
+  return new Error(`settings: "${key}" looks like a secret — store secrets with safeStorage (CredentialStore), not in system_config`);
 }
 
 /** 키 모양 검사. 틀리면 예외 — 고칠 사람은 프로그래머다 */
@@ -128,17 +167,37 @@ function assertJsonValue(value: unknown, path: string, depth: number): void {
     if (!Number.isFinite(value)) throw new Error(`settings: non-finite number at ${path}`);
     return;
   }
+  if (typeof value === 'object' && Object.getOwnPropertySymbols(value).length > 0) {
+    // JSON.stringify 는 symbol 키를 조용히 버린다(검수 7 🟢6)
+    throw new Error(`settings: symbol keys are not allowed at ${path}`);
+  }
   if (Array.isArray(value)) {
+    // 빈 칸(sparse) 은 JSON 에서 null 이 되고 · 번호 아닌 칸은 버려진다(검수 7 🟢6)
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.hasOwn(value, index)) throw new Error(`settings: sparse array (hole at ${path}[${index}])`);
+    }
+    if (Object.keys(value).length !== value.length) throw new Error(`settings: array with non-index properties at ${path}`);
     value.forEach((item, index) => assertJsonValue(item, `${path}[${index}]`, depth + 1));
     return;
   }
   if (typeof value === 'object') {
     const proto: unknown = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) throw new Error(`settings: only plain objects are allowed at ${path}`);
-    for (const [k, v] of Object.entries(value)) assertJsonValue(v, `${path}.${k}`, depth + 1);
+    for (const [k, v] of Object.entries(value)) {
+      const childPath = `${path}.${k}`;
+      // 비밀값 칸(머리 주석): 보통 객체면 안으로 들어가 보고, 그 밖의 값이면 거부 · `:` 가 든 키는 지도 자료라 보지 않는다
+      if (!k.includes(':') && looksLikeSecretName(k) && !isPlainObjectValue(v)) {
+        throw new Error(`settings: value field ${childPath} looks like a secret — store secrets with safeStorage (CredentialStore), not in system_config`);
+      }
+      assertJsonValue(v, childPath, depth + 1);
+    }
     return;
   }
   throw new Error(`settings: ${typeof value} is not a JSON value at ${path}`);
+}
+
+function isPlainObjectValue(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function encodeValue(value: unknown): string {
@@ -160,6 +219,32 @@ function decodeValue(row: SystemConfigRow): unknown {
   return (parsed as { _value: unknown })._value;
 }
 
+/** open 예외 글에 적는 깨진 키 수 상한 */
+const INVALID_LIST_MAX = 20;
+
+/** backend 행 하나의 문제(없으면 null) — 키 모양 · 비밀값 키 · `{"_value": …}` 풀기 · 값 규칙(값 안 비밀값 칸 · 깊이) */
+function rowProblem(row: SystemConfigRow): string | null {
+  const key = row.configuration_key;
+  try {
+    assertSettingsKey(key);
+  } catch {
+    return 'bad key shape';
+  }
+  if (looksLikeSecretKey(key)) return 'key looks like a secret — move it to safeStorage';
+  let value: unknown;
+  try {
+    value = decodeValue(row);
+  } catch {
+    return 'configuration_value is not {"_value": …} JSON';
+  }
+  try {
+    assertJsonValue(value, '$', 0);
+  } catch (error) {
+    return error instanceof Error ? error.message.replace(/^settings: /, '') : 'invalid value';
+  }
+  return null;
+}
+
 function defaultNewId(): string {
   return randomUUID().replace(/-/g, '');
 }
@@ -172,6 +257,8 @@ export class SettingsStore {
   private readonly now: () => string;
   private readonly newId: () => string;
   private readonly onListenerError: (error: unknown, event: SettingsChangeEvent) => void;
+  /** repair 모드에서 올린 깨진 행: 키 → 까닭 */
+  private readonly invalid = new Map<string, string>();
   /** 쓰기 차례 줄 — 같은 키 set 두 번이 겹쳐 backend 와 캐시 차례가 엇갈리는 race condition 을 막는다 */
   private queue: Promise<void> = Promise.resolve();
 
@@ -184,7 +271,10 @@ export class SettingsStore {
     this.onListenerError = options.onListenerError ?? ((error, event) => console.error(`[settings] change listener failed (${event.key})`, error));
   }
 
-  /** backend 에서 모든 행을 읽어 캐시를 채운다. sales_channel_id 가 null 이 아닌 행 · 같은 키 두 줄은 예외 */
+  /**
+   * backend 에서 모든 행을 읽어 캐시를 채운다. sales_channel_id 가 null 이 아닌 행 · 같은 키 두 줄은 늘 예외(repair 여도).
+   * 깨진 행(키 모양 · 비밀값 이름 · `{"_value": …}` 풀기 · 값 안 비밀값 칸)이 있으면 repair 가 아닐 때 깨진 키를 모두 적어 예외.
+   */
   static async open(backend: SettingsBackend, options: SettingsStoreOptions = {}): Promise<SettingsStore> {
     const store = new SettingsStore(backend, options);
     for (const row of await backend.load()) {
@@ -193,13 +283,29 @@ export class SettingsStore {
       }
       if (store.rows.has(row.configuration_key)) throw new Error(`settings: duplicate key "${row.configuration_key}" in backend`);
       store.rows.set(row.configuration_key, row);
+      const problem = rowProblem(row);
+      if (problem !== null) store.invalid.set(row.configuration_key, problem);
+    }
+    if (store.invalid.size > 0 && options.repair !== true) {
+      const listed = [...store.invalid].slice(0, INVALID_LIST_MAX).map(([key, why]) => `${JSON.stringify(key)} (${why})`);
+      const more = store.invalid.size > INVALID_LIST_MAX ? ` … and ${store.invalid.size - INVALID_LIST_MAX} more` : '';
+      throw new Error(
+        `settings: backend has ${store.invalid.size} invalid row(s): ${listed.join(', ')}${more} — open with { repair: true } and overwrite (set) or delete them`,
+      );
     }
     return store;
   }
 
-  /** 값이 없으면 null. parse 는 `_value` 를 받아 검증한 값을 돌려준다(틀리면 parse 가 던진다) */
+  /** repair 모드에서 올라온 깨진 행의 키(차례 없음) */
+  invalidKeys(): string[] {
+    return [...this.invalid.keys()];
+  }
+
+  /** 값이 없으면 null. parse 는 `_value` 를 받아 검증한 값을 돌려준다(틀리면 parse 가 던진다) · 깨진 행이면 예외 */
   get<T>(key: string, parse: (raw: unknown) => T): T | null {
     assertSettingsKey(key);
+    const why = this.invalid.get(key);
+    if (why !== undefined) throw new Error(`settings: row "${key}" is invalid (${why}) — overwrite (set) or delete it`);
     const row = this.rows.get(key);
     return row === undefined ? null : parse(decodeValue(row));
   }
@@ -216,16 +322,16 @@ export class SettingsStore {
   /** 값을 넣는다. undefined 는 지우기로 오해되지 않게 거부(지우려면 delete) · 비밀값 키는 거부(safeStorage 로) */
   async set(key: string, value: unknown): Promise<void> {
     assertSettingsKey(key);
-    if (looksLikeSecretKey(key)) {
-      throw new Error(`settings: "${key}" looks like a secret — store secrets with safeStorage (CredentialStore), not in system_config`);
-    }
+    if (looksLikeSecretKey(key)) throw secretKeyError(key);
     if (value === undefined) throw new Error(`settings: value for "${key}" is undefined — use delete()`);
     const encoded = encodeValue(value);
     const event = await this.enqueue(async (): Promise<SettingsChangeEvent | null> => {
       const previous = this.rows.get(key);
-      const oldValue = previous === undefined ? null : decodeValue(previous);
+      const broken = this.invalid.has(key);
+      // 깨진 행을 덮어쓰면 옛값은 null(풀 수 없다 — 검수 7 🟡5 고치는 길)
+      const oldValue = previous === undefined || broken ? null : decodeValue(previous);
       // 【AI 임시 결정】 같은 값(같은 JSON 글) — 쓰지도 알리지도 않는다
-      if (previous !== undefined && previous.configuration_value === encoded) return null;
+      if (previous !== undefined && !broken && previous.configuration_value === encoded) return null;
       const at = this.now();
       const row: SystemConfigRow = {
         id: previous?.id ?? this.newId(),
@@ -237,20 +343,27 @@ export class SettingsStore {
       };
       await this.backend.upsert(row);
       this.rows.set(key, row);
+      this.invalid.delete(key);
       return { key, oldValue, newValue: decodeValue(row) };
     });
     if (event !== null) await this.notify(event);
   }
 
-  /** 지운다. 없던 키면 아무것도 안 하고 알리지도 않는다 */
+  /**
+   * 지운다. 없던 키면 아무것도 안 하고 알리지도 않는다.
+   * 깨진 행(repair 모드)은 키 모양이 깨졌어도 지운다 · 이벤트의 oldValue 는 null(검수 7 🟡5 고치는 길).
+   */
   async delete(key: string): Promise<void> {
-    assertSettingsKey(key);
+    // 캐시에 있는 키(깨진 행 포함)는 모양 검사 없이 지울 수 있다 — 없는 키만 모양을 본다(오타를 조용히 넘기지 않게)
+    if (!this.rows.has(key)) assertSettingsKey(key);
     const event = await this.enqueue(async (): Promise<SettingsChangeEvent | null> => {
       const previous = this.rows.get(key);
       if (previous === undefined) return null;
+      const oldValue = this.invalid.has(key) ? null : decodeValue(previous);
       await this.backend.delete(key);
       this.rows.delete(key);
-      return { key, oldValue: decodeValue(previous), newValue: null };
+      this.invalid.delete(key);
+      return { key, oldValue, newValue: null };
     });
     if (event !== null) await this.notify(event);
   }
@@ -275,17 +388,26 @@ export class SettingsStore {
     return run;
   }
 
-  /** listener 예외는 set 을 실패시키지 않는다(값은 이미 저장됐다) · onListenerError 로 알린다 */
+  /** listener 예외는 set 을 실패시키지 않는다(값은 이미 저장됐다) · onListenerError 로 알린다 · 뒤 listener 도 부른다 */
   private async notify(event: SettingsChangeEvent): Promise<void> {
     const pending: Promise<void>[] = [];
     for (const listener of [...this.listeners]) {
       try {
         const result = listener(event);
-        if (result instanceof Promise) pending.push(result.then(() => undefined, (error: unknown) => this.onListenerError(error, event)));
+        if (result instanceof Promise) pending.push(result.then(() => undefined, (error: unknown) => this.reportListenerError(error, event)));
       } catch (error) {
-        this.onListenerError(error, event);
+        this.reportListenerError(error, event);
       }
     }
     await Promise.all(pending);
+  }
+
+  /** onListenerError 가 던져도 set 이 실패하거나 뒤 listener 가 빠지지 않게(scheduler.ts reportError 꼴 · 검수 7 🟢5) */
+  private reportListenerError(error: unknown, event: SettingsChangeEvent): void {
+    try {
+      this.onListenerError(error, event);
+    } catch (secondary) {
+      console.error(`[settings] onListenerError threw (${event.key})`, secondary, error);
+    }
   }
 }

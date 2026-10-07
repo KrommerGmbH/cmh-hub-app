@@ -10,7 +10,8 @@
 // 내장 규칙(합의안 5 · 원칙 8): 승인 엔티티(`approval-entity.ts` 의 WRITE_PROTECTED_ENTITIES) 에 대한 «읽기 말고» 권한은
 // 에이전트 신원에게 절대 주지 않는다 — admin 이어도. 사람이 누르는 UI 만(actor 'human') 받는다. Guard 의 같은 규칙과 목록을 같이 쓴다.
 
-import { isWriteProtectedEntity, mentionsWriteProtectedEntity, normalizeEntityName } from './approval-entity.js';
+import { mentionsWriteProtectedEntity, normalizeEntityName } from './approval-entity.js';
+import { isReadActionName } from './guard-policy.js';
 
 export const ACL_OPERATIONS = ['read', 'create', 'update', 'delete'] as const;
 export type AclOperation = (typeof ACL_OPERATIONS)[number];
@@ -73,15 +74,38 @@ function isValidPrivilegeString(privilege: unknown): privilege is string {
 }
 
 /**
- * 승인 엔티티의 «읽기 말고» 권한인가. 첫 `:` 앞을 엔티티로 보고, 그 이름 안에 보호 엔티티가 들어 있으면(마디 일부 포함)
- * 나머지가 정확히 `read` 일 때만 읽기 — `cmh_ai_approval:approve` · `CMH_AI_APPROVAL:create` · `cmhAiApproval:update` 도 쓰기로 본다.
+ * 승인 엔티티의 «읽기 말고» 권한인가(검수 7 🟡3).
+ * ①권한 키 «전체» 어딘가에 보호 엔티티 이름이 들어 있지 않으면 false — 첫 `:` 앞만 보지 않는다
+ *   (`x:cmh_ai_approval:update` · `entity:cmh_ai_approval:update` 처럼 앞에 마디를 붙여 비껴가지 못하게 · Guard 가 모든 마디를 훑는 것과 같은 생각).
+ * ②들어 있으면, 정확히 `<snake_case 엔티티>:read`(parsePrivilege 꼴 · 소문자 그대로)일 때만 읽기 → false. 나머지는 전부 쓰기 → true.
+ * 【AI 임시 결정】 읽기는 엔티티 이름을 «정확히» 본다 — `cmh_ai_approval_log:read` 처럼 이름 일부만 겹치는 다른 엔티티의 읽기는 막지 않는다
+ *   (읽기는 승인 상태를 바꾸지 못한다). 쓰기는 «포함»으로 넓게 막는다(`cmh_ai_approval_log:create` 도 막힘 · 모르면 막는 쪽).
+ *   `CMH_AI_APPROVAL:read` · `cmh_ai_approval:READ` · `cmhAiApproval:read` 처럼 꼴이 어긋난 «읽기»는 쓰기로 본다.
  */
 export function isProtectedWritePrivilege(privilege: string): boolean {
-  const at = privilege.indexOf(':');
-  const entity = at < 0 ? privilege : privilege.slice(0, at);
-  if (!mentionsWriteProtectedEntity(entity)) return false;
-  const operation = at < 0 ? '' : normalizeEntityName(privilege.slice(at + 1));
-  return !(isWriteProtectedEntity(entity) && operation === 'read');
+  if (!mentionsWriteProtectedEntity(privilege)) return false;
+  const parsed = parsePrivilege(privilege);
+  return !(parsed !== null && parsed.operation === 'read');
+}
+
+/**
+ * Guard 도구 동작 이름(`guard-policy.ts` READ_ACTIONS · `dal_` 앞붙이 · `-` · camelCase 맞춤은 isReadActionName 그대로) → ACL 동작(검수 7 🟢8).
+ * 읽기 꼴(`search` · `dal_search` · `get` · `list` · `count` · `aggregate` · `find` · `read`)은 `read` 하나로 —
+ * 부르는 쪽이 `<엔티티>:search` 같은 없는 권한 키를 만들어 읽기까지 막는 일(over-block)을 없앤다.
+ * `create` · `update` · `delete`(앞 `dal_` 떼고)는 그대로. 그 밖(`upsert` · `sync` · `field_save` …)은 null —
+ * 【AI 임시 결정】 하나의 ACL 동작으로 정할 수 없으니 부르는 쪽이 권한 없음으로 다룬다(모르면 막는 쪽).
+ */
+export function aclOperationForAction(action: string): AclOperation | null {
+  if (isReadActionName(action)) return 'read';
+  const n = normalizeEntityName(action);
+  const bare = n.startsWith('dal_') ? n.slice(4) : n;
+  return bare === 'create' || bare === 'update' || bare === 'delete' ? bare : null;
+}
+
+/** 엔티티 + Guard 동작 이름 → ACL 권한 키(`<엔티티>:<read|create|update|delete>`). 동작을 정할 수 없으면 null · 엔티티가 snake_case 가 아니면 예외(privilegeKey) */
+export function privilegeForAction(entity: string, action: string): string | null {
+  const operation = aclOperationForAction(action);
+  return operation === null ? null : privilegeKey(entity, operation);
 }
 
 /** 역할 행 검증(서버가 준 JSON · 테이블 값). 모르는 꼴이면 예외 — 조용히 권한을 빼거나 넣지 않는다 */

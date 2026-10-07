@@ -298,6 +298,96 @@ describe('Scheduler (R7-b · scheduled_task 꼴)', () => {
     expect(timer.pending()).toBe(0);
   });
 
+  it('검수 7 🟢2: start() 전 runNow 는 돌지 않고 not-started', async () => {
+    const timer = new FakeTimer();
+    const scheduler = new Scheduler({ timer });
+    const handler = vi.fn();
+    scheduler.register({ name: 't', scheduledTaskClass: 'T', runInterval: 60, handler });
+    expect(await scheduler.runNow('t')).toBe('not-started');
+    expect(handler).not.toHaveBeenCalled();
+    expect(scheduler.get('t')?.status).toBe('scheduled');
+  });
+
+  it('검수 7 🟢1: running 을 알리는 onRowChange 안에서 runNow 를 불러도 겹쳐 돌지 않는다', async () => {
+    const timer = new FakeTimer();
+    let scheduler: Scheduler | null = null;
+    const nested: Promise<string>[] = [];
+    scheduler = new Scheduler({
+      timer,
+      onRowChange: (row) => {
+        if (row.status === 'running' && nested.length === 0) nested.push(scheduler?.runNow('u') ?? Promise.resolve('none'));
+      },
+    });
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const gate = deferred();
+    scheduler.register({
+      name: 'u',
+      scheduledTaskClass: 'U',
+      runInterval: 60,
+      nextExecutionTime: timer.now() + 30 * MIN,
+      handler: async () => {
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await gate.promise;
+        concurrent -= 1;
+      },
+    });
+    scheduler.start();
+    const first = scheduler.runNow('u');
+    expect(await nested[0]).toBe('skipped-running');
+    gate.resolve();
+    expect(await first).toBe('ran');
+    expect(maxConcurrent).toBe(1);
+  });
+
+  it('검수 7 🟢3: handler 가 setActive(false) 뒤 던지면 runNow 는 failed', async () => {
+    const timer = new FakeTimer();
+    const onError = vi.fn();
+    const scheduler = new Scheduler({ timer, onError });
+    scheduler.register({
+      name: 'v',
+      scheduledTaskClass: 'V',
+      runInterval: 60,
+      nextExecutionTime: timer.now() + 30 * MIN,
+      handler: () => {
+        scheduler.setActive('v', false);
+        throw new Error('x');
+      },
+    });
+    scheduler.start();
+    expect(await scheduler.runNow('v')).toBe('failed');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(scheduler.get('v')?.status).toBe('inactive');
+  });
+
+  it('검수 7 🟢4: stop() 이 끝난 뒤 늦게 끝난 handler 는 onRowChange 를 부르지 않는다 · 기다리는 동안 끝난 것은 알린다', async () => {
+    const timer = new FakeTimer();
+    const rows: ScheduledTaskRow[] = [];
+    const scheduler = new Scheduler({ timer, stopTimeoutMs: 3_000, onRowChange: (row) => rows.push(row) });
+    const stuck = deferred();
+    const quick = deferred();
+    scheduler.register({ name: 'stuck', scheduledTaskClass: 'S', runInterval: 60, handler: () => stuck.promise });
+    scheduler.register({ name: 'quick', scheduledTaskClass: 'Q', runInterval: 60, handler: () => quick.promise });
+    scheduler.start();
+    await timer.advance(0);
+    let done: { readonly unfinished: readonly string[] } | null = null;
+    void scheduler.stop().then((r) => {
+      done = r;
+    });
+    quick.resolve();
+    await timer.advance(1_000);
+    expect(rows.at(-1)).toMatchObject({ name: 'quick', status: 'scheduled' }); // 기다리는 동안 끝남 → 알린다
+    await timer.advance(2_000);
+    expect(done).toEqual({ unfinished: ['stuck'] });
+    const before = rows.length;
+    stuck.resolve();
+    await timer.advance(10 * MIN);
+    expect(rows.length).toBe(before); // stop 이 끝난 뒤 → 알리지 않는다
+    expect(scheduler.get('stuck')?.status).toBe('scheduled'); // 메모리 행은 바뀐다
+    expect(timer.pending()).toBe(0);
+  });
+
   it('onRowChange 는 상태가 바뀔 때마다 행 사본을 받는다', async () => {
     const timer = new FakeTimer();
     const rows: ScheduledTaskRow[] = [];
