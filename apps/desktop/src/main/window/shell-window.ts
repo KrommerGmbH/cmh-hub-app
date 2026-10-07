@@ -3,8 +3,10 @@ import { app, BaseWindow, Notification, shell, WebContentsView, type WebContents
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  computePaneViewport,
   LAYOUT_LIMITS,
   SHELL_IPC,
+  SHELL_SIDEBAR_ENABLED,
   type LayoutGeometry,
   type NewTabSpec,
   type Rect,
@@ -431,9 +433,9 @@ export class ShellWindow {
     return { x: 0, y: 0, width: width ?? 0, height: height ?? 0 };
   }
 
+  /** pane split 영역 — 창 안쪽 − 제목 줄 − 사이드바(RD · store 의 상태 · SHELL_SIDEBAR_ENABLED 가 false 면 0) − 상태 줄 */
   private viewport(): Rect {
-    const full = this.contentRect();
-    return { x: 0, y: LAYOUT_LIMITS.titleBarHeight, width: full.width, height: Math.max(0, full.height - LAYOUT_LIMITS.titleBarHeight) };
+    return computePaneViewport(this.contentRect(), LAYOUT_LIMITS, this.store.getSidebar(), SHELL_SIDEBAR_ENABLED);
   }
 
   private scheduleRelayout(): void {

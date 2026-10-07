@@ -15,7 +15,8 @@ export interface CredentialMenu {
   onRemove(username: string): void;
 }
 
-const KIND_LABEL: Record<TabKind, string> = { admin: '어드민', naver: '네이버', web: '웹' };
+// chat(R6 챗 pane)은 로그인 칸이 없어 계정 메뉴를 안 띄우지만, 이름표는 빠짐없이 둔다(Record<TabKind> 가 강제)
+const KIND_LABEL: Record<TabKind, string> = { admin: '어드민', naver: '네이버', web: '웹', chat: '챗' };
 
 let store: CredentialStore | null = null;
 

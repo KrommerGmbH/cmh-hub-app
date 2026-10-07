@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { LAYOUT_LIMITS, type LayoutGeometry, type LayoutTree, type NewTabSpec, type Rect } from '@cmh-hub-app/contracts';
 import { detectLayoutPreset, LayoutEngine } from './layout-engine.js';
 import { computeGeometry } from './layout-rect.js';
-import { LayoutStore } from './layout-store.js';
+import { layoutFileFromTree, LayoutStore, layoutTreeFromFile } from './layout-store.js';
 
 const ADMIN: NewTabSpec = { kind: 'admin', url: 'https://example.test/admin', title: 'Admin' };
 const VIEWPORT: Rect = { x: 0, y: 40, width: 1440, height: 860 };
@@ -193,8 +193,13 @@ describe('LayoutStore', () => {
       const e = engineWithOnePane();
       store.save(e.getTree());
       await store.flush();
-      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(e.getTree());
-      expect(await store.load()).toEqual(e.getTree());
+      // RD-a(2026-10-07) — 파일은 v2 로 쓴다. 엔진에 다시 넣으면 같은 트리
+      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(layoutFileFromTree(e.getTree()));
+      const loaded = await store.load();
+      expect(loaded).toEqual(layoutFileFromTree(e.getTree()));
+      const back = new LayoutEngine();
+      expect(back.loadTree(layoutTreeFromFile(loaded!))).toBe(true);
+      expect(back.getTree()).toEqual(e.getTree());
       const broken = new LayoutStore(join(dir, 'broken.json'), 1);
       await (await import('node:fs/promises')).writeFile(join(dir, 'broken.json'), '{ not json', 'utf8');
       expect(await broken.load()).toBeNull();

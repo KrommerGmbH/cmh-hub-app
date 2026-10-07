@@ -14,6 +14,8 @@ export function isAllowedUrl(kind: TabKind, raw: string): boolean {
   } catch {
     return false;
   }
+  // chat(R6 챗 pane · app://)은 이 정책의 대상이 아니다 — 만드는 곳(R6)이 자기 정책을 갖기 전까지 전부 거부(모르는 kind 를 네이버 검사로 흘리지 않는다 · 2026-10-07 RD-a 검수)
+  if (kind === 'chat') return false;
   if (u.protocol === 'about:') return true;
   // 빈 탭은 아무 http(s) — 사람이 주소창에 친 곳(2026-10-05). 어드민 · 네이버 탭은 아래처럼 고정 호스트만(A02)
   if (kind === 'web') {
@@ -24,5 +26,6 @@ export function isAllowedUrl(kind: TabKind, raw: string): boolean {
   if (u.protocol !== 'https:') return false;
   const host = u.hostname.toLowerCase();
   if (kind === 'admin') return (APP_CONFIG.adminHosts as readonly string[]).includes(host);
-  return isNaverHost(host);
+  if (kind === 'naver') return isNaverHost(host);
+  return false;
 }

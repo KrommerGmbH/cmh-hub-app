@@ -28,3 +28,11 @@ describe('isAllowedUrl (A02 허용 호스트)', () => {
     expect(isAllowedUrl('admin', 'about:blank')).toBe(true);
   });
 });
+
+describe('isAllowedUrl — chat(R6) 은 정책 밖 (2026-10-07 RD-a)', () => {
+  it('chat 은 네이버 · 어드민 · about: 을 포함해 전부 거부한다', () => {
+    expect(isAllowedUrl('chat', 'https://sell.smartstore.naver.com/')).toBe(false);
+    expect(isAllowedUrl('chat', 'about:blank')).toBe(false);
+    expect(isAllowedUrl('chat', 'app://chat/index.html')).toBe(false);
+  });
+});
