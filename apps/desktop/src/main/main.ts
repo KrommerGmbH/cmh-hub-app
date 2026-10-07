@@ -22,6 +22,7 @@ import { runExtCheckIfRequested } from './ext-check.js';
 import { createShellWindow, getShellWindow } from './window/shell-window.js';
 import { APP_CONFIG } from '../config.js';
 import { ExtensionBridge } from './extension-bridge.js';
+import { startDataService } from './data/start-data-service.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
 assertNoRemoteDebugging();
@@ -36,6 +37,8 @@ app.whenReady().then(async () => {
   ensureDevShortcuts(); // 개발판만 — 작업 표시줄 · 알림에 Electron 로고 대신 CMH Hub 아이콘(2026-10-05)
   await prepareSessions();
   registerIpc();
+  // R1 — 자료층(SQLite)은 utilityProcess 에서 · 실패해도 창은 뜬다 · before-quit 에서 stop(아직 부르는 화면 없음 · 연결만)
+  startDataService();
   // H01 · H03 — 설치 ID 와 서명은 창보다 먼저(첫 요청부터 서명이 붙게)
   const appSession = new AppSession(ensureInstallationIdentity());
   appSession.start();
