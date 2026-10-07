@@ -5,7 +5,8 @@
   "description": "CMH Hub 앱의 작업을 사장님 크롬에서 돌린다(읽기 1차)",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAscVvk734NDHYdjnYldt6+0HlxnTsUGLPLcuyU9pUFtPb9b/cFkjupNRWMDyPTTlRQmL3YNGkngbXU60P6ssn+SrrzYl3znu49choHvg/MPev7S9/R4+bTupS2XttJY3istwKTtQV8xj/3MlYZx/3bsEW1MeDFPEg24Lyc/jSq++1Zq4CwBcBHdpakpdz97u3y+OjSKBmzTiC4LM0IkT39HU1pVqJfHASitd26JxKRl2g1oggHLSm5D6BO2bbwLx1zx5z14fdlksZgcyP9x8awYegoanzY8ahlLdhYt7ebKxFnlpXg1KPqNEOW7r3kwBqhaQsRyui2KzHCLluzuejvQIDAQAB",
   "permissions": [
-    "alarms"
+    "alarms",
+    "contextMenus"
   ],
   "background": {
     "service_worker": "background.js",

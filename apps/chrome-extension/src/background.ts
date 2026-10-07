@@ -1,6 +1,11 @@
 // 앱 WebSocket 연결(U11 4번) · 서비스 워커는 30초 쉬면 잠든다
 
-import type { DriverErrorCode, DriverRunResult } from '@cmh-hub-app/driver-core';
+import type {
+  ContextElement,
+  ContextIntentKey,
+  DriverErrorCode,
+  DriverRunResult,
+} from '@cmh-hub-app/driver-core';
 import { BRIDGE_DEFAULT_PORT } from '@cmh-hub-app/driver-core';
 
 import type { WebSocketLike } from './bridge-client.js';
@@ -117,6 +122,123 @@ chrome.runtime.onStartup.addListener(() => {
   client.connect();
 });
 
+function setupContextMenus(): void {
+  if (!chrome.contextMenus) {
+    return;
+  }
+  chrome.contextMenus.removeAll(() => {
+    const matches = chrome.runtime.getManifest().content_scripts?.[0]?.matches;
+    const documentUrlPatterns =
+      matches && matches.length > 0 ? matches : ['https://sell.smartstore.naver.com/*'];
+
+    chrome.contextMenus.create({
+      id: 'cmh-ai',
+      title: 'CMH AI 작업',
+      contexts: ['all'],
+      documentUrlPatterns,
+    });
+
+    const menuItems: Array<{ key: ContextIntentKey; label: string }> = [
+      { key: 'suggest_value', label: 'AI 값 제안' },
+      { key: 'check_rules', label: '네이버 규칙 검사' },
+      { key: 'explain_field', label: '이 칸 설명' },
+      { key: 'explain_button', label: '이 단추가 하는 일' },
+      { key: 'summarize_screen', label: '이 화면 요약' },
+    ];
+
+    for (const item of menuItems) {
+      chrome.contextMenus.create({
+        id: `cmh-ai:${item.key}`,
+        parentId: 'cmh-ai',
+        title: item.label,
+        contexts: ['all'],
+        documentUrlPatterns,
+      });
+    }
+  });
+}
+
+// 앱 파서(driver-core parseBridgeToApp)는 문자열 칸이 500자를 넘으면 메시지를 통째로 버린다 → 보내기 전에 자른다
+const CONTEXT_STRING_MAX = 500;
+
+function clipText(v: string): string {
+  return v.length > CONTEXT_STRING_MAX ? v.slice(0, CONTEXT_STRING_MAX) : v;
+}
+
+function clipNullable(v: string | null): string | null {
+  return v === null ? null : clipText(v);
+}
+
+function clipContextElement(el: ContextElement): ContextElement {
+  return {
+    tag: clipText(el.tag),
+    type: clipNullable(el.type),
+    name: clipNullable(el.name),
+    id: clipNullable(el.id),
+    role: clipNullable(el.role),
+    label: clipNullable(el.label),
+    text: clipText(el.text),
+    value: clipNullable(el.value),
+    selector: clipText(el.selector),
+  };
+}
+
+function forwardContextAction(
+  intentKey: ContextIntentKey,
+  element: ContextElement | null,
+  pageUrl: string,
+  pageTitle: string,
+): void {
+  // 요소에 맞지 않는 작업(예: 단추에 «AI 값 제안»)을 골라도 그대로 넘긴다(앱이 글을 만든다 · 1차)
+  const sent = client.send({
+    type: 'context-action',
+    intentKey,
+    element: element ? clipContextElement(element) : null,
+    pageUrl: clipText(pageUrl),
+    pageTitle: clipText(pageTitle),
+  });
+  if (!sent) {
+    // 알림 API 는 권한을 더 늘리니 이번엔 안 씀
+    console.warn('[cmh-bridge] 앱이 연결되지 않아 AI 작업을 넘기지 못했습니다');
+  }
+}
+
+// Electron(ext-check)은 chrome.contextMenus 가 없다 — 없으면 메뉴만 건너뛰고 연결은 산다
+chrome.contextMenus?.onClicked.addListener((info, tab) => {
+  const menuId = String(info.menuItemId);
+  if (!menuId.startsWith('cmh-ai:')) {
+    return;
+  }
+  const intentKey = menuId.slice('cmh-ai:'.length) as ContextIntentKey;
+  if (!tab || typeof tab.id !== 'number') {
+    return;
+  }
+  const fallbackUrl = tab.url || info.pageUrl || '';
+  const fallbackTitle = tab.title || '';
+
+  // content script 는 맨 위 프레임에만 있다 — iframe 안 클릭은 그 프레임의 contextmenu 를 못 받아
+  // 기억한 요소가 옛것이다 → 요소 없이(화면 기준) 넘긴다 · 주소는 탭 주소(앱이 판매자센터 화면을 찾는 기준)
+  if (info.frameId !== undefined && info.frameId !== 0) {
+    forwardContextAction(intentKey, null, fallbackUrl, fallbackTitle);
+    return;
+  }
+
+  chrome.tabs
+    .sendMessage(tab.id, { type: 'cmh-last-element' }, { frameId: 0 })
+    .then((response: { element?: ContextElement | null; pageUrl?: string; pageTitle?: string } | undefined) => {
+      forwardContextAction(
+        intentKey,
+        response?.element ?? null,
+        response?.pageUrl || fallbackUrl,
+        response?.pageTitle || fallbackTitle,
+      );
+    })
+    .catch(() => {
+      forwardContextAction(intentKey, null, fallbackUrl, fallbackTitle);
+    });
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   client.connect();
+  setupContextMenus();
 });

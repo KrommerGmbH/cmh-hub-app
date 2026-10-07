@@ -1,7 +1,27 @@
+import { readContextElement } from './context-element.js';
 import { runReadSteps } from './content-runner.js';
+
+let lastTarget: Element | null = null;
+document.addEventListener(
+  'contextmenu',
+  (e) => {
+    lastTarget = e.target as Element | null;
+  },
+  { capture: true },
+);
 
 // 메시지 수신 핸들러 — background 서비스 워커 또는 팝업 등에서 전송된 작업 실행
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === 'cmh-last-element') {
+    const element = readContextElement(lastTarget);
+    sendResponse({
+      element,
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+    });
+    return false;
+  }
+
   if (msg?.type !== 'cmh-run') return;
   runReadSteps(document, window, msg.steps)
     .then(sendResponse)

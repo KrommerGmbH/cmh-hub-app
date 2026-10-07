@@ -33,6 +33,18 @@ export class BridgeClient {
     return this.socket !== null && this.socket.readyState === 1;
   }
 
+  send(msg: BridgeToApp): boolean {
+    if (!this.isOpen() || !this.socket) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(msg));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   connect(): void {
     if (this.socket !== null && (this.socket.readyState === 0 || this.socket.readyState === 1)) {
       return;

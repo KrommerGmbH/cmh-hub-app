@@ -19,7 +19,7 @@ import { runCredentialCheckIfRequested } from './credentials/credential-check.js
 import { runParallelCheckIfRequested } from './parallel-check.js';
 import { runDriverCheckIfRequested } from './naver/driver-check.js';
 import { runExtCheckIfRequested } from './ext-check.js';
-import { createShellWindow } from './window/shell-window.js';
+import { createShellWindow, getShellWindow } from './window/shell-window.js';
 import { APP_CONFIG } from '../config.js';
 import { ExtensionBridge } from './extension-bridge.js';
 
@@ -63,6 +63,9 @@ app.whenReady().then(async () => {
       host: APP_CONFIG.extensionBridge.host,
       port: APP_CONFIG.extensionBridge.port,
       allowedIds: APP_CONFIG.extensionBridge.allowedExtensionIds,
+      onContextAction: (msg) => {
+        void getShellWindow()?.handoffFromExtension(msg);
+      },
     });
     bridge.start();
     app.on('before-quit', () => bridge.stop());

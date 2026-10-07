@@ -11,6 +11,7 @@ import {
   type ShellCommand,
   type UpdateState,
 } from '@cmh-hub-app/contracts';
+import type { BridgeToApp } from '@cmh-hub-app/driver-core';
 import { APP_CONFIG } from '../../config.js';
 import { APP_DISPLAY_NAME, APP_ICON_PNG } from '../app-identity.js';
 import { LayoutEngine } from '../layout/layout-engine.js';
@@ -22,7 +23,14 @@ import { resolveOmniboxInput } from '../omnibox.js';
 import { AppUpdater } from '../update/app-updater.js';
 import type { AppSession } from '../identity/app-session.js';
 import { ScreenLookup } from '../ai-element/element-lookup.js';
-import { CHAT_TAB_URL, ChatHandoff, isChatTabUrl } from '../ai-element/chat-handoff.js';
+import {
+  CHAT_TAB_URL,
+  ChatHandoff,
+  HANDOFF_FAILURE_TEXT,
+  isChatTabUrl,
+  type HandoffRequest,
+} from '../ai-element/chat-handoff.js';
+import { INTENTS, type ElementInfo } from '../ai-element/element-intents.js';
 import { isAllowedUrl } from '../url-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
@@ -353,6 +361,58 @@ export class ShellWindow {
     const paneId = this.focusedPaneId();
     const pane = paneId ? this.engine.getPane(paneId) : undefined;
     return pane ? { paneId: pane.id, tabIds: pane.tabIds, activeTabId: pane.activeTabId } : undefined;
+  }
+
+  /** U11 — 크롬 확장의 오른쪽 클릭 «AI 작업» 을 받아 AI 채팅 탭으로 넘긴다 */
+  async handoffFromExtension(msg: Extract<BridgeToApp, { type: 'context-action' }>): Promise<void> {
+    const sourceTabId =
+      this.activeTabOfFocusedPane()?.activeTabId ??
+      Object.keys(this.engine.getTree().tabs)[0];
+    if (!sourceTabId) {
+      console.warn('[ai-handoff] AI 작업을 보낼 기준 탭이 없습니다');
+      return;
+    }
+
+    const element: ElementInfo | null = msg.element ? { ...msg.element } : null;
+    const intent = INTENTS[msg.intentKey];
+    const screen = await this.screenLookup.lookup(msg.pageUrl);
+    const request: HandoffRequest = {
+      intent,
+      kind: 'naver',
+      pageUrl: msg.pageUrl,
+      pageTitle: msg.pageTitle,
+      element,
+      screen,
+    };
+
+    if (this.window.isMinimized()) this.window.restore();
+    this.window.show();
+    this.window.focus();
+
+    try {
+      const result = await this.chatHandoff.send(sourceTabId, request);
+      if (result !== 'sent') {
+        if (Notification.isSupported()) {
+          new Notification({
+            title: APP_DISPLAY_NAME,
+            body: HANDOFF_FAILURE_TEXT[result],
+            silent: true,
+            icon: APP_ICON_PNG,
+          }).show();
+        }
+      }
+    } catch (error) {
+      const line = ((error instanceof Error ? error.message : String(error)).split('\n')[0] ?? '').slice(0, 160);
+      console.warn('[ai-handoff] 오류', line);
+      if (Notification.isSupported()) {
+        new Notification({
+          title: APP_DISPLAY_NAME,
+          body: `AI 채팅으로 넘기다 오류: ${line}`,
+          silent: true,
+          icon: APP_ICON_PNG,
+        }).show();
+      }
+    }
   }
 
   isShellSender(sender: WebContents): boolean {

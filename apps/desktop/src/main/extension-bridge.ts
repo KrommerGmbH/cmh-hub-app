@@ -8,6 +8,7 @@ import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   parseBridgeToApp,
+  type BridgeToApp,
   type DriverErrorCode,
   type DriverRunResult,
 } from '@cmh-hub-app/driver-core';
@@ -34,6 +35,7 @@ export interface ExtensionBridgeOptions {
   port: number;
   allowedIds: readonly string[];
   log?: (m: string) => void;
+  onContextAction?: (msg: Extract<BridgeToApp, { type: 'context-action' }>) => void;
 }
 
 interface PendingRun {
@@ -53,6 +55,7 @@ export class ExtensionBridge {
   private readonly port: number;
   private readonly allowedIds: readonly string[];
   private readonly log: (m: string) => void;
+  private readonly onContextAction?: ((msg: Extract<BridgeToApp, { type: 'context-action' }>) => void) | undefined;
 
   private wss: WebSocketServer | null = null;
   private currentSocket: WebSocket | null = null;
@@ -67,6 +70,7 @@ export class ExtensionBridge {
     this.port = opts.port;
     this.allowedIds = opts.allowedIds;
     this.log = opts.log ?? ((m: string) => console.info('[ext-bridge] ' + m));
+    this.onContextAction = opts.onContextAction;
   }
 
   start(): void {
@@ -125,6 +129,15 @@ export class ExtensionBridge {
             clearTimeout(pending.timer);
             this.pendingRuns.delete(msg.id);
             pending.resolve(msg.result);
+          }
+        } else if (msg.type === 'context-action') {
+          if (this.onContextAction) {
+            try {
+              this.onContextAction(msg);
+            } catch (err) {
+              const errLine = err instanceof Error ? err.message : String(err);
+              console.warn(`[ext-bridge] onContextAction 오류: ${errLine}`);
+            }
           }
         }
       });

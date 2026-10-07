@@ -299,4 +299,70 @@ describe('ExtensionBridge WebSocket', () => {
       bridge.stop();
     }
   });
+
+  it('허용 Origin 클라이언트가 context-action 을 보내면 콜백이 그 값으로 불림', async () => {
+    const port = await getFreePort();
+    let receivedAction: unknown = null;
+    const bridge = new ExtensionBridge({
+      host: '127.0.0.1',
+      port,
+      allowedIds: [allowedId],
+      log: () => {},
+      onContextAction: (msg) => {
+        receivedAction = msg;
+      },
+    });
+    bridge.start();
+
+    try {
+      const client = new WebSocket(`ws://127.0.0.1:${port}`, {
+        origin: allowedOrigin,
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        client.on('open', () => {
+          client.send(JSON.stringify({ type: 'hello', extVersion: '1.0.0' }));
+        });
+        client.on('error', reject);
+        bridge.waitForConnection(2000).then((ok) => {
+          if (ok) resolve();
+          else reject(new Error('not connected'));
+        });
+      });
+
+      const actionPayload = {
+        type: 'context-action',
+        intentKey: 'suggest_value',
+        element: {
+          tag: 'input',
+          type: 'text',
+          name: 'prodName',
+          id: 'prodName',
+          role: null,
+          label: '상품명',
+          text: '',
+          value: '기존상품명',
+          selector: 'input[name="prodName"]',
+        },
+        pageUrl: 'https://sell.smartstore.naver.com/#/products/create',
+        pageTitle: '상품 등록',
+      };
+
+      client.send(JSON.stringify(actionPayload));
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (receivedAction) resolve();
+          else setTimeout(check, 20);
+        };
+        check();
+      });
+
+      expect(receivedAction).toEqual(actionPayload);
+
+      client.close();
+    } finally {
+      bridge.stop();
+    }
+  });
 });

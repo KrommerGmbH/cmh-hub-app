@@ -132,13 +132,76 @@ export function isNavigationTarget(info: NavigationTargetInfo): boolean {
   return false;
 }
 
+export interface ContextElement {
+  tag: string;
+  type: string | null;
+  name: string | null;
+  id: string | null;
+  role: string | null;
+  label: string | null;
+  text: string;
+  value: string | null;
+  selector: string;
+}
+
+export type ContextIntentKey =
+  | 'suggest_value'
+  | 'check_rules'
+  | 'explain_field'
+  | 'explain_button'
+  | 'summarize_screen';
+
+const VALID_CONTEXT_INTENTS: ReadonlySet<string> = new Set<ContextIntentKey>([
+  'suggest_value',
+  'check_rules',
+  'explain_field',
+  'explain_button',
+  'summarize_screen',
+]);
+
+const MAX_CONTEXT_STRING_LEN = 500;
+
+function isValidContextString(v: unknown): boolean {
+  return typeof v === 'string' && v.length <= MAX_CONTEXT_STRING_LEN;
+}
+
+function isValidNullableContextString(v: unknown): boolean {
+  return v === null || (typeof v === 'string' && v.length <= MAX_CONTEXT_STRING_LEN);
+}
+
+function isContextElement(value: unknown): value is ContextElement {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const el = value as Record<string, unknown>;
+  if (!isValidContextString(el['tag'])) return false;
+  if (!isValidContextString(el['selector'])) return false;
+  if (!isValidContextString(el['text'])) return false;
+
+  if (!isValidNullableContextString(el['type'])) return false;
+  if (!isValidNullableContextString(el['name'])) return false;
+  if (!isValidNullableContextString(el['id'])) return false;
+  if (!isValidNullableContextString(el['role'])) return false;
+  if (!isValidNullableContextString(el['label'])) return false;
+  if (!isValidNullableContextString(el['value'])) return false;
+
+  return true;
+}
+
 /** U11 앱 ↔ 확장 WebSocket 메시지(JSON 한 줄) */
 export const BRIDGE_DEFAULT_PORT = 47900;
 export type BridgeToExtension = { type: 'run'; id: string; steps: unknown[] } | { type: 'ping' };
 export type BridgeToApp =
   | { type: 'hello'; extVersion: string }
   | { type: 'result'; id: string; result: DriverRunResult }
-  | { type: 'pong' };
+  | { type: 'pong' }
+  | {
+      type: 'context-action';
+      intentKey: ContextIntentKey;
+      element: ContextElement | null;
+      pageUrl: string;
+      pageTitle: string;
+    };
 
 export function parseBridgeToExtension(raw: string): BridgeToExtension | null {
   if (typeof raw !== 'string') return null;
@@ -212,6 +275,31 @@ export function parseBridgeToApp(raw: string): BridgeToApp | null {
       return null;
     }
     return { type: 'result', id: obj['id'], result: res as DriverRunResult };
+  }
+  if (obj['type'] === 'context-action') {
+    const intentKey = obj['intentKey'];
+    if (typeof intentKey !== 'string' || !VALID_CONTEXT_INTENTS.has(intentKey)) {
+      return null;
+    }
+    const pageUrl = obj['pageUrl'];
+    if (typeof pageUrl !== 'string' || pageUrl.length > MAX_CONTEXT_STRING_LEN) {
+      return null;
+    }
+    const pageTitle = obj['pageTitle'];
+    if (typeof pageTitle !== 'string' || pageTitle.length > MAX_CONTEXT_STRING_LEN) {
+      return null;
+    }
+    const element = obj['element'];
+    if (element !== null && !isContextElement(element)) {
+      return null;
+    }
+    return {
+      type: 'context-action',
+      intentKey: intentKey as ContextIntentKey,
+      element: element as ContextElement | null,
+      pageUrl,
+      pageTitle,
+    };
   }
   return null;
 }

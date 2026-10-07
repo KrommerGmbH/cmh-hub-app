@@ -231,4 +231,33 @@ describe('BridgeClient', () => {
     client.connect();
     expect(sockets.length).toBe(1);
   });
+
+  it('send(): 연결이 열려 있으면 메시지 전송 후 true 반환, 닫혀 있으면 false 반환', () => {
+    const { client, sockets } = createHarness();
+
+    // 닫힌 상태
+    const closedSent = client.send({ type: 'pong' });
+    expect(closedSent).toBe(false);
+
+    // 연결 및 오픈
+    client.connect();
+    const ws = sockets[0]!;
+    ws.triggerOpen();
+
+    const openSent = client.send({
+      type: 'context-action',
+      intentKey: 'explain_field',
+      element: null,
+      pageUrl: 'https://sell.smartstore.naver.com/',
+      pageTitle: '홈',
+    });
+    expect(openSent).toBe(true);
+    expect(JSON.parse(ws.sent[ws.sent.length - 1]!)).toEqual({
+      type: 'context-action',
+      intentKey: 'explain_field',
+      element: null,
+      pageUrl: 'https://sell.smartstore.naver.com/',
+      pageTitle: '홈',
+    });
+  });
 });

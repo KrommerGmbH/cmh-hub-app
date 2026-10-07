@@ -601,5 +601,160 @@ describe('driver-core 순수 함수 검증', () => {
         ),
       ).toBeNull();
     });
+
+    it('정상 context-action 메시지 (element 포함) 를 파싱한다', () => {
+      const raw = JSON.stringify({
+        type: 'context-action',
+        intentKey: 'suggest_value',
+        element: {
+          tag: 'input',
+          type: 'text',
+          name: 'productName',
+          id: 'prod-name',
+          role: null,
+          label: '상품명',
+          text: '',
+          value: '기존 상품명',
+          selector: 'input[name="productName"]',
+        },
+        pageUrl: 'https://sell.smartstore.naver.com/#/products/create',
+        pageTitle: '상품 등록 : 스마트스토어',
+      });
+
+      expect(parseBridgeToApp(raw)).toEqual({
+        type: 'context-action',
+        intentKey: 'suggest_value',
+        element: {
+          tag: 'input',
+          type: 'text',
+          name: 'productName',
+          id: 'prod-name',
+          role: null,
+          label: '상품명',
+          text: '',
+          value: '기존 상품명',
+          selector: 'input[name="productName"]',
+        },
+        pageUrl: 'https://sell.smartstore.naver.com/#/products/create',
+        pageTitle: '상품 등록 : 스마트스토어',
+      });
+    });
+
+    it('정상 context-action 메시지 (element 가 null 인 경우) 를 파싱한다', () => {
+      const raw = JSON.stringify({
+        type: 'context-action',
+        intentKey: 'summarize_screen',
+        element: null,
+        pageUrl: 'https://sell.smartstore.naver.com/#/dashboard',
+        pageTitle: '스마트스토어 대시보드',
+      });
+
+      expect(parseBridgeToApp(raw)).toEqual({
+        type: 'context-action',
+        intentKey: 'summarize_screen',
+        element: null,
+        pageUrl: 'https://sell.smartstore.naver.com/#/dashboard',
+        pageTitle: '스마트스토어 대시보드',
+      });
+    });
+
+    it('다섯 가지 외의 유효하지 않은 intentKey 는 거절한다', () => {
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: 'invalid_intent',
+            element: null,
+            pageUrl: 'https://sell.smartstore.naver.com/',
+            pageTitle: '홈',
+          }),
+        ),
+      ).toBeNull();
+
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: '',
+            element: null,
+            pageUrl: 'https://sell.smartstore.naver.com/',
+            pageTitle: '홈',
+          }),
+        ),
+      ).toBeNull();
+    });
+
+    it('pageUrl 또는 pageTitle 이 유효하지 않거나 500자 초과하면 거절한다', () => {
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: 'explain_button',
+            element: null,
+            pageUrl: 12345,
+            pageTitle: '홈',
+          }),
+        ),
+      ).toBeNull();
+
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: 'explain_button',
+            element: null,
+            pageUrl: 'https://sell.smartstore.naver.com/',
+            pageTitle: 'a'.repeat(501),
+          }),
+        ),
+      ).toBeNull();
+    });
+
+    it('element 필드 규격이 어긋나거나 500자 초과하면 거절한다', () => {
+      // tag 누락
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: 'check_rules',
+            element: {
+              type: 'text',
+              name: null,
+              id: null,
+              role: null,
+              label: null,
+              text: '',
+              value: null,
+              selector: 'input',
+            },
+            pageUrl: 'https://sell.smartstore.naver.com/',
+            pageTitle: '홈',
+          }),
+        ),
+      ).toBeNull();
+
+      // selector 가 500자 초과
+      expect(
+        parseBridgeToApp(
+          JSON.stringify({
+            type: 'context-action',
+            intentKey: 'check_rules',
+            element: {
+              tag: 'input',
+              type: null,
+              name: null,
+              id: null,
+              role: null,
+              label: null,
+              text: '',
+              value: null,
+              selector: 'div > '.repeat(150),
+            },
+            pageUrl: 'https://sell.smartstore.naver.com/',
+            pageTitle: '홈',
+          }),
+        ),
+      ).toBeNull();
+    });
   });
 });
