@@ -36,6 +36,12 @@ export class AdminApiError extends Error {
 export interface AdminApiDriverOptions {
   readonly transport: AdminApiTransport;
   readonly registry: EntityRegistry;
+  /**
+   * 비밀칸(apiAware false · 예 api_key_enc)을 sync 로 보낼까. 기본 false = 줄에 비밀칸이 있으면 DataWriteError(2026-10-07 검수).
+   * 로컬 비밀칸 값은 이 컴퓨터의 safeStorage(DPAPI) 암호 blob 이라 서버에서 풀 수 없다 — 보내면 못 쓰는 값이 서버에 남는다.
+   * 서버가 풀 수 있는 값(서버 쪽 암호)을 일부러 보낼 때만 true.
+   */
+  readonly allowSecretFields?: boolean;
 }
 
 export const ADMIN_API_PATHS = {
@@ -61,10 +67,12 @@ function stripApiAlias(value: unknown): unknown {
 export class AdminApiDriver implements EntityDriver {
   private readonly transport: AdminApiTransport;
   private readonly registry: EntityRegistry;
+  private readonly allowSecretFields: boolean;
 
   constructor(options: AdminApiDriverOptions) {
     this.transport = options.transport;
     this.registry = options.registry;
+    this.allowSecretFields = options.allowSecretFields === true;
   }
 
   async search(entityName: string, criteria: CriteriaInput, options: ReadOptions = {}): Promise<EntitySearchResult> {
@@ -197,6 +205,9 @@ export class AdminApiDriver implements EntityDriver {
         if (def.association(key)) throw new DataWriteError(`${at}: 연관 '${key}' 을 같이 쓰는 것은 아직 못 한다 — 엔티티마다 따로 upsert`);
         throw new DataWriteError(`${at}: 정의에 없는 칸 '${key}'`);
       }
+      if (field.apiAware === false && !this.allowSecretFields) {
+        throw new DataWriteError(`${at}: 비밀칸 '${key}' 은 서버로 보내지 않는다(로컬 암호 blob 은 서버에서 못 푼다 · allowSecretFields 로만 연다)`);
+      }
       const prop = snakeToCamel(field.name);
       if (prop in out) throw new DataWriteError(`${at}: 칸 '${field.name}' 이 두 이름으로 두 번 들어왔다`);
       let stored: string | number | null;
@@ -208,7 +219,14 @@ export class AdminApiDriver implements EntityDriver {
       // 서버 JSON 은 bool = true/false · json = 객체 그대로
       out[prop] = field.type === 'bool' ? (stored === null ? null : stored === 1) : field.type === 'json' ? value : stored;
     }
-    if (out['id'] === undefined || out['id'] === null) out['id'] = newId();
+    if (out['id'] === undefined || out['id'] === null) {
+      // id 가 없으면 틀림없이 새 줄 — 로컬과 같은 필수 칸 검사(serverRequired 포함 · 서버 DAL 도 거절한다)
+      for (const f of def.requiredOnInsert) {
+        const v = out[snakeToCamel(f.name)];
+        if (v === undefined || v === null) throw new DataWriteError(`${at}: 필수 칸 '${snakeToCamel(f.name)}' 이 없다`);
+      }
+      out['id'] = newId();
+    }
     return out;
   }
 }

@@ -77,15 +77,46 @@ export function migrateLayoutFile(json: unknown): LayoutFileV2 | null {
   return file;
 }
 
-/** 엔진 트리 + 사이드바 → 저장 꼴 v2(owner 를 늘 적는다 · agentTabIds 는 owner 'agent' 탭이 있을 때만 · tabs 차례) */
-export function layoutFileFromTree(tree: LayoutTree, sidebar: SidebarState = DEFAULT_SIDEBAR): LayoutFileV2 {
+/**
+ * 엔진 밖에서 기억하는 탭 owner(2026-10-07 검수 B4). LayoutEngine.loadTree 는 탭 칸을 id · kind · url · title · favicon 만 옮겨
+ * owner 가 사라진다 — 엔진은 고치지 않고(합의안 6) store 가 load 때 따로 들고 있다가 저장 때 같은 탭 id 에 다시 붙인다.
+ */
+export interface RememberedOwners {
+  /** 탭 id → owner(파일에 적혔던 것) */
+  readonly owners: ReadonlyMap<string, TabOwner>;
+  /** 파일의 agentTabIds 차례 */
+  readonly agentTabIds: readonly string[];
+}
+
+export const NO_REMEMBERED_OWNERS: RememberedOwners = { owners: new Map(), agentTabIds: [] };
+
+/** 읽은 v2 파일 → 기억할 owner(파일 탭마다 · agentTabIds 차례) */
+export function rememberOwners(file: LayoutFileV2): RememberedOwners {
+  const owners = new Map<string, TabOwner>();
+  for (const [key, tab] of Object.entries(file.tabs)) owners.set(key, tab.owner === 'agent' ? 'agent' : 'user');
+  return { owners, agentTabIds: [...(file.agentTabIds ?? [])] };
+}
+
+/**
+ * 엔진 트리 + 사이드바 → 저장 꼴 v2(owner 를 늘 적는다 · agentTabIds 는 owner 'agent' 탭이 있을 때만).
+ * owner: 트리 탭에 적힌 것 → 없으면 remembered 의 같은 id → 없으면(새 탭) 'user'. 트리에 없는 id 의 기억은 버린다.
+ * agentTabIds 차례: remembered 의 차례(아직 있는 탭만) → 그다음 나머지 agent 탭(tabs 차례).
+ */
+export function layoutFileFromTree(
+  tree: LayoutTree,
+  sidebar: SidebarState = DEFAULT_SIDEBAR,
+  remembered: RememberedOwners = NO_REMEMBERED_OWNERS,
+): LayoutFileV2 {
   const tabs: Record<string, TabRecord> = {};
-  const agentTabIds: string[] = [];
+  const agentSet = new Set<string>();
   for (const [key, tab] of Object.entries(tree.tabs)) {
-    const owner: TabOwner = tab.owner === 'agent' ? 'agent' : 'user';
+    const known = tab.owner ?? remembered.owners.get(key);
+    const owner: TabOwner = known === 'agent' ? 'agent' : 'user';
     tabs[key] = { ...tab, owner };
-    if (owner === 'agent') agentTabIds.push(key);
+    if (owner === 'agent') agentSet.add(key);
   }
+  const agentTabIds = remembered.agentTabIds.filter((id) => agentSet.has(id));
+  for (const id of agentSet) if (!agentTabIds.includes(id)) agentTabIds.push(id);
   const file: LayoutFileV2 = {
     version: 2,
     sidebar: normalizeSidebar(sidebar),
@@ -110,6 +141,8 @@ export class LayoutStore {
   private sidebar: SidebarState = { ...DEFAULT_SIDEBAR };
   /** 마지막으로 save 에 받은 트리 — setSidebar 가 트리 없이 다시 쓸 때 */
   private lastTree: LayoutTree | null = null;
+  /** load 때 읽은 탭 owner · agentTabIds — 엔진을 지나며 사라지므로 저장 때 다시 붙인다(B4) */
+  private remembered: RememberedOwners = NO_REMEMBERED_OWNERS;
 
   constructor(
     private readonly filePath: string,
@@ -124,7 +157,10 @@ export class LayoutStore {
     try {
       const text = await readFile(this.filePath, 'utf8');
       const file = migrateLayoutFile(JSON.parse(text) as unknown);
-      if (file) this.sidebar = { ...file.sidebar };
+      if (file) {
+        this.sidebar = { ...file.sidebar };
+        this.remembered = rememberOwners(file);
+      }
       return file;
     } catch {
       return null;
@@ -160,7 +196,9 @@ export class LayoutStore {
     const tree = this.pending;
     this.pending = null;
     if (tree) {
-      const file = layoutFileFromTree(tree, this.sidebar);
+      const file = layoutFileFromTree(tree, this.sidebar, this.remembered);
+      // 쓴 것을 다음 기억으로 — 엔진에서 사라진 탭 id 는 여기서 빠진다
+      this.remembered = rememberOwners(file);
       this.writing = this.writing.then(() => this.write(file));
     }
     await this.writing;

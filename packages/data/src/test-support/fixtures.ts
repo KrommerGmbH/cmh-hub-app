@@ -58,7 +58,7 @@ export async function seededLocal(): Promise<DataSource> {
     { id: IDS.t1, serverId: IDS.s1, name: 'crawler_fetch_product', parameters: { type: 'object', properties: { url: { type: 'string' } } }, createdAt: CREATED_AT },
     { id: IDS.t2, serverId: IDS.s1, name: 'crawler_list_adapters', needsApproval: true, createdAt: CREATED_AT },
   ]);
-  await ds.repository('cmh_ai_conversation').upsert([{ id: IDS.c1, agentId: IDS.agent, title: '첫 대화', createdAt: CREATED_AT }]);
+  await ds.repository('cmh_ai_conversation').upsert([{ id: IDS.c1, agentId: IDS.agent, counterpartType: 'user', title: '첫 대화', createdAt: CREATED_AT }]);
   await ds.repository('cmh_ai_conversation_message').upsert([
     { id: IDS.msg2, conversationId: IDS.c1, seq: 2, role: 'assistant', content: '안녕하세요', tokens: 12, createdAt: CREATED_AT },
     { id: IDS.msg1, conversationId: IDS.c1, seq: 1, role: 'user', content: '안녕', attachments: [{ kind: 'tab', viewId: 'v1' }], createdAt: CREATED_AT },

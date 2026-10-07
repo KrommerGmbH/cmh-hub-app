@@ -55,6 +55,46 @@ describe('SqliteDriver filter 8종', () => {
     expect(codes((await models().search(d)).elements)).toEqual(['gpt-5-mini']);
   });
 
+  it('equalsAny 빈 배열 · [null] — 지금 동작 고정(서버 실측 전)', async () => {
+    // SDK 는 빈 배열을 '' 로 잇는다 → 값 0개 → 0건(SQL 은 0 = 1). 서버가 같은 값에 무엇을 주는지는 실측 안 함
+    const empty = Criteria.equalsAny('code', []);
+    expect(empty).toEqual({ type: 'equalsAny', field: 'code', value: '' });
+    expect((await models().search(byCode().addFilter(empty))).elements).toEqual([]);
+    expect((await models().search({ filter: [{ type: 'equalsAny', field: 'code', value: [] }] } as never)).elements).toEqual([]);
+    // 배열 [null] = IS NULL · SDK 꼴(null 을 '|' 로 이으면 '' → 0건)과 다르다
+    const onlyNull = await models().search({ filter: [{ type: 'equalsAny', field: 'priceInPerMtok', value: [null] }], sort: [{ field: 'code', order: 'ASC' }] } as never);
+    expect(codes(onlyNull.elements)).toEqual(['gemma-4-e2b']);
+    expect(Criteria.equalsAny('code', [null])).toEqual({ type: 'equalsAny', field: 'code', value: '' });
+  });
+
+  it("range/equals datetime — 'YYYY-MM-DD HH:mm:ss' 는 UTC 로 읽는다 (TZ=Asia/Seoul)", async () => {
+    const saved = process.env['TZ'];
+    process.env['TZ'] = 'Asia/Seoul';
+    try {
+      // Node 는 TZ 를 바꾸면 바로 쓴다 — 정말 바뀌었는지부터(안 바뀌면 이 시험은 아무것도 증명하지 않는다)
+      expect(new Date(2026, 9, 7).getTimezoneOffset()).toBe(-540);
+      // 쓰기: 시간대 없는 Shopware 저장 꼴 → UTC 그대로(KST 로 읽었다면 2026-10-06T15:30Z)
+      await providers().upsert([{ id: IDS.p2, usedMinuteAt: '2026-10-07 00:30:00', usedTodayDate: '2026-10-07 01:00:00' }]);
+      expect(await providers().get(IDS.p2)).toMatchObject({ usedMinuteAt: '2026-10-07T00:30:00.000Z', usedTodayDate: '2026-10-07' });
+      // 거르기: p1.usedMinuteAt = 2026-10-07T10:34:56Z(고정 자료 '12:34:56+02:00')
+      const eq = await providers().search(byCode().addFilter(Criteria.equals('usedMinuteAt', '2026-10-07 10:34:56')));
+      expect(codes(eq.elements)).toEqual(['openai']);
+      const eqT = await providers().search(byCode().addFilter(Criteria.equals('usedMinuteAt', '2026-10-07T10:34:56.000')));
+      expect(codes(eqT.elements)).toEqual(['openai']);
+      const lt = await providers().search(byCode().addFilter(Criteria.range('usedMinuteAt', { lt: '2026-10-07 00:30:00.001' })));
+      expect(codes(lt.elements)).toEqual(['local-gguf']);
+      // 날짜만 = UTC 자정
+      const day = await providers().search(byCode().addFilter(Criteria.range('usedMinuteAt', { gte: '2026-10-07', lt: '2026-10-08' })));
+      expect(codes(day.elements)).toEqual(['local-gguf', 'openai']);
+      // 시간대가 붙은 값은 그 시간대대로(바뀌지 않음)
+      const zoned = await providers().search(byCode().addFilter(Criteria.equals('usedMinuteAt', '2026-10-07T19:34:56+09:00')));
+      expect(codes(zoned.elements)).toEqual(['openai']);
+    } finally {
+      if (saved === undefined) delete process.env['TZ'];
+      else process.env['TZ'] = saved;
+    }
+  });
+
   it('not(and)', async () => {
     const r = await models().search(byCode().addFilter(Criteria.not('and', [Criteria.equals('active', true)])));
     expect(codes(r.elements)).toEqual(['legacy', 'qwen3.5-0.8b']);
@@ -102,6 +142,12 @@ describe('SqliteDriver sort · page · total', () => {
     expect((await models().search(make(1).addFilter(Criteria.equals('active', false)))).total).toBe(2);
   });
 
+  it('naturalSorting: true = 예외(SQLite 에 자연 정렬이 없다 · 조용히 무시 0) · false 는 보통 정렬', async () => {
+    await expect(models().search(new Criteria().addSorting(Criteria.naturalSorting('code')))).rejects.toThrow(/naturalSorting/);
+    await expect(models().search(new Criteria().addSorting(Criteria.sort('code', 'ASC', true)))).rejects.toThrow(CriteriaError);
+    expect(codes((await models().search(new Criteria().addSorting(Criteria.sort('code', 'ASC', false)))).elements)).toEqual(['gemma-4-e2b', 'gpt-5', 'gpt-5-mini', 'legacy', 'qwen3.5-0.8b']);
+  });
+
   it('searchIds · get', async () => {
     const r = await models().searchIds(byCode().addFilter(Criteria.equals('providerId', IDS.p1)));
     expect(r).toEqual({ total: 2, ids: [IDS.m1, IDS.m2] });
@@ -131,6 +177,19 @@ describe('SqliteDriver association', () => {
     f.getAssociation('models').addFilter(Criteria.equals('active', true));
     const r2 = await providers().search(f);
     expect(r2.elements.find((p) => p['code'] === 'old_provider')?.['models']).toEqual([]);
+  });
+
+  it('oneToMany 부모 501개 묶음 경계 — 500 + 1 로 나눠 읽어도 부모마다 자기 자식만(지금 동작 고정)', async () => {
+    const rows = Array.from({ length: 501 }, (_, i) => ({ code: `bulk-${String(i).padStart(4, '0')}`, name: 'n' }));
+    const { ids } = await providers().upsert(rows);
+    await models().upsert(ids.map((providerId, i) => ({ providerId, code: `m${i}` })));
+    const r = await providers().search(new Criteria(1, 1000).addFilter(Criteria.prefix('code', 'bulk-')).addSorting(Criteria.sort('code')).addAssociation('models'));
+    expect(r.elements).toHaveLength(501);
+    const wrong = r.elements.filter((p, i) => codes(p['models'] as Record<string, unknown>[]).join() !== `m${i}`);
+    expect(wrong).toEqual([]);
+    // 경계 양쪽(500번째 · 501번째 부모)
+    expect(codes(r.elements[499]?.['models'] as Record<string, unknown>[])).toEqual(['m499']);
+    expect(codes(r.elements[500]?.['models'] as Record<string, unknown>[])).toEqual(['m500']);
   });
 
   it('겹친 연관 — conversation.messages(seq 차례) · message.conversation', async () => {
@@ -240,6 +299,15 @@ describe('SqliteDriver 값 왕복 · 쓰기', () => {
     await expect(providers().upsert([{ code: 'x', name: 'x', models: [] }])).rejects.toThrow(/연관/);
     await expect(providers().upsert([{ id: 'not-an-id', code: 'x', name: 'x' }])).rejects.toThrow(DataWriteError);
     await expect(providers().upsert([{ id: IDS.p1, code: 'local-gguf' }])).rejects.toThrow(/UNIQUE/);
+  });
+
+  it('upsert 새 줄 — 서버 DAL Required 칸(serverRequired)은 DEFAULT 가 있어도 요구한다', async () => {
+    await expect(ds.repository('cmh_ai_mcp_server').upsert([{ code: 'n', name: 'N' }])).rejects.toThrow(/필수 칸 'type'/);
+    await expect(ds.repository('cmh_ai_conversation').upsert([{ agentId: IDS.agent }])).rejects.toThrow(/필수 칸 'counterpartType'/);
+    // 있는 줄을 고칠 때는 안 줘도 된다 · DEFAULT 만 있고 서버도 안 요구하는 칸(agentVersionId · status …)은 그대로 기본값
+    await ds.repository('cmh_ai_mcp_server').upsert([{ id: IDS.s1, name: 'renamed' }]);
+    const { ids } = await ds.repository('cmh_ai_conversation').upsert([{ agentId: IDS.agent, counterpartType: 'customer' }]);
+    expect(await ds.repository('cmh_ai_conversation').get(ids[0] as string)).toMatchObject({ counterpartType: 'customer', agentVersionId: '0fa91ce3e96a4bc2be4bd9ce752c3425', status: 'active' });
   });
 
   it('delete — FK ON DELETE CASCADE 로 자식도', async () => {

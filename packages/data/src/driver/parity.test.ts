@@ -8,7 +8,7 @@ import { createDefaultRegistry } from '../definition/index.js';
 import { DataSourceFactory, type DataSource } from '../repository.js';
 import { IDS, seededLocal } from '../test-support/fixtures.js';
 import { AdminApiError, type AdminApiTransport } from './admin-api/admin-api-driver.js';
-import { CriteriaError } from './types.js';
+import { CriteriaError, DataWriteError } from './types.js';
 
 const CREATED = '2026-10-07T09:00:00.000+00:00';
 const extras = (alias: string, id: string) => ({ apiAlias: alias, extensions: {}, _uniqueIdentifier: id, translated: [] });
@@ -144,12 +144,38 @@ describe('AdminApiDriver — 쓰기 · 오류', () => {
   it('upsert · delete = POST /api/_action/sync (camelCase 속성 · 없는 id 는 만든다)', async () => {
     const fake = fakeTransport({ '/api/_action/sync': {} });
     const server = await DataSourceFactory.create({ dataSource: 'server', transport: fake.transport, registry: createDefaultRegistry() });
-    const w = await server.repository('cmh_ai_mcp_server').upsert([{ code: 'x', name: 'X', env_keys: { A: true }, active: '0' as unknown as boolean }]);
+    const w = await server.repository('cmh_ai_mcp_server').upsert([{ code: 'x', name: 'X', type: 'stdio', env_keys: { A: true }, active: '0' as unknown as boolean }]);
     await server.repository('cmh_ai_mcp_server').delete([IDS.s1, IDS.s1]);
     expect(fake.calls).toEqual([
-      { path: '/api/_action/sync', body: [{ action: 'upsert', entity: 'cmh_ai_mcp_server', payload: [{ code: 'x', name: 'X', envKeys: { A: true }, active: false, id: w.ids[0] }] }] },
+      { path: '/api/_action/sync', body: [{ action: 'upsert', entity: 'cmh_ai_mcp_server', payload: [{ code: 'x', name: 'X', type: 'stdio', envKeys: { A: true }, active: false, id: w.ids[0] }] }] },
       { path: '/api/_action/sync', body: [{ action: 'delete', entity: 'cmh_ai_mcp_server', payload: [{ id: IDS.s1 }] }] },
     ]);
+  });
+
+  it('비밀칸(apiAware false)은 기본으로 보내지 않는다 — allowSecretFields 로만', async () => {
+    const fake = fakeTransport({ '/api/_action/sync': {} });
+    const server = await DataSourceFactory.create({ dataSource: 'server', transport: fake.transport });
+    await expect(server.repository('cmh_ai_provider').upsert([{ code: 'x', name: 'X', apiKeyEnc: 'ENC:v10:blob' }])).rejects.toThrow(/비밀칸 'apiKeyEnc'/);
+    await expect(server.repository('cmh_ai_provider').upsert([{ id: IDS.p1, api_key_enc: 'ENC:v10:blob' }])).rejects.toThrow(DataWriteError);
+    expect(fake.calls).toEqual([]);
+    // null 로 지우는 것도 같은 칸이라 막는다(명시적 옵트인만)
+    await expect(server.repository('cmh_ai_provider').upsert([{ id: IDS.p1, apiKeyEnc: null }])).rejects.toThrow(/비밀칸/);
+
+    const optIn = await DataSourceFactory.create({ dataSource: 'server', transport: fake.transport, allowSecretFields: true });
+    await optIn.repository('cmh_ai_provider').upsert([{ id: IDS.p1, apiKeyEnc: 'server-side-secret' }]);
+    expect(fake.calls).toEqual([{ path: '/api/_action/sync', body: [{ action: 'upsert', entity: 'cmh_ai_provider', payload: [{ id: IDS.p1, apiKeyEnc: 'server-side-secret' }] }] }]);
+  });
+
+  it('id 없는 새 줄 — 로컬과 같은 필수 칸 검사(serverRequired 포함) · 서버는 부르지 않는다', async () => {
+    const fake = fakeTransport({ '/api/_action/sync': {} });
+    const server = await DataSourceFactory.create({ dataSource: 'server', transport: fake.transport });
+    await expect(server.repository('cmh_ai_mcp_server').upsert([{ code: 'x', name: 'X' }])).rejects.toThrow(/필수 칸 'type'/);
+    await expect(local.repository('cmh_ai_mcp_server').upsert([{ code: 'x', name: 'X' }])).rejects.toThrow(/필수 칸 'type'/);
+    await expect(server.repository('cmh_ai_provider').upsert([{ code: 'x' }])).rejects.toThrow(/필수 칸 'name'/);
+    expect(fake.calls).toEqual([]);
+    // id 를 주면 새 줄인지 모른다 → 서버에 맡긴다
+    await server.repository('cmh_ai_mcp_server').upsert([{ id: IDS.s1, name: 'renamed' }]);
+    expect(fake.calls).toHaveLength(1);
   });
 
   it('로그인 전(null) · 서버 오류 = AdminApiError', async () => {

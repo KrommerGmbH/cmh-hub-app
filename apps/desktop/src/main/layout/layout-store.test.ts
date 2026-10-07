@@ -137,6 +137,61 @@ describe('LayoutStore v2', () => {
     expect(store.getSidebar().width).toBe(252);
   });
 
+  it('store→engine→store 왕복에서 owner · agentTabIds 유지', async () => {
+    // 파일: t3 · t2 가 에이전트 탭(차례 t3 → t2) · t1 은 사람
+    const fileJson = {
+      version: 2,
+      sidebar: { collapsed: true, width: 300 },
+      tree: V1_FILE.root,
+      tabs: { t1: { ...V1_FILE.tabs.t1, owner: 'user' }, t2: { ...V1_FILE.tabs.t2, owner: 'agent' }, t3: { ...V1_FILE.tabs.t3, owner: 'agent' } },
+      focusedPaneId: 'p1',
+      agentTabIds: ['t3', 't2'],
+    };
+    const { store, file } = await storeWith(JSON.stringify(fileJson));
+    const loaded = (await store.load())!;
+
+    // 실제 엔진을 지나면 owner 가 사라진다(엔진은 고치지 않는다 · 합의안 6) — 그래도 저장 파일에는 남아야 한다
+    const e = new LayoutEngine();
+    expect(e.loadTree(layoutTreeFromFile(loaded))).toBe(true);
+    expect(e.getTab('t2')?.owner).toBeUndefined();
+    // 엔진에서 탭 하나 닫고(t2) · 새 탭 하나 열기
+    expect(e.apply({ cmd: 'closeTab', tabId: 't2' }, { newTab: { kind: 'admin', url: 'https://example.test/admin' } }).rejected).toBeNull();
+    const created = e.apply({ cmd: 'newTab', paneId: 'p2', kind: 'web', url: 'about:blank' }, { newTab: { kind: 'admin', url: 'https://example.test/admin' } });
+    const newId = created.createdTabIds[0]!;
+
+    store.save(e.getTree());
+    await store.flush();
+    const written = JSON.parse(await readFile(file, 'utf8')) as LayoutFileV2;
+    expect(written.tabs['t1']?.owner).toBe('user');
+    expect(written.tabs['t3']?.owner).toBe('agent');
+    expect(written.tabs['t2']).toBeUndefined(); // 엔진에서 사라진 탭은 버린다
+    expect(written.tabs[newId]?.owner).toBe('user'); // 새 탭은 user
+    expect(written.agentTabIds).toEqual(['t3']);
+    expect(written.sidebar).toEqual({ collapsed: true, width: 300 });
+
+    // 한 번 더 왕복(저장한 파일 → 새 store → 엔진 → 저장)해도 그대로
+    const again = new LayoutStore(file, 1);
+    const reloaded = (await again.load())!;
+    const e2 = new LayoutEngine();
+    expect(e2.loadTree(layoutTreeFromFile(reloaded))).toBe(true);
+    again.save(e2.getTree());
+    await again.flush();
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(written);
+  });
+
+  it('agentTabIds 차례 — 기억한 차례 먼저 · 기억에 없는 agent 탭은 뒤에 · 트리에 적힌 owner 가 기억보다 앞선다', () => {
+    const tree: LayoutTree = {
+      version: 1,
+      root: V1_FILE.root as unknown as LayoutTree['root'],
+      tabs: { t1: { ...V1_FILE.tabs.t1, owner: 'agent' }, t2: { ...V1_FILE.tabs.t2 }, t3: { ...V1_FILE.tabs.t3, owner: 'user' } },
+      focusedPaneId: 'p1',
+    };
+    const remembered = { owners: new Map([['t2', 'agent' as const], ['t3', 'agent' as const], ['gone', 'agent' as const]]), agentTabIds: ['gone', 't3', 't2'] };
+    const out = layoutFileFromTree(tree, DEFAULT_SIDEBAR, remembered);
+    expect(out.agentTabIds).toEqual(['t2', 't1']);
+    expect(Object.fromEntries(Object.entries(out.tabs).map(([k, t]) => [k, t.owner]))).toEqual({ t1: 'agent', t2: 'agent', t3: 'user' });
+  });
+
   it('엔진 트리 → v2 → 엔진: 같은 트리(split 동작 그대로)', () => {
     const e = new LayoutEngine();
     e.resetToDefault({ kind: 'admin', url: 'https://example.test/admin', title: 'Admin' });

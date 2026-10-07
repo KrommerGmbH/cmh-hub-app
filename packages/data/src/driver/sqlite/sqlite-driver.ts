@@ -471,8 +471,8 @@ export class SqliteDriver implements EntityDriver {
   }
 
   private checkRequired(def: ResolvedEntityDefinition, p: { own: Map<string, unknown>; translated: Map<string, unknown> }, at: string): void {
-    for (const f of def.fields) {
-      if (!f.required || f.primaryKey || f.defaultValue !== undefined || f.name === 'created_at') continue;
+    // DEFAULT 가 있어도 서버 DAL 이 요구하는 칸(serverRequired)은 새 줄에서 값을 받아야 한다(requiredOnInsert 가 넣는다)
+    for (const f of def.requiredOnInsert) {
       const v = f.translated ? p.translated.get(f.name) : p.own.get(f.name);
       if (v === undefined || v === null) throw new DataWriteError(`${at}: 필수 칸 '${snakeToCamel(f.name)}' 이 없다`);
     }

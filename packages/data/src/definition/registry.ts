@@ -6,6 +6,9 @@ export class EntityDefinitionError extends Error {
   override readonly name = 'EntityDefinitionError';
 }
 
+/** 플러그인 확장 칸 저장 이름 — snake_case 소문자(서버 칸 이름 꼴 · SQL 이름으로 들어가므로 좁게 · 2026-10-07 검수) */
+const EXTENSION_FIELD_NAME = /^[a-z][a-z0-9_]*$/;
+
 /** 속성(camelCase)·저장(snake_case) 이름으로 칸을 찾는 정의 */
 export class ResolvedEntityDefinition implements EntityDefinition {
   readonly entityName: string;
@@ -46,6 +49,16 @@ export class ResolvedEntityDefinition implements EntityDefinition {
     const pk = this.fieldList.find((f) => f.primaryKey);
     if (!pk) throw new EntityDefinitionError(`${this.entityName}: primary key 없음`);
     return pk;
+  }
+
+  /**
+   * 새 줄(INSERT)에 값이 있어야 하는 칸 — required 중 PK · created_at(드라이버가 채움) · DEFAULT 있는 칸은 빼되,
+   * serverRequired(서버 DAL Required 인데 테이블 DEFAULT 가 있는 칸)는 넣는다.
+   */
+  get requiredOnInsert(): FieldDefinition[] {
+    return this.fieldList.filter(
+      (f) => f.required === true && !f.primaryKey && f.name !== 'created_at' && (f.defaultValue === undefined || f.serverRequired === true),
+    );
   }
 
   get hasTranslatedFields(): boolean {
@@ -111,6 +124,9 @@ export class EntityRegistry {
     const d = this.get(entityName);
     const seen = new Set<string>();
     for (const f of fields) {
+      if (typeof f.name !== 'string' || !EXTENSION_FIELD_NAME.test(f.name)) {
+        throw new EntityDefinitionError(`${entityName}: 확장 칸 이름 '${String(f.name)}' 은 ${EXTENSION_FIELD_NAME.source} 꼴이어야 한다`);
+      }
       if (f.primaryKey) throw new EntityDefinitionError(`${entityName}.${f.name}: 확장 칸은 PK 가 될 수 없다`);
       if (seen.has(f.name)) throw new EntityDefinitionError(`${entityName}: 확장 칸 '${f.name}' 이(가) 두 번 들어왔다`);
       seen.add(f.name);

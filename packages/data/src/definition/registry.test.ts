@@ -40,6 +40,16 @@ describe('EntityRegistry', () => {
     expect(() => r.extendFields('cmh_ai_nope', [{ name: 'x', type: 'int' }])).toThrow(/모르는 엔티티/);
   });
 
+  it('extendFields — 칸 이름은 /^[a-z][a-z0-9_]*$/ (SQL 이름으로 들어간다)', () => {
+    const r = createDefaultRegistry();
+    for (const name of ['License', 'local-path', '1st', '_x', 'a b', 'x"; DROP TABLE cmh_ai_model; --', '', 'naïve']) {
+      expect(() => r.extendFields('cmh_ai_model', [{ name, type: 'string' }]), name).toThrow(/꼴이어야 한다/);
+    }
+    expect(r.get('cmh_ai_model').fields.map((f) => f.name)).not.toContain('License');
+    r.extendFields('cmh_ai_model', [{ name: 'local_path2', type: 'string' }]);
+    expect(r.get('cmh_ai_model').field('localPath2')?.name).toBe('local_path2');
+  });
+
   it('번역 PK · fk 는 막는다', () => {
     const r = new EntityRegistry();
     expect(() => r.register(defineEntity({ entityName: 'x', fields: [{ name: 'other_id', type: 'fk', translated: true }] }))).toThrow(EntityDefinitionError);

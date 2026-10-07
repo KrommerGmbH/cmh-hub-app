@@ -34,6 +34,7 @@ import {
 } from '../ai-element/chat-handoff.js';
 import { INTENTS, type ElementInfo } from '../ai-element/element-intents.js';
 import { isAllowedUrl } from '../url-policy.js';
+import { rejectTabCreation } from '../tab-view-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -147,6 +148,9 @@ export class ShellWindow {
   /** appSession — U10 이 서버 화면 표를 읽는 데 쓴다(null 이면 담당 AI 없이 · smoke 등) */
   static async create(appSession: AppSession | null = null): Promise<ShellWindow> {
     const w = new ShellWindow(appSession);
+    // layout.json 에서 사이드바 상태만 읽어 둔다(2026-10-07 검수) — 첫 save 가 파일의 sidebar 를 기본값으로 덮지 않게.
+    // 트리 · 탭은 아래처럼 되살리지 않는다(2026-10-04 «복원 끔» 그대로 · 돌려받은 트리는 버린다). 탭 owner 는 store 가 기억했다가 저장 때 붙인다
+    await w.store.load();
     // 시작은 늘 1단 · 어드민 탭 하나(2026-10-04 사장님 «default 는 1개 창, 어드민만»). 지난 레이아웃(layout.json)은 되살리지 않는다
     // — 옛 U05 복원은 smoke 시험이 남긴 3단 · 탭 여럿까지 되살렸다. 저장(store.save)은 그대로 둔다(나중에 «마지막 배치로 열기» 설정을 붙일 자리)
     w.engine.resetToDefault(DEFAULT_TAB);
@@ -226,6 +230,15 @@ export class ShellWindow {
         return;
       default:
         break;
+    }
+
+    // 탭을 만드는 명령은 엔진에 넘기기 전에 종류부터(2026-10-07 검수) — admin · naver · web 이 아니면(chat · 아무 글자) 거절 · 로그.
+    // 엔진(layout-engine.ts)은 newTab 의 kind 를 검사하지 않는다 — 여기가 셸 IPC · 단축키 · 덮개가 들어오는 한 곳이다
+    const refused = rejectTabCreation(cmd, newTab);
+    if (refused) {
+      console.warn('[layout] 거절:', refused);
+      this.sendState();
+      return;
     }
 
     let command: ShellCommand = cmd;

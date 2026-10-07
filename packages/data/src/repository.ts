@@ -61,6 +61,8 @@ export interface ServerDataSourceOptions {
   readonly dataSource: 'server';
   readonly transport: AdminApiTransport;
   readonly registry?: EntityRegistry;
+  /** 비밀칸을 sync 로 보낼까(기본 false = 예외) — AdminApiDriverOptions.allowSecretFields */
+  readonly allowSecretFields?: boolean;
 }
 
 export type DataSourceOptions = LocalDataSourceOptions | ServerDataSourceOptions;
@@ -99,7 +101,12 @@ export const DataSourceFactory = {
   async create(options: DataSourceOptions): Promise<DataSource> {
     const registry = options.registry ?? createDefaultRegistry();
     if (options.dataSource === 'server') {
-      return new DataSourceImpl('server', registry, new AdminApiDriver({ transport: options.transport, registry }), null, null);
+      const driver = new AdminApiDriver({
+        transport: options.transport,
+        registry,
+        ...(options.allowSecretFields === undefined ? {} : { allowSecretFields: options.allowSecretFields }),
+      });
+      return new DataSourceImpl('server', registry, driver, null, null);
     }
     const { handle, result } = await migrateWithBackup({
       filename: options.filename,

@@ -10,6 +10,11 @@ export interface FieldDefinition {
   readonly name: string;
   readonly type: FieldType;
   readonly required?: boolean;
+  /**
+   * 서버 DAL 이 `Required` 로 요구하는데 테이블에 DEFAULT 가 있는 칸(2026-10-07 검수). 로컬은 DEFAULT 로 그냥 채워 주지만
+   * 서버 sync 는 새 줄에 이 칸이 없으면 거절한다 → 로컬도 새 줄(INSERT)에서 값을 요구해 같은 곳에서 막는다. required 와 같이 쓴다.
+   */
+  readonly serverRequired?: boolean;
   readonly primaryKey?: boolean;
   /** false = 비밀칸(서버 `removeFlag(ApiAware)`) — api 범위 읽기 · 필터에서 빠진다. 기본 true */
   readonly apiAware?: boolean;

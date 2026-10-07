@@ -1,5 +1,5 @@
 // A02 — 탭 하나 = WebContentsView 하나(서버 · 네이버 페이지 · preload 0 · sandbox)
-import { shell, WebContentsView } from 'electron';
+import { app, shell, WebContentsView } from 'electron';
 import type { TabRecord } from '@cmh-hub-app/contracts';
 import { APP_CONFIG } from '../config.js';
 import { createAiActionProvider, type HandoffRequest, type HandoffResult } from './ai-element/chat-handoff.js';
@@ -7,6 +7,7 @@ import type { ScreenRecord } from './ai-element/element-lookup.js';
 import { attachContextMenu } from './context-menu.js';
 import { watchLoginSubmit } from './credentials/credential-autosave.js';
 import { watchLoginFieldFocus } from './credentials/credential-focus-watch.js';
+import { initialTabUrl, partitionForTabKind } from './tab-view-policy.js';
 import { isAllowedUrl } from './url-policy.js';
 
 export interface TabViewEvents {
@@ -39,7 +40,8 @@ function openOutside(url: string): void {
 }
 
 export function createAdminView(tab: TabRecord, events: TabViewEvents): WebContentsView {
-  const partition = tab.kind === 'naver' ? APP_CONFIG.naverPartition : tab.kind === 'web' ? APP_CONFIG.webPartition : APP_CONFIG.adminPartition;
+  // kind 별 switch — 모르는 kind(chat 포함)는 예외(옛 삼항식은 모르는 kind 를 어드민 저장 공간으로 떨어뜨렸다 · 2026-10-07 검수)
+  const partition = partitionForTabKind(tab.kind);
   const view = new WebContentsView({
     webPreferences: {
       partition,
@@ -98,6 +100,9 @@ export function createAdminView(tab: TabRecord, events: TabViewEvents): WebConte
   ); // 오른쪽 클릭 메뉴(2026-10-04) · 로그인 칸 위면 저장된 계정(U08 · 2026-10-05)
   watchLoginFieldFocus(wc, tab.kind, () => view.getBounds()); // 로그인 칸 왼쪽 클릭 → 계정 목록(U08b · 2026-10-05)
   watchLoginSubmit(wc, tab.kind); // 로그인 성공(로그인 화면을 벗어남) → 계정 자동 저장(U08c · 2026-10-05)
-  void wc.loadURL(tab.url);
+  // 첫 주소도 이동과 같은 검사(2026-10-07 검수) — 안 맞으면 about:blank. 개발판 지문 하네스 주소 하나만 예외(fingerprint-probe.ts)
+  const firstUrl = initialTabUrl(tab.kind, tab.url, app.isPackaged ? null : (process.env['CMH_HUB_FP_URL'] ?? null));
+  if (firstUrl !== tab.url) console.warn('[tab] 첫 주소가 탭 종류 정책에 맞지 않아 about:blank 로 연다', tab.kind, tab.url.slice(0, 200));
+  void wc.loadURL(firstUrl);
   return view;
 }

@@ -157,7 +157,8 @@ function normalizeSort(raw: unknown, at: string): SortNode {
   if (raw['type'] !== undefined && raw['type'] !== null) throw new CriteriaError(`${at}: sort type '${String(raw['type'])}'(countSorting 등)은 못 한다`);
   const order = typeof raw['order'] === 'string' ? raw['order'].toUpperCase() : 'ASC';
   if (order !== 'ASC' && order !== 'DESC') throw new CriteriaError(`${at}: order 는 ASC · DESC 다`);
-  // naturalSorting 은 무시한다 — SQLite 에 자연 정렬이 없다(서버와 차례가 다를 수 있다 · 2026-10-07)
+  // naturalSorting — SQLite 에 자연 정렬이 없다. 조용히 무시하면 서버와 차례가 갈린다 → 예외(2026-10-07 검수)
+  if (raw['naturalSorting'] === true) throw new CriteriaError(`${at}: naturalSorting 은 못 한다(SQLite 에 자연 정렬이 없다)`);
   return { field: fieldName(raw['field'], at), order };
 }
 

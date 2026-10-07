@@ -70,7 +70,8 @@ export const cmhAiMcpServerDefinition: EntityDefinition = defineEntity({
   fields: [
     { name: 'code', type: 'string', required: true, maxLength: 64 },
     { name: 'name', type: 'string', required: true, maxLength: 255 },
-    { name: 'type', type: 'string', required: true, maxLength: 32, defaultValue: 'stdio' },
+    // 서버 CmhAiMcpServerDefinition.php:51 Required — 테이블 DEFAULT 'stdio' 와 별개로 새 줄에 값이 있어야 한다
+    { name: 'type', type: 'string', required: true, serverRequired: true, maxLength: 32, defaultValue: 'stdio' },
     { name: 'command', type: 'string', maxLength: 255 },
     { name: 'args', type: 'json' },
     { name: 'url', type: 'string', maxLength: 500 },
@@ -81,6 +82,7 @@ export const cmhAiMcpServerDefinition: EntityDefinition = defineEntity({
   ],
   // 서버의 serverSecrets · agentMcpServers · skillMcpServers 는 그 엔티티가 로컬에 생길 때 더한다(다음 차례)
   associations: [{ kind: 'oneToMany', propertyName: 'tools', reference: 'cmh_ai_mcp_tool', referenceField: 'server_id' }],
+  // 서버 code 칸은 표 기본 utf8mb4_unicode_ci(대소문자 무시) — 로컬은 Migration1791374400McpNameNocase 의 NOCASE UNIQUE 색인이 같은 일을 한다
   uniques: [['code']],
 });
 
@@ -96,6 +98,7 @@ export const cmhAiMcpToolDefinition: EntityDefinition = defineEntity({
     { name: 'needs_approval', type: 'bool', defaultValue: false },
   ],
   associations: [{ kind: 'manyToOne', propertyName: 'server', storageName: 'server_id', reference: 'cmh_ai_mcp_server' }],
+  // 서버 name 칸은 표 기본 utf8mb4_unicode_ci — 로컬은 Migration1791374400McpNameNocase 의 (server_id, name COLLATE NOCASE) UNIQUE 색인
   uniques: [['server_id', 'name']],
 });
 
@@ -109,7 +112,8 @@ export const cmhAiConversationDefinition: EntityDefinition = defineEntity({
     { name: 'agent_id', type: 'fk', required: true },
     // 서버 ReferenceVersionField — 로컬 1차는 live 판 하나만
     { name: 'agent_version_id', type: 'id', required: true, defaultValue: LIVE_VERSION_ID },
-    { name: 'counterpart_type', type: 'string', required: true, maxLength: 32, defaultValue: 'user' },
+    // 서버 CmhAiConversationDefinition.php:59 Required — 테이블 DEFAULT 'user' 와 별개로 새 줄에 값이 있어야 한다
+    { name: 'counterpart_type', type: 'string', required: true, serverRequired: true, maxLength: 32, defaultValue: 'user' },
     // cmh_ai_capability 도 다음 차례(서버 ON DELETE SET NULL)
     { name: 'capability_id', type: 'fk' },
     { name: 'title', type: 'string', maxLength: 255, defaultValue: '' },
