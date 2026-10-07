@@ -199,7 +199,7 @@ function createTabElement(tab: ShellTab, paneId: string): HTMLElement {
 
 /** 제목이 아직 없는 탭의 글(탭 줄 · 사이드바 같이) — 빈 탭은 스니펫 «새 탭» */
 function tabTitleText(tab: ShellTab): string {
-  return tab.title || (tab.kind === 'naver' ? '네이버' : tab.kind === 'web' ? t('cmh-hub-app.sidebar.newTab') : '불러오는 중');
+  return tab.title || (tab.kind === 'naver' ? t('cmh-hub-app.tab.naver') : tab.kind === 'web' ? t('cmh-hub-app.sidebar.newTab') : t('cmh-hub-app.tab.loading'));
 }
 
 /** 보이는 값만 고친다 — 같은 값이면 DOM 을 건드리지 않는다 */
@@ -297,6 +297,11 @@ function onSashPointerDown(e: PointerEvent): void {
 
 function onWindowPointerMove(e: PointerEvent): void {
   if (!drag || e.pointerId !== drag.pointerId) return;
+  // 왼쪽 단추가 이미 떨어졌다(pointerup 을 놓침 — 창 밖에서 놓기 등) → 끌기를 끝낸다. 안 그러면 단추 없이 움직여도 비율이 바뀐다(검수 5 권고 3)
+  if ((e.buttons & 1) === 0) {
+    onWindowPointerEnd(e);
+    return;
+  }
   const pos = drag.orientation === 'horizontal' ? e.clientX : e.clientY;
   if (drag.length <= 0) return;
   drag.pending = clampRatio((pos - drag.start) / drag.length);
@@ -330,6 +335,8 @@ function createSash(sashId: string): HTMLElement {
   const el = document.createElement('div');
   el.dataset['sashId'] = sashId;
   el.addEventListener('pointerdown', onSashPointerDown);
+  // 포인터 캡처가 풀리면(요소가 숨거나 · OS 가 빼앗음) 끌기도 끝낸다(검수 5 권고 3)
+  el.addEventListener('lostpointercapture', onWindowPointerEnd);
   panesEl.appendChild(el);
   sashEls.set(sashId, el);
   return el;
@@ -384,6 +391,11 @@ function onDevToolsSashPointerDown(e: PointerEvent): void {
 
 function onDevToolsPointerMove(e: PointerEvent): void {
   if (!devtoolsDrag || e.pointerId !== devtoolsDrag.pointerId) return;
+  // 왼쪽 단추가 이미 떨어졌다(pointerup 을 놓침) → 끌기를 끝낸다(검수 5 권고 3)
+  if ((e.buttons & 1) === 0) {
+    onDevToolsPointerEnd(e);
+    return;
+  }
   if (devtoolsDrag.contentWidth <= 0) return;
   devtoolsDrag.pending = Math.min(0.95, Math.max(0.05, (devtoolsDrag.contentRight - e.clientX) / devtoolsDrag.contentWidth));
   if (devtoolsDrag.raf === null) {
@@ -416,6 +428,7 @@ function createDevToolsElements(paneId: string): { sash: HTMLElement; header: HT
   const sash = document.createElement('div');
   sash.className = 'devtools-sash';
   sash.addEventListener('pointerdown', onDevToolsSashPointerDown);
+  sash.addEventListener('lostpointercapture', onDevToolsPointerEnd); // 캡처가 풀리면 끌기도 끝(검수 5 권고 3)
 
   const header = document.createElement('div');
   header.className = 'devtools-header';
@@ -690,6 +703,7 @@ function renderSidebar(state: ShellState): void {
   // 끄는 중에는 셸이 가진 폭(포인터)이 이긴다 — main 의 답이 한 박자 늦게 와도 사이드바가 떨지 않게
   const width = sidebarDrag ? sidebarDrag.width : sb ? sb.width : 0;
   setSidebarWidthVar(open ? width : 0);
+  sidebarResizerEl.setAttribute('aria-valuenow', String(width));
   sidebarExpandEl.hidden = sb === null || !sb.collapsed;
   sidebarCollapseEl.setAttribute('aria-expanded', String(open));
   sidebarExpandEl.setAttribute('aria-expanded', String(open));
@@ -761,6 +775,11 @@ sidebarResizerEl.addEventListener('pointerdown', (e) => {
 window.addEventListener('pointermove', (e) => {
   const d = sidebarDrag;
   if (!d || e.pointerId !== d.pointerId) return;
+  // 왼쪽 단추가 이미 떨어졌다(pointerup 을 놓침) → 끌기를 끝낸다(검수 5 권고 3)
+  if ((e.buttons & 1) === 0) {
+    endSidebarDrag(e);
+    return;
+  }
   d.width = Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, e.clientX)));
   setSidebarWidthVar(d.width);
   if (d.raf === null) {
@@ -786,6 +805,24 @@ function endSidebarDrag(e: PointerEvent): void {
 }
 window.addEventListener('pointerup', endSidebarDrag);
 window.addEventListener('pointercancel', endSidebarDrag);
+sidebarResizerEl.addEventListener('lostpointercapture', endSidebarDrag); // 캡처가 풀리면(사이드바가 접혀 숨는 등) 끌기도 끝(검수 5 권고 3)
+
+// 키보드 폭 조절(검수 5 권고 9 · role="separator") — ← 좁게 · → 넓게. 지금 그린 폭(--sidebar-w)에서 한 걸음 · main 이 다시 자른다
+/** 【AI 임시 결정】 키 한 번에 움직이는 폭(px) */
+const SIDEBAR_KEY_STEP = 16;
+sidebarResizerEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  const sb = sidebarOf(lastState);
+  if (!sb || sb.collapsed || sidebarDrag) return;
+  e.preventDefault();
+  const drawn = Number.parseFloat(document.documentElement.style.getPropertyValue('--sidebar-w'));
+  const from = Number.isFinite(drawn) && drawn > 0 ? drawn : sb.width;
+  const width = Math.round(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, from + (e.key === 'ArrowLeft' ? -SIDEBAR_KEY_STEP : SIDEBAR_KEY_STEP))));
+  if (width === from) return;
+  setSidebarWidthVar(width);
+  sidebarResizerEl.setAttribute('aria-valuenow', String(width));
+  sendSidebar(false, width);
+});
 
 // ───────────────────────── 업데이트 모달(G03) ─────────────────────────
 

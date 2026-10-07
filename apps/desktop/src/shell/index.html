@@ -39,8 +39,8 @@
       <!-- 설정 화면은 R7 — 아직 동작 없음 -->
       <button id="sb-settings" class="sb-item" disabled><span class="sb-ico"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M3.6 12.4l1.3-1.3M11.1 4.9l1.3-1.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span><span class="sb-text" data-i18n="cmh-hub-app.sidebar.settings"></span></button>
     </div>
-    <!-- 폭 끌기(180~400 · main 이 자른다) -->
-    <div id="sidebar-resizer" class="sidebar-resizer" aria-hidden="true"></div>
+    <!-- 폭 끌기(180~400 · main 이 자른다) · 키보드 ← → (shell.ts) -->
+    <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin="180" aria-valuemax="400" tabindex="0" data-i18n-label="cmh-hub-app.sidebar.resize"></div>
   </aside>
 
   <!-- 제목줄: 창 단추는 Windows 에서 OS 가 그린다(titleBarOverlay) · linux 만 셸이 그린다 · 사이드바를 펼치면 그 오른쪽부터 -->

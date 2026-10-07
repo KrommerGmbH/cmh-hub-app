@@ -3,8 +3,11 @@ import { app, BaseWindow, Notification, shell, WebContentsView, type WebContents
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  clampSidebarWidth,
   computePaneViewport,
+  frameSidebar,
   LAYOUT_LIMITS,
+  maxSidebarWidthFor,
   SHELL_IPC,
   SHELL_SIDEBAR_ENABLED,
   type LayoutGeometry,
@@ -97,6 +100,10 @@ export class ShellWindow {
         nodeIntegration: false,
       },
     });
+    // 검수 5 권고 4 — 셸 view 는 우리 로컬 페이지(loadFile) 하나만 보인다. 페이지 쪽에서 시작한 이동(링크 · 끌어 놓기 · location 바꾸기)과
+    // 새 창은 모두 막는다. loadFile 같은 프로그램 이동과 같은 페이지 안 이동(#)에는 will-navigate 가 오지 않는다(electron.d.ts 'will-navigate' 설명)
+    this.shellView.webContents.on('will-navigate', (event) => event.preventDefault());
+    this.shellView.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     this.shellView.setBackgroundColor('#00000000'); // 투명 — 팝오버 때 맨 위로 올라가도 pane 자리는 아래 페이지가 보인다(setShellOnTop)
     this.window.contentView.addChildView(this.shellView); // 첫 자식 = 맨 아래
     this.shellView.setBounds(this.contentRect());
@@ -455,16 +462,34 @@ export class ShellWindow {
    */
   setSidebar(next: SidebarState): void {
     const before = this.store.getSidebar();
-    this.store.setSidebar(next);
+    // 트리를 아직 한 번도 저장하지 않았어도 사이드바를 파일에 쓰게 지금 트리를 같이 넘긴다(검수 5 권고 8)
+    this.store.setSidebar(this.fitSidebarRequest(next), this.engine.getTree());
     const after = this.store.getSidebar();
     if (before.collapsed === after.collapsed && before.width === after.width) return;
     this.relayout();
     this.sendState();
   }
 
-  /** RD — ShellState.sidebar(사이드바 상태 · Agent tabs 묶음 · «New Chat» 이 여는 탭) */
+  /**
+   * 검수 5 권고 2 — 사람이 펼치거나 끈 폭이 pane 트리 최소 너비를 못 남기면 남길 수 있는 폭까지 자른다(끄는 중에 frameSidebar 가 사이드바를
+   * 접어 그려 끌던 손잡이가 사라지지 않게). 【AI 임시 결정】 그 폭조차 sidebarWidthMin 보다 작으면 요청 그대로 둔다(frameSidebar 가 접어 그린다).
+   * 창 크기를 줄일 때는 이 함수를 지나지 않는다 — 저장 폭은 그대로이고 그 프레임만 접어 그린다.
+   */
+  private fitSidebarRequest(next: SidebarState): SidebarState {
+    if (!SHELL_SIDEBAR_ENABLED || next.collapsed) return next;
+    const max = maxSidebarWidthFor(this.contentRect().width, this.engine.minSize().width);
+    if (max === null) return next;
+    return { collapsed: false, width: Math.min(clampSidebarWidth(next.width), max) };
+  }
+
+  /** 검수 5 권고 2 — 이 프레임에 그릴 사이드바(창이 좁아 pane 트리가 안 들어가면 접어 그림 · 저장 값은 그대로) */
+  private frameSidebarState(): SidebarState {
+    return frameSidebar(this.contentRect().width, this.store.getSidebar(), this.engine.minSize().width, SHELL_SIDEBAR_ENABLED);
+  }
+
+  /** RD — ShellState.sidebar(사이드바 상태 · Agent tabs 묶음 · «New Chat» 이 여는 탭) — collapsed 는 이 프레임에 그린 값 · width 는 저장 값 */
   private sidebarView(): ShellSidebarView {
-    const sidebar = this.store.getSidebar();
+    const sidebar = this.frameSidebarState();
     return {
       enabled: SHELL_SIDEBAR_ENABLED,
       collapsed: sidebar.collapsed,
@@ -481,7 +506,7 @@ export class ShellWindow {
   }
 
   private viewport(): Rect {
-    return computePaneViewport(this.contentRect(), LAYOUT_LIMITS, this.store.getSidebar(), SHELL_SIDEBAR_ENABLED);
+    return computePaneViewport(this.contentRect(), LAYOUT_LIMITS, this.frameSidebarState(), SHELL_SIDEBAR_ENABLED);
   }
 
   private scheduleRelayout(): void {

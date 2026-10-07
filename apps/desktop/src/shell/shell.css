@@ -191,7 +191,7 @@ body.dragging-tab, body.dragging-tab * { cursor: grabbing !important; }
 /* 폭 끌기 손잡이 — 사이드바 오른쪽 끝 6px · 끌거나 올리면 2px 선 */
 .sidebar-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 1; }
 .sidebar-resizer::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background-color var(--dur) var(--ease); }
-.sidebar-resizer:hover::after, .sidebar-resizer.dragging::after { background: var(--accent); }
+.sidebar-resizer:hover::after, .sidebar-resizer.dragging::after, .sidebar-resizer:focus-visible::after { background: var(--accent); }
 /* 접힌 사이드바의 Agent tabs 수(PLAN RD §9) */
 .sb-expand-badge { position: absolute; top: 1px; right: 0; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--accent-fill);
   color: #fff; font-size: 10px; line-height: 14px; text-align: center; }

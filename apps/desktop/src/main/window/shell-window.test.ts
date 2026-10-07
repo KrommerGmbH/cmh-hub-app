@@ -84,3 +84,54 @@ describe('ShellWindow.handleCommand — 탭 종류', () => {
     expect(spies.save).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('ShellWindow 사이드바 — 좁은 창(검수 5 권고 2) · 트리 저장 전 저장(권고 8)', () => {
+  /** 창 width × 600 · 저장 사이드바 · 2단 좌우 엔진 — viewport · sidebarView · setSidebar 가 쓰는 칸만 둔 가짜(메서드는 진짜) */
+  function fakeSidebarShell(width: number, saved: { collapsed: boolean; width: number }) {
+    const engine = new LayoutEngine();
+    engine.resetToDefault(DEFAULT_TAB);
+    const paneId = engine.listPanes()[0]!.id;
+    engine.apply({ cmd: 'newTab', paneId }, { newTab: DEFAULT_TAB });
+    engine.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: DEFAULT_TAB });
+    let sidebar = { ...saved };
+    const setSidebar = vi.fn((next: { collapsed: boolean; width: number }) => {
+      sidebar = { ...next };
+    });
+    const self = Object.create(ShellWindow.prototype) as ShellWindowInstance;
+    Object.assign(self, {
+      engine,
+      window: { getContentSize: () => [width, 600] },
+      store: { getSidebar: () => ({ ...sidebar }), setSidebar },
+      relayout: vi.fn(),
+      sendState: vi.fn(),
+    });
+    return { self, engine, setSidebar, saved: () => sidebar };
+  }
+
+  it('창 800 · 사이드바 400 · 2단 좌우 → pane 영역이 창 전체 · 어느 pane 도 창 밖으로 안 나간다 · 저장 폭 그대로', () => {
+    const { self, engine, saved } = fakeSidebarShell(800, { collapsed: false, width: 400 });
+    expect(engine.paneCount()).toBe(2);
+    const vp = self.paneViewport();
+    expect(vp.x).toBe(0);
+    const g = engine.computeGeometry(vp);
+    for (const p of g.panes) expect(p.contentRect.x + p.contentRect.width).toBeLessThanOrEqual(800);
+    const view = (self as unknown as { sidebarView(): { collapsed: boolean; width: number } }).sidebarView();
+    expect(view.collapsed).toBe(true); // 셸도 접어 그린다(viewport 와 같은 값)
+    expect(view.width).toBe(400);
+    expect(saved()).toEqual({ collapsed: false, width: 400 });
+  });
+
+  it('창이 넉넉하면 펼친 그대로(1440 · 400 → pane 영역 x = 400)', () => {
+    const { self } = fakeSidebarShell(1440, { collapsed: false, width: 400 });
+    expect(self.paneViewport().x).toBe(400);
+  });
+
+  it('사람이 끈 폭은 pane 트리 최소 너비를 남기게 자른다 · 접기 요청은 그대로 · 지금 트리를 같이 넘긴다', () => {
+    const { self, engine, setSidebar } = fakeSidebarShell(1000, { collapsed: false, width: 252 });
+    self.setSidebar({ collapsed: false, width: 400 });
+    // 1000 − (320 + 4 + 320) = 356
+    expect(setSidebar).toHaveBeenLastCalledWith({ collapsed: false, width: 356 }, engine.getTree());
+    self.setSidebar({ collapsed: true, width: 356 });
+    expect(setSidebar).toHaveBeenLastCalledWith({ collapsed: true, width: 356 }, engine.getTree());
+  });
+});

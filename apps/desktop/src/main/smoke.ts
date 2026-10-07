@@ -416,5 +416,102 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
   const cb = w.window.getContentBounds();
   console.info(`[smoke] plus-screen ${Math.round(cb.x + plus.x)},${Math.round(cb.y + plus.y)}`);
 
+  // ⑮ 검수 5 권고 3 — 단추를 놓은 뒤(pointerup 을 놓친 꼴) 움직임은 sash 비율을 바꾸지 않고 끌기를 끝낸다
+  {
+    const geo = w.engine.computeGeometry(w.paneViewport());
+    const sash = geo.sashes.find((s) => s.orientation === 'horizontal');
+    const ratioOf = (id: string): number => {
+      const stack = [w.engine.getTree().root];
+      for (let n = stack.pop(); n; n = stack.pop()) {
+        if (n.type !== 'split') continue;
+        if (n.id === id) return n.ratio;
+        stack.push(...n.children);
+      }
+      return NaN;
+    };
+    if (!sash) {
+      log('단추 없는 pointermove', '건너뜀(좌우 sash 없음)');
+    } else {
+      const wc = w.shellView.webContents;
+      const y = sash.rect.y + Math.round(sash.rect.height / 2);
+      const x0 = sash.rect.x + 2;
+      await shellJs(`(() => { window.__smokePointerId = null; window.addEventListener('pointerdown', (e) => { window.__smokePointerId = e.pointerId; }, { once: true, capture: true }); return true; })()`);
+      wc.sendInputEvent({ type: 'mouseMove', x: x0, y });
+      wc.sendInputEvent({ type: 'mouseDown', x: x0, y, button: 'left', clickCount: 1 });
+      wc.sendInputEvent({ type: 'mouseMove', x: x0 + 40, y, button: 'left', modifiers: ['leftbuttondown'] });
+      await wait(300);
+      const held = ratioOf(sash.splitId);
+      // 단추가 떨어진 pointermove(buttons 0)를 같은 pointerId 로 보낸다 — sendInputEvent 로 단추 없이 움직이면 Blink 가 먼저 끌기를 끊어
+      // (2026-10-07 대조 실행: 고치기 전 코드도 OK) 셸의 buttons 검사를 못 거친다. 그래서 PointerEvent 를 직접 쏜다
+      await shellJs(`(() => { const id = window.__smokePointerId ?? 1; for (const dx of [140, 200]) window.dispatchEvent(new PointerEvent('pointermove', { pointerId: id, clientX: ${x0} + dx, clientY: ${y}, buttons: 0, bubbles: true })); return true; })()`);
+      await wait(400);
+      const after = ratioOf(sash.splitId);
+      const dragging = await shellJs<boolean>(`!!document.querySelector('.sash.dragging')`);
+      wc.sendInputEvent({ type: 'mouseUp', x: x0 + 200, y, button: 'left', clickCount: 1 });
+      const ok = Math.abs(after - held) < 0.01 && !dragging;
+      log('단추 없는 pointermove', `${ok ? 'OK' : 'FAIL'} 누른 채 ${held.toFixed(3)} → 놓은 뒤 ${after.toFixed(3)} · 끌기 표시 ${dragging}`);
+    }
+  }
+
+  // ⑯ 검수 5 권고 9 — 사이드바 폭 손잡이: role="separator" · 스니펫 라벨 · 키보드 → 넓게 · ← 좁게
+  {
+    const before = w.store.getSidebar();
+    if (before.collapsed) {
+      log('사이드바 손잡이 키보드', '건너뜀(사이드바 접힘)');
+    } else {
+      const attrs = await shellJs<{ role: string | null; orientation: string | null; label: string | null }>(
+        `(() => { const r = document.querySelector('#sidebar-resizer'); r.focus(); return { role: r.getAttribute('role'), orientation: r.getAttribute('aria-orientation'), label: r.getAttribute('aria-label') }; })()`,
+      );
+      const key = async (keyCode: string): Promise<void> => {
+        w.shellView.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+        w.shellView.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+      };
+      await key('Right');
+      const wider = await waitFor(() => w.store.getSidebar().width > before.width, 3000);
+      const widened = w.store.getSidebar().width;
+      await key('Left');
+      const back = await waitFor(() => w.store.getSidebar().width === before.width, 3000);
+      const labelOk = !!attrs.label && !attrs.label.startsWith('cmh-hub-app.');
+      const ok = attrs.role === 'separator' && attrs.orientation === 'vertical' && labelOk && wider && back;
+      log('사이드바 손잡이 키보드', `${ok ? 'OK' : 'FAIL'} role ${attrs.role} · ${attrs.orientation} · 라벨 ${attrs.label} · → ${before.width}→${widened} · ← 되돌림 ${back}`);
+    }
+  }
+
+  // ⑰ 검수 5 권고 2 — 좁은 창(800) · 사이드바 400 · pane 2 이상이면 이 프레임만 사이드바를 접어 pane 이 창 밖으로 안 나간다(저장 폭 그대로)
+  {
+    const savedBefore = w.store.getSidebar();
+    if (w.engine.paneCount() < 2) {
+      log('좁은 창 · 사이드바 400', '건너뜀(pane 1)');
+    } else {
+      w.setSidebar({ collapsed: false, width: 400 });
+      const wasMax = w.window.isMaximized();
+      if (wasMax) w.window.unmaximize();
+      w.window.setContentSize(800, 600);
+      await waitFor(() => w.window.getContentSize()[0] === 800, 3000);
+      await wait(400);
+      const [cw = 0] = w.window.getContentSize();
+      const geo = w.engine.computeGeometry(w.paneViewport());
+      const right = Math.max(...geo.panes.map((p) => p.contentRect.x + p.contentRect.width));
+      const shellHidden = await waitFor(() => shellJs<boolean>(`document.querySelector('#sidebar').hidden`), 3000);
+      const savedNow = w.store.getSidebar();
+      const ok = cw === 800 && right <= cw && shellHidden && savedNow.width === 400 && !savedNow.collapsed;
+      log('좁은 창 · 사이드바 400', `${ok ? 'OK' : 'FAIL'} 창 ${cw} · pane 오른쪽 끝 ${right} · 셸 사이드바 숨김 ${shellHidden} · 저장 ${JSON.stringify(savedNow)}`);
+      w.setSidebar(savedBefore);
+      if (wasMax) w.window.maximize();
+      else w.window.setContentSize(1440, 900);
+      await wait(400);
+    }
+  }
+
+  // ⑱ 검수 5 권고 4 — 셸 페이지는 다른 주소로 이동하지 않고 새 창도 못 연다(맨 끝 — 막지 못하면 셸이 사라진다)
+  {
+    const before = w.shellView.webContents.getURL();
+    const opened = await shellJs<boolean>(`window.open('https://example.com/') !== null`);
+    await shellJs(`(() => { location.href = 'https://example.com/'; return true; })()`).catch(() => undefined);
+    await wait(1000);
+    const stayed = w.shellView.webContents.getURL() === before;
+    log('셸 이동 · 새 창 막힘', `${stayed && !opened ? 'OK' : 'FAIL'} 주소 그대로 ${stayed} · window.open 열림 ${opened}`);
+  }
+
   log('end', '— 창은 그대로 둔다(사장님이 보시게)');
 }

@@ -109,6 +109,11 @@ export class LayoutEngine implements LayoutEngineApi {
     return this.collectPanes(this.tree.root).length;
   }
 
+  /** pane 트리 전체가 지켜야 하는 최소 크기(px · sash 포함) — ShellWindow 가 좁은 창에서 사이드바를 접어 그릴지 볼 때(검수 5 권고 2) */
+  minSize(): { width: number; height: number } {
+    return subtreeMinSize(this.tree.root);
+  }
+
   computeGeometry(viewport: Rect): LayoutGeometry {
     this.lastViewport = { ...viewport };
     return computeGeometry(this.tree, viewport);

@@ -168,3 +168,24 @@ export function computePaneViewport(windowBounds: Rect, limits: PaneViewportLimi
     height: Math.max(0, height - limits.titleBarHeight - limits.statusBarHeight),
   };
 }
+
+/**
+ * 이 프레임에 그릴 사이드바(검수 5 권고 2 · 좁은 창 pane 넘침). 펼친 사이드바를 뺀 pane 영역이 pane 트리의 최소 너비
+ * (minPaneAreaWidth = subtreeMinSize(root).width)보다 작으면 이 프레임만 접어 그린다 — 저장 값(store 의 sidebar)은 바꾸지 않는다.
+ * 【AI 임시 결정】 폭을 줄여 그리지 않고 접기만 한다: 셸은 받은 width 를 접기 · 펼치기 때 그대로 되돌려 보내므로(shell.ts sendSidebar),
+ * 줄인 폭을 보내면 그 폭이 저장 값이 된다. split view(트리 · ratio)는 건드리지 않는다.
+ */
+export function frameSidebar(windowWidth: number, sidebar: SidebarState, minPaneAreaWidth: number, enabled: boolean): SidebarState {
+  if (!enabled || sidebar.collapsed) return { ...sidebar };
+  const fits = Math.max(0, windowWidth) - clampSidebarWidth(sidebar.width) >= minPaneAreaWidth;
+  return fits ? { ...sidebar } : { collapsed: true, width: sidebar.width };
+}
+
+/**
+ * 사람이 사이드바를 펼치거나 폭을 끌 때 줄 수 있는 가장 큰 폭(검수 5 권고 2). pane 트리 최소 너비를 남기는 폭 — sidebarWidthMin 보다 작으면 null
+ * (그 창에서는 펼쳐도 frameSidebar 가 접어 그린다). 끄는 중에 사이드바가 접혀 사라지지 않게 ShellWindow.setSidebar 가 요청 폭을 이 값으로 자른다.
+ */
+export function maxSidebarWidthFor(windowWidth: number, minPaneAreaWidth: number): number | null {
+  const room = Math.floor(Math.max(0, windowWidth) - minPaneAreaWidth);
+  return room >= LAYOUT_LIMITS.sidebarWidthMin ? Math.min(LAYOUT_LIMITS.sidebarWidthMax, room) : null;
+}

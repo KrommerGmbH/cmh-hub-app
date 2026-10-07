@@ -3,7 +3,16 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { computePaneViewport, LAYOUT_LIMITS, SHELL_SIDEBAR_ENABLED, type LayoutFileV2, type LayoutTree, type Rect } from '@cmh-hub-app/contracts';
+import {
+  computePaneViewport,
+  frameSidebar,
+  LAYOUT_LIMITS,
+  maxSidebarWidthFor,
+  SHELL_SIDEBAR_ENABLED,
+  type LayoutFileV2,
+  type LayoutTree,
+  type Rect,
+} from '@cmh-hub-app/contracts';
 import { LayoutEngine } from './layout-engine.js';
 import { DEFAULT_SIDEBAR, layoutFileFromTree, LayoutStore, layoutTreeFromFile, migrateLayoutFile } from './layout-store.js';
 
@@ -260,5 +269,88 @@ describe('computePaneViewport', () => {
 
   it('창 원점이 0 이 아니어도 그 위에서 센다', () => {
     expect(computePaneViewport({ x: 10, y: 5, width: 800, height: 600 }, LAYOUT_LIMITS, open, true)).toEqual({ x: 262, y: 45, width: 548, height: 560 });
+  });
+});
+
+describe('좁은 창 — 사이드바를 접어 그려 pane 이 창 밖으로 안 넘친다(검수 5 권고 2)', () => {
+  /** 2단 좌우(columns2) 엔진 */
+  function columns2(): LayoutEngine {
+    const e = new LayoutEngine();
+    e.resetToDefault({ kind: 'admin', url: 'https://example.test/admin' });
+    const paneId = e.listPanes()[0]!.id;
+    e.apply({ cmd: 'newTab', paneId }, { newTab: { kind: 'admin', url: 'https://example.test/admin#b' } });
+    expect(e.apply({ cmd: 'applyLayout', preset: 'columns2' }, { newTab: { kind: 'admin', url: 'https://example.test/admin#c' } }).rejected).toBeNull();
+    expect(e.paneCount()).toBe(2);
+    return e;
+  }
+
+  /** ShellWindow.viewport 와 같은 계산(frameSidebar → computePaneViewport → computeGeometry) · pane 오른쪽 끝 중 가장 큰 값 */
+  function rightEdge(e: LayoutEngine, win: Rect, saved: { collapsed: boolean; width: number }): { right: number; drawn: { collapsed: boolean; width: number } } {
+    const drawn = frameSidebar(win.width, saved, e.minSize().width, true);
+    const g = e.computeGeometry(computePaneViewport(win, LAYOUT_LIMITS, drawn, true));
+    return { right: Math.max(...g.panes.map((p) => Math.max(p.stripRect.x + p.stripRect.width, p.contentRect.x + p.contentRect.width))), drawn };
+  }
+
+  it('창 800 · 사이드바 400 · 2단 좌우 → 어느 pane 도 창 밖으로 안 나간다 · 저장 폭은 그대로', () => {
+    const e = columns2();
+    const saved = { collapsed: false, width: 400 };
+    const { right, drawn } = rightEdge(e, { x: 0, y: 0, width: 800, height: 600 }, saved);
+    expect(right).toBeLessThanOrEqual(800);
+    expect(drawn).toEqual({ collapsed: true, width: 400 }); // 이 프레임만 접힘 · 폭은 저장 값
+    expect(saved).toEqual({ collapsed: false, width: 400 }); // 넘긴 값은 안 바뀐다
+  });
+
+  it('검수 5 재현 숫자(창 800 + 252 · 960 + 400) 도 넘침 0 · 자리가 넉넉하면 그대로 펼침', () => {
+    const e = columns2();
+    for (const [w, sb] of [[800, 252], [960, 400], [960, 252], [1440, 400]] as const) {
+      const { right } = rightEdge(e, { x: 0, y: 0, width: w, height: 600 }, { collapsed: false, width: sb });
+      expect(right, `창 ${w} 사이드바 ${sb}`).toBeLessThanOrEqual(w);
+    }
+    expect(rightEdge(e, { x: 0, y: 0, width: 1440, height: 900 }, { collapsed: false, width: 400 }).drawn).toEqual({ collapsed: false, width: 400 });
+    // pane 1 개(최소 320)면 800 − 400 = 400 ≥ 320 → 펼친 그대로
+    const one = new LayoutEngine();
+    one.resetToDefault({ kind: 'admin', url: 'https://example.test/admin' });
+    expect(frameSidebar(800, { collapsed: false, width: 400 }, one.minSize().width, true)).toEqual({ collapsed: false, width: 400 });
+  });
+
+  it('스위치가 꺼졌거나 이미 접혔으면 받은 값 그대로', () => {
+    expect(frameSidebar(800, { collapsed: false, width: 400 }, 644, false)).toEqual({ collapsed: false, width: 400 });
+    expect(frameSidebar(800, { collapsed: true, width: 300 }, 644, true)).toEqual({ collapsed: true, width: 300 });
+  });
+
+  it('maxSidebarWidthFor — pane 트리 최소 너비를 남기는 폭 · min 보다 작으면 null · max 로 자름', () => {
+    expect(maxSidebarWidthFor(1000, 644)).toBe(356);
+    expect(maxSidebarWidthFor(800, 644)).toBeNull();
+    expect(maxSidebarWidthFor(2000, 644)).toBe(LAYOUT_LIMITS.sidebarWidthMax);
+    expect(maxSidebarWidthFor(644 + LAYOUT_LIMITS.sidebarWidthMin, 644)).toBe(LAYOUT_LIMITS.sidebarWidthMin);
+  });
+});
+
+describe('트리 저장 전 setSidebar 도 파일에 쓴다(검수 5 권고 8)', () => {
+  it('save 를 한 번도 안 불렀어도 currentTree 를 주면 사이드바가 파일에 남는다', async () => {
+    const file = join(dir, 'layout.json');
+    const store = new LayoutStore(file, 1);
+    const e = new LayoutEngine();
+    e.resetToDefault({ kind: 'admin', url: 'https://example.test/admin' });
+    store.setSidebar({ collapsed: true, width: 300 }, e.getTree());
+    await store.flush();
+    const written = JSON.parse(await readFile(file, 'utf8')) as LayoutFileV2;
+    expect(written.sidebar).toEqual({ collapsed: true, width: 300 });
+    const again = new LayoutStore(file, 1);
+    await again.load();
+    expect(again.getSidebar()).toEqual({ collapsed: true, width: 300 });
+  });
+
+  it('트리도 currentTree 도 없으면 쓰지 않는다(다음 save 때 같이 쓴다)', async () => {
+    const file = join(dir, 'none.json');
+    const store = new LayoutStore(file, 1);
+    store.setSidebar({ collapsed: true, width: 300 });
+    await store.flush();
+    await expect(readFile(file, 'utf8')).rejects.toThrow();
+    const e = new LayoutEngine();
+    e.resetToDefault({ kind: 'admin', url: 'https://example.test/admin' });
+    store.save(e.getTree());
+    await store.flush();
+    expect((JSON.parse(await readFile(file, 'utf8')) as LayoutFileV2).sidebar).toEqual({ collapsed: true, width: 300 });
   });
 });

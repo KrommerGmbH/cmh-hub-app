@@ -13,6 +13,10 @@
       "expand": "펼치기",
       "resize": "사이드바 폭 조절"
     },
+    "tab": {
+      "naver": "네이버",
+      "loading": "불러오는 중"
+    },
     "composer": {
       "placeholder": "답장 입력, @ 로 컨텍스트 추가",
       "send": "보내기",

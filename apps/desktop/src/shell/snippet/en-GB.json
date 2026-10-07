@@ -13,6 +13,10 @@
       "expand": "Expand",
       "resize": "Resize sidebar"
     },
+    "tab": {
+      "naver": "Naver",
+      "loading": "Loading"
+    },
     "composer": {
       "placeholder": "Reply, @ for context",
       "send": "Send",

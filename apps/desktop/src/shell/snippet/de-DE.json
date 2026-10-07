@@ -13,6 +13,10 @@
       "expand": "Einblenden",
       "resize": "Seitenleistenbreite ändern"
     },
+    "tab": {
+      "naver": "Naver",
+      "loading": "Wird geladen"
+    },
     "composer": {
       "placeholder": "Antworten, @ für Kontext",
       "send": "Senden",

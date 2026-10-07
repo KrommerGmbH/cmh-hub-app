@@ -171,10 +171,14 @@ export class LayoutStore {
     return { ...this.sidebar };
   }
 
-  /** 폭은 min ~ max 로 자른다. 전에 저장한 트리가 있으면 같이 다시 쓴다(debounce) */
-  setSidebar(next: SidebarState): void {
+  /**
+   * 폭은 min ~ max 로 자른다. 전에 저장한 트리가 있으면 같이 다시 쓴다(debounce).
+   * 아직 저장한 트리가 없으면 currentTree(부르는 쪽의 지금 트리)로 쓴다 — 첫 트리 저장 전 사이드바 상태가 파일에 안 남던 것(검수 5 권고 8).
+   * 둘 다 없으면 메모리에만 두고 다음 save 때 같이 쓴다.
+   */
+  setSidebar(next: SidebarState, currentTree?: LayoutTree): void {
     this.sidebar = normalizeSidebar(next);
-    const tree = this.pending ?? this.lastTree;
+    const tree = this.pending ?? this.lastTree ?? currentTree;
     if (tree) this.save(tree);
   }
 
