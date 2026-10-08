@@ -1,10 +1,11 @@
 import type { Migration } from '../migration.js';
 import { Migration1791331200CmhAiBaseSchema } from './Migration1791331200CmhAiBaseSchema.js';
 import { Migration1791374400McpNameNocase } from './Migration1791374400McpNameNocase.js';
+import { Migration1791417600SystemConfig } from './Migration1791417600SystemConfig.js';
 
-export { Migration1791331200CmhAiBaseSchema, Migration1791374400McpNameNocase };
+export { Migration1791331200CmhAiBaseSchema, Migration1791374400McpNameNocase, Migration1791417600SystemConfig };
 
 /** 앱이 들고 가는 마이그레이션 — 플러그인 것은 DataSourceFactory 에 따로 넘긴다 */
 export function coreMigrations(): Migration[] {
-  return [new Migration1791331200CmhAiBaseSchema(), new Migration1791374400McpNameNocase()];
+  return [new Migration1791331200CmhAiBaseSchema(), new Migration1791374400McpNameNocase(), new Migration1791417600SystemConfig()];
 }

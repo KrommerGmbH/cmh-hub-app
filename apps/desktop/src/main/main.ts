@@ -1,5 +1,5 @@
 // 앱 진입점 — 차례: CDP 가드 → Chromium 스위치(ready 전) → ready → 세션 → IPC → 창
-import { app } from 'electron';
+import { app, protocol } from 'electron';
 import { assertNoRemoteDebugging } from './cdp-guard.js';
 import { APP_USER_MODEL_ID, ensureDevShortcuts } from './app-identity.js';
 import { installAppLogger } from './logging/app-logger.js';
@@ -22,7 +22,8 @@ import { runExtCheckIfRequested } from './ext-check.js';
 import { createShellWindow, getShellWindow } from './window/shell-window.js';
 import { APP_CONFIG } from '../config.js';
 import { ExtensionBridge } from './extension-bridge.js';
-import { startDataService } from './data/start-data-service.js';
+import { startAppServices } from './app-services.js';
+import { PLUGIN_UI_SCHEME_PRIVILEGES } from './plugin/plugin-ui-policy.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
 assertNoRemoteDebugging();
@@ -32,13 +33,17 @@ app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 app.commandLine.appendSwitch('lang', 'ko-KR');
 // Windows 작업 표시줄이 이 앱을 electron.exe 가 아니라 «CMH Hub» 로 묶고 창 아이콘을 쓰게(electron-builder appId 와 같은 값)
 if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
+// R2-b · R7-c — 사용자 scheme 은 ready 전에 이 한 번만 등록한다(plugin/plugin-ui-policy.ts 머리 주석 «그 함수는 한 번만 부를 수 있다»).
+// R6 챗 pane 의 app:// 등 새 scheme 은 따로 부르지 말고 이 배열에 더한다.
+protocol.registerSchemesAsPrivileged([PLUGIN_UI_SCHEME_PRIVILEGES]);
 
 app.whenReady().then(async () => {
   ensureDevShortcuts(); // 개발판만 — 작업 표시줄 · 알림에 Electron 로고 대신 CMH Hub 아이콘(2026-10-05)
   await prepareSessions();
   registerIpc();
-  // R1 — 자료층(SQLite)은 utilityProcess 에서 · 실패해도 창은 뜬다 · before-quit 에서 stop(아직 부르는 화면 없음 · 연결만)
-  startDataService();
+  // R1 · R7-c — 자료층(SQLite · utilityProcess) · 설정(system_config) · 플러그인 레지스트리를 묶는다. 기다리지 않는다(실패해도 창은 뜬다)
+  // 내리기는 will-quit 에서 플러그인 화면 → 플러그인 → 자료층 차례(app-services.ts · start-data-service.ts)
+  const services = startAppServices();
   // H01 · H03 — 설치 ID 와 서명은 창보다 먼저(첫 요청부터 서명이 붙게)
   const appSession = new AppSession(ensureInstallationIdentity());
   appSession.start();
@@ -48,6 +53,8 @@ app.whenReady().then(async () => {
   if (process.env['CMH_HUB_TEST_ERROR'] && !app.isPackaged) console.error('[test] 오류 보내기 끝-끝 시험', new Date().toISOString());
   const w = await createShellWindow(appSession); // U10 — 오른쪽 클릭 «AI 작업» 이 서버 화면 표(cmh-ai-screen)를 읽는 데 세션을 쓴다
   w.updater.start(); // G03 — 배포판만 확인(개발판은 안 함)
+  // R7-c — 플러그인 scan · startup 은 창을 띄운 뒤(창을 막지 않는다 · 실패는 로그만)
+  void services.startPlugins();
   // G04 — 서버가 이 판을 거절하면(403 app-too-old) 필수 업데이트 모달(«나중에» 없음)
   appSession.onAppError((code) => { if (code === 'app-too-old') w.updater.markRequired(); });
   startHeartbeat(appSession, w.window, () => {

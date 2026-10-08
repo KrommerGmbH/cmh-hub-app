@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultRegistry, defineEntity, EntityDefinitionError, EntityRegistry } from './index.js';
 
 describe('EntityRegistry', () => {
-  it('1차 정의 여섯 · 서버와 같은 이름', () => {
+  it('1차 정의 여섯 + 로컬 system_config · 서버와 같은 이름', () => {
     const r = createDefaultRegistry();
     expect(r.all().map((d) => d.entityName)).toEqual([
       'cmh_ai_provider',
@@ -11,6 +11,7 @@ describe('EntityRegistry', () => {
       'cmh_ai_mcp_tool',
       'cmh_ai_conversation',
       'cmh_ai_conversation_message',
+      'system_config',
     ]);
     const p = r.get('cmh_ai_provider');
     expect(p.field('apiKeyEnc')).toBe(p.field('api_key_enc'));
