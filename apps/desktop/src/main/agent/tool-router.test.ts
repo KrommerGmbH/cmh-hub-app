@@ -135,3 +135,19 @@ describe('ToolRouter', () => {
     expect(two.list().map((t) => t.name)).toEqual(['app:a_b', 'app:a.b']); // 목록 차례는 등록 차례 그대로
   });
 });
+
+describe('검수 9 🟡2 — 매니저가 알아본 서버(market · knownServer)를 RoutedTool.server 로 싣는다', () => {
+  it('listStates 에 market 이 있으면 server 를 싣고 · 없으면(시험 가짜 · 옛 꼴) 싣지 않는다', async () => {
+    const withInfo = fakeMcp('my-browser', ['browser_click']);
+    const router = new ToolRouter({
+      mcp: { manager: { ...withInfo.manager, listStates: () => [{ code: 'my-browser', status: 'connected', market: true, knownServer: 'cmh-camoufox-mcp' }] } },
+    });
+    await router.refresh();
+    expect(router.lookup('mcp:my-browser:browser_click')?.server).toEqual({ market: true, knownServer: 'cmh-camoufox-mcp' });
+
+    const plain = fakeMcp('other', ['browser_click']);
+    const router2 = new ToolRouter({ mcp: { manager: plain.manager } });
+    await router2.refresh();
+    expect(router2.lookup('mcp:other:browser_click')).not.toHaveProperty('server');
+  });
+});

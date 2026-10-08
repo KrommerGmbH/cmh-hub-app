@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   APPROVAL_ENTITY_PATTERN,
   DAL_WRITE_WITHOUT_TARGET_PATTERN,
+  KNOWN_MCP_SERVERS,
   MARKET_MCP_SERVER_CODES,
   credentialAccessFor,
   evaluateGuard,
+  identifyMcpServer,
   isDalWriteActionName,
+  isKnownReadOnlyTool,
+  isNoApprovalToolName,
   isReadActionName,
   isReadLikeToolName,
   matchToolPattern,
@@ -391,11 +395,12 @@ describe('Guard — camelCase 범용 DAL 쓰기도 target 없으면 deny (2026-1
 
 describe('검수 5 차단 1 — 승인 결정 도구 · 승인 엔티티 연관 칸 쓰기는 정책과 상관없이 deny', () => {
   const full = policy({ '**': 'allow' }, 'full');
-  it('승인 결정 도구 deny — market_approval_decide · market_approval_hold · form_create · camelCase · 붙인 꼴 · listing 포함', () => {
+  it('승인 결정 도구 deny — market_approval_decide · camelCase · 붙인 꼴 · 화이트리스트 밖 · listing 포함', () => {
     for (const tool of [
       'mcp:cmh-market-mcp:market_approval_decide',
-      'mcp:cmh-market-mcp:market_approval_hold',
-      'mcp:cmh-market-mcp:market_approval_form_create',
+      'mcp:cmh-gateway-mcp:market__market_approval_decide',
+      'mcp:x:approval_status_toggle',
+      'mcp:x:approval_view_and_ok',
       'mcp:x:marketApprovalDecide',
       'mcp:x:MARKET-APPROVAL-DECIDE',
       'mcp:x:approvals_update',
@@ -468,5 +473,90 @@ describe('검수 5 권고 6 — DAL 이름은 [._-] 를 떼고 ^dal 로 본다',
       expect(evaluateGuard(full, { tool, known: true }), tool).toEqual(result('deny', DAL_WRITE_WITHOUT_TARGET_PATTERN));
     }
     expect(evaluateGuard(full, { tool: 'mcp:s:dal.search', known: true })).toEqual(result('allow', '**'));
+  });
+});
+
+describe('검수 9 — 승인 요청 도구 · 마켓 서버 알아보기 · 서버별 읽기 전용 도구', () => {
+  const full = policy({ '**': 'allow' }, 'full');
+
+  it('🟡1 market_approval_hold · form_create 는 deny 하지 않고 승인 관문도 세우지 않는다(마켓 서버 · 게이트웨이 꼴 포함)', () => {
+    for (const tool of [
+      'mcp:cmh-market-mcp:market_approval_hold',
+      'mcp:cmh-market-mcp:market_approval_form_create',
+      'mcp:cmh-gateway-mcp:market__market_approval_hold',
+    ]) {
+      expect(evaluateGuard(full, { tool, known: true, needsApproval: false }), tool).toEqual(result('allow', '**'));
+      expect(evaluateGuard(full, { tool, known: true, listing: true }).decision, tool).toBe('allow');
+    }
+    // 결정 도구는 그대로 막는다
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-market-mcp:market_approval_decide', known: true })).toEqual(result('deny', 'builtin:approval-decision-tool'));
+    // hold 인자에 승인 엔티티 이름이 들면 인자 훑기 규칙(target)으로 막힌다
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-market-mcp:market_approval_hold', known: true, target: { entity: 'cmh_ai_approval' } }).decision).toBe('deny');
+  });
+
+  it('🟡2 MARKET_MCP_SERVER_CODES 는 KNOWN_MCP_SERVERS 에서 만든다 — camoufox-mcp · 게이트웨이 포함 · 마켓 아닌 서버는 빠진다', () => {
+    for (const c of ['cmh-market-mcp', 'camoufox', 'camoufox-mcp', 'cmh-camoufox-mcp', 'cmh-gateway-mcp']) expect(MARKET_MCP_SERVER_CODES.has(c), c).toBe(true);
+    for (const c of ['cmh-naver-api-mcp', 'cmh-crawler-mcp', 'cmh-shop-api-mcp', 'cmh-openrouter-mcp', 'openrouter-mcp']) expect(MARKET_MCP_SERVER_CODES.has(c), c).toBe(false);
+    expect(evaluateGuard(full, { tool: 'mcp:camoufox-mcp:browser_click', known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-gateway-mcp:camoufox__browser_api', known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+    // 기본 목록이면 code 를 이름 맞추기로도 본다 · 바꿔 넣은 목록은 그대로
+    expect(evaluateGuard(full, { tool: 'mcp:cmh_market_mcp:market_task_done', known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+    expect(evaluateGuard(full, { tool: 'mcp:cmh_market_mcp:market_task_done', known: true, needsApproval: false }, new Set(['x']))).toEqual(result('allow', '**'));
+  });
+
+  it('🟡2 identifyMcpServer — 사용자가 고른 code 가 달라도 serverInfo.name · args 경로 · command · url 로 알아본다', () => {
+    expect(identifyMcpServer({ code: 'my-browser' })).toEqual({ market: false, knownServer: null });
+    expect(identifyMcpServer({ code: 'my-browser', serverInfoName: 'camoufox-mcp' })).toEqual({ market: true, knownServer: 'cmh-camoufox-mcp' });
+    expect(identifyMcpServer({ code: 'x', command: 'node', args: ['E:\\Kang\\cmh-mcp\\packages\\cmh-market-mcp\\dist\\index.js'] })).toEqual({
+      market: true,
+      knownServer: 'cmh-market-mcp',
+    });
+    expect(identifyMcpServer({ code: 'x', command: 'npx', args: ['-y', 'cmh-camoufox-mcp@0.2.0'] })).toEqual({ market: true, knownServer: 'cmh-camoufox-mcp' });
+    expect(identifyMcpServer({ code: 'x', command: '/opt/bin/cmh-gateway-mcp' })).toEqual({ market: true, knownServer: 'cmh-gateway-mcp' });
+    expect(identifyMcpServer({ code: 'x', url: 'https://hub.example/cmh-market-mcp/mcp' })).toEqual({ market: true, knownServer: 'cmh-market-mcp' });
+    expect(identifyMcpServer({ code: 'CMH_Market_MCP' })).toEqual({ market: true, knownServer: 'cmh-market-mcp' });
+    // 짧은 code(camoufox)는 경로 마디로는 안 본다 — camoufox 브라우저 설치 경로와 헷갈림
+    expect(identifyMcpServer({ code: 'x', command: '/home/me/.cache/camoufox/camoufox' })).toEqual({ market: false, knownServer: null });
+    // 둘 이상에 맞으면 market 은 하나라도 · knownServer 는 null(읽기 전용 표를 붙이지 않는다)
+    expect(identifyMcpServer({ code: 'cmh-crawler-mcp', serverInfoName: 'cmh-market-mcp' })).toEqual({ market: true, knownServer: null });
+    expect(identifyMcpServer({ code: 'cmh-crawler-mcp', serverInfoName: 'cmh-crawler-mcp' })).toEqual({ market: false, knownServer: 'cmh-crawler-mcp' });
+  });
+
+  it('🟡2 GuardRequest.server.market 이면 서버 code 가 목록에 없어도 마켓 쓰기', () => {
+    const req = { tool: 'mcp:my-browser:browser_click', known: true, needsApproval: false } as const;
+    expect(evaluateGuard(full, req)).toEqual(result('allow', '**'));
+    expect(evaluateGuard(full, { ...req, server: { market: true, knownServer: 'cmh-camoufox-mcp' } })).toEqual(result('allow', '**', true));
+    // 서버별 읽기 전용 도구는 마켓 쓰기가 아니다 — knownServer 가 맞을 때만
+    const nav = { tool: 'mcp:my-browser:browser_navigate', known: true, needsApproval: false } as const;
+    expect(evaluateGuard(full, { ...nav, server: { market: true, knownServer: 'cmh-camoufox-mcp' } })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(full, { ...nav, server: { market: true, knownServer: null } })).toEqual(result('allow', '**', true));
+    // code 로만 알아본 camoufox 도 읽기 전용 표를 쓴다
+    expect(evaluateGuard(full, { tool: 'mcp:camoufox:browser_navigate', known: true, needsApproval: false })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(full, { tool: 'mcp:camoufox:browser_refresh', known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+    // 게이트웨이는 읽기 전용 표가 없다
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-gateway-mcp:camoufox__browser_navigate', known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+  });
+
+  it('🟢 서버별 읽기 전용 도구 표 — 정확한 이름 · 그 서버일 때만 · 뺀 도구는 아니다', () => {
+    const ro = (server: string, tool: string): boolean => isKnownReadOnlyTool(server, tool);
+    for (const t of ['browser_navigate', 'browser_goto_screen', 'browser_scroll', 'browser_idle_like_human', 'browser_network_requests', 'browser_network_body']) {
+      expect(ro('cmh-camoufox-mcp', t), t).toBe(true);
+    }
+    for (const t of ['browser_back', 'browser_forward', 'browser_refresh', 'browser_page_dump', 'browser_close_popups', 'browser_wait_for_x']) expect(ro('cmh-camoufox-mcp', t), t).toBe(false);
+    for (const t of ['market_keyword_volume', 'market_tag_suggest', 'talk_threads', 'talk_order_candidates']) expect(ro('cmh-market-mcp', t), t).toBe(true);
+    for (const t of ['naver_check', 'naver_check_adult', 'naver_check_errata', 'naver_datalab_shopping_insight']) expect(ro('cmh-naver-api-mcp', t), t).toBe(true);
+    for (const t of ['crawler_check_identifier', 'crawler_proxy_usage']) expect(ro('cmh-crawler-mcp', t), t).toBe(true);
+    for (const t of ['crawler_fetch_product', 'crawler_fetch_content', 'crawler_fetch_quotes', 'crawler_page_capture']) expect(ro('cmh-crawler-mcp', t), t).toBe(false);
+    expect(ro('cmh-openrouter-mcp', 'openrouter_models')).toBe(true);
+    expect(ro('cmh-shop-api-mcp', 'importer_profiles')).toBe(true);
+    // 다른 서버 · 서버 모름이면 아니다
+    expect(ro('cmh-market-mcp', 'browser_navigate')).toBe(false);
+    expect(isKnownReadOnlyTool(null, 'browser_navigate')).toBe(false);
+    expect(isNoApprovalToolName('browser_navigate')).toBe(false);
+    expect(isNoApprovalToolName('browser_navigate', 'cmh-camoufox-mcp')).toBe(true);
+    expect(isNoApprovalToolName('market_approval_hold')).toBe(true);
+    expect(isNoApprovalToolName('market_approval_decide')).toBe(false);
+    // 표의 packageName 은 서로 다르다
+    expect(new Set(KNOWN_MCP_SERVERS.map((k) => k.packageName)).size).toBe(KNOWN_MCP_SERVERS.length);
   });
 });

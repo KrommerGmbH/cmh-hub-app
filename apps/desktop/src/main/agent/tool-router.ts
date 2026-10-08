@@ -10,6 +10,7 @@ import type { ChatToolDefinition } from '../models/model-provider.js';
 import { errorText } from '../models/model-provider.js';
 import type { McpCallOptions, McpCallResult, McpServerManager, McpServerState, McpToolList } from '../mcp/mcp-server-manager.js';
 import { mcpToolName } from '../settings/guard-policy.js';
+import type { GuardServerInfo } from '../settings/guard-policy.js';
 
 export type ToolSource = 'mcp' | 'app' | 'browser';
 
@@ -35,13 +36,16 @@ export interface RoutedTool {
   readonly needsApproval: boolean;
   /** false 면 모델에게 주는 목록에서 뺀다(공급자 없는 웹 검색 등) — 불리면 여전히 오류 결과 */
   readonly available: boolean;
+  /** MCP 도구만: 매니저가 알아본 서버(market · knownServer — 검수 9 🟡2) → Guard 의 GuardRequest.server. 없으면 Guard 는 서버 code 로만 본다 */
+  readonly server?: GuardServerInfo;
 }
 
 // ---------------------------------------------------------------- 출처 ①: MCP
 
 /** McpServerManager 에서 쓰는 것만(시험에서 가짜로 갈아 끼우려고) */
 export interface McpToolSource {
-  listStates(): ReadonlyArray<Pick<McpServerState, 'code' | 'status'>>;
+  /** market · knownServer 는 진짜 매니저가 채운다(시험 가짜는 빼도 된다 — 그러면 Guard 는 서버 code 로만 본다) */
+  listStates(): ReadonlyArray<Pick<McpServerState, 'code' | 'status'> & Partial<Pick<McpServerState, 'market' | 'knownServer'>>>;
   listTools(code: string): Promise<McpToolList>;
   callTool(code: string, toolName: string, args: Record<string, unknown>, opts?: McpCallOptions): Promise<McpCallResult>;
 }
@@ -305,7 +309,8 @@ export class ToolRouter {
 
     if (this.mcp) {
       const { manager, serverCodes, isKnown } = this.mcp;
-      const connected = manager.listStates().filter((s) => s.status === 'connected').map((s) => s.code);
+      const connectedStates = manager.listStates().filter((s) => s.status === 'connected');
+      const connected = connectedStates.map((s) => s.code);
       const codes = serverCodes ? serverCodes.filter((c) => connected.includes(c)) : connected;
       for (const code of serverCodes ?? []) {
         if (!connected.includes(code)) errors.push(`mcp: server "${code}" is not connected — its tools are not offered`);
@@ -328,8 +333,10 @@ export class ToolRouter {
             continue;
           }
           const known = isKnown ? isKnown(code, row.name) : false;
+          const state = connectedStates.find((s) => s.code === code);
+          const routed = this.routed(guardName, 'mcp', row.description, row.parameters, known, row.needsApproval, true);
           entries.push({
-            tool: this.routed(guardName, 'mcp', row.description, row.parameters, known, row.needsApproval, true),
+            tool: state?.market !== undefined ? { ...routed, server: { market: state.market, knownServer: state.knownServer ?? null } } : routed,
             route: { kind: 'mcp', serverCode: code, toolName: row.name },
           });
         }

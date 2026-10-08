@@ -291,8 +291,8 @@ describe('3차 검수 차단 1 — needsApproval', () => {
       for (const n of ['echo', 'save_draft', 'lookup', 'off_tool']) textTool(s, n);
     });
     const stored = [
-      { name: 'lookup', needsApproval: true, active: true }, // 사람이 true 로 정함 — 이름 규칙(읽기 꼴 → false)보다 이긴다
-      { name: 'save_draft', needsApproval: false, active: true }, // 사람이 false 로 정함 — 이름 규칙(true)보다 이긴다
+      { name: 'lookup', needsApproval: true, active: true }, // 저장 행 true — 이름 규칙(읽기 꼴 → false)보다 이긴다
+      { name: 'save_draft', needsApproval: false, active: true }, // 저장 행 false — 이름 규칙(true)을 못 푼다(검수 9 🟡3 · 시더가 모두 false 로 넣는다)
       { name: 'off_tool', needsApproval: false, active: false }, // 꺼 둔 도구는 목록에서 빠지고 부를 수 없다
     ];
     const knownToolRows = vi.fn(async (serverId: string) => (serverId === 'srv-http' ? stored : []));
@@ -301,7 +301,7 @@ describe('3차 검수 차단 1 — needsApproval', () => {
     const first = await m.listTools('remote');
     expect(first.tools.map((t) => [t.name, t.needsApproval])).toEqual([
       ['echo', true], // 저장 행 없음 · 읽기 꼴 이름 아님 → true(검수 5 차단 2)
-      ['save_draft', false],
+      ['save_draft', true],
       ['lookup', true],
     ]);
     expect(first.warnings.join('\n')).toContain('off_tool');
@@ -354,7 +354,6 @@ describe('3차 검수 차단 1 — needsApproval', () => {
       'browser_cookies_import',
       'market_task_done',
       'market_element_fix',
-      'market_approval_hold',
       'market_approval_decide',
       'talk_send',
       'browser_field_save',
@@ -384,9 +383,55 @@ describe('3차 검수 차단 1 — needsApproval', () => {
       'dalAggregate',
       'order_list',
       'getPrice',
+      'market_approval_hold', // 검수 9 🟡1 — 승인 요청 도구
+      'market_approval_form_create',
     ]) {
       expect(defaultNeedsApproval(n), n).toBe(false);
     }
+  });
+
+  it('검수 9 🟢 서버별 읽기 전용 도구 — knownServer 가 그 서버일 때만 false', () => {
+    expect(defaultNeedsApproval('browser_navigate')).toBe(true);
+    expect(defaultNeedsApproval('browser_navigate', 'cmh-camoufox-mcp')).toBe(false);
+    expect(defaultNeedsApproval('browser_navigate', 'cmh-market-mcp')).toBe(true);
+    expect(defaultNeedsApproval('browser_refresh', 'cmh-camoufox-mcp')).toBe(true);
+    expect(defaultNeedsApproval('crawler_fetch_product', 'cmh-crawler-mcp')).toBe(true);
+    expect(defaultNeedsApproval('crawler_check_identifier', 'cmh-crawler-mcp')).toBe(false);
+  });
+
+  it('검수 9 🟡2 · 🟡3 — 연결 때 serverInfo.name 으로 서버를 알아보고 · 저장 행 false 는 이름 규칙을 못 푼다', async () => {
+    const handler = createMcpHandler(() => {
+      // 사용자가 code 'remote' 로 가져왔어도 서버가 밝힌 이름(camoufox-mcp — cmh-camoufox-mcp/src/index.ts:13)으로 알아본다
+      const server = new McpServer({ name: 'camoufox-mcp', version: '0.2.0' });
+      for (const n of ['browser_navigate', 'browser_click', 'browser_snapshot']) textTool(server, n);
+      return server;
+    });
+    const httpFetch = async (url: string | URL, init?: RequestInit): Promise<Response> => handler.fetch(new Request(url, init));
+    const stored = [
+      { name: 'browser_click', needsApproval: false, active: true }, // 시더 기본값 false — 이름 규칙 true 를 못 푼다
+      { name: 'browser_snapshot', needsApproval: true, active: true }, // 저장 행 true 는 늘 이긴다
+    ];
+    const { m } = manager({}, { httpFetch, knownToolRows: async () => stored });
+    const before = await m.connect(httpRow());
+    expect(before.status).toBe('connected');
+    expect(before).toMatchObject({ serverInfoName: 'camoufox-mcp', market: true, knownServer: 'cmh-camoufox-mcp' });
+    expect(m.getState('remote')).toMatchObject({ market: true, knownServer: 'cmh-camoufox-mcp' });
+    const { tools } = await m.listTools('remote');
+    expect(Object.fromEntries(tools.map((t) => [t.name, t.needsApproval]))).toEqual({
+      browser_navigate: false, // 읽기 전용 표(knownServer = cmh-camoufox-mcp)
+      browser_click: true,
+      browser_snapshot: true,
+    });
+    await m.close('remote');
+    await handler.close();
+  }, 30_000);
+
+  it('검수 9 🟡2 — 연결 전에도 행 칸(code · command · args · url)으로 알아본다', async () => {
+    const { m } = manager();
+    const idle = await m.connect(row({ code: 'mybrowser', active: false, command: 'node', args: ['/x/packages/cmh-camoufox-mcp/dist/index.js'] }));
+    expect(idle).toMatchObject({ status: 'idle', serverInfoName: null, market: true, knownServer: 'cmh-camoufox-mcp' });
+    const plain = await m.connect(row({ code: 'other', active: false }));
+    expect(plain).toMatchObject({ market: false, knownServer: null });
   });
 });
 

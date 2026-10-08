@@ -9,12 +9,14 @@
 // 쓰기 보호 엔티티 목록 · 이름 맞추기는 `approval-entity.ts` 한 곳(3차 검수 권고) — 플러그인 매니페스트 · 권한 검사와 같은 목록을 쓴다.
 // 검수 5 차단 1(E1 · E2): 승인 결정 도구 이름(market_approval_decide 등) · 승인 엔티티로 가는 연관 칸(approvals 등) 쓰기도 내장 deny — 표는 approval-entity.ts.
 // 검수 5 차단 2(E4): 마켓 MCP 서버(`mcp:<마켓 서버>:*`)의 읽기 꼴이 아닌 도구도 마켓 쓰기(requiresApproval) — 서버 code 목록은 MARKET_MCP_SERVER_CODES.
+// 검수 9: 마켓 서버는 code 말고 serverInfo.name · command · args · url 로도 알아본다(identifyMcpServer · GuardRequest.server) · 서버 목록은 KNOWN_MCP_SERVERS 한 곳.
 
 import {
   APPROVAL_ASSOCIATION_PATTERN,
   APPROVAL_DECISION_TOOL_PATTERN,
   WRITE_PROTECTED_ENTITIES,
   isApprovalDecisionToolName,
+  isApprovalRequestToolName,
   isWriteProtectedEntity,
   mentionsWriteProtectedEntity,
   normalizeEntityName,
@@ -65,6 +67,19 @@ export interface GuardRequest {
    * 실제 호출 때(listing 없음 · 기본) 인자의 entity 로 다시 평가해서 막는다. 빠지면 호출로 보고 막는 쪽이다.
    */
   readonly listing?: boolean;
+  /**
+   * MCP 서버를 알아본 결과(mcp-server-manager.ts 가 연결할 때 identifyMcpServer 로 정한다 · 검수 9 🟡2).
+   * market=true 면 서버 code 가 MARKET_MCP_SERVER_CODES 에 없어도 마켓 서버로 본다. 없으면 서버 code 로만 본다.
+   */
+  readonly server?: GuardServerInfo;
+}
+
+/** MCP 서버를 알아본 결과 — Guard 가 보는 칸만 */
+export interface GuardServerInfo {
+  /** 마켓 쓰기를 할 수 있는 서버인가(KNOWN_MCP_SERVERS 의 market) */
+  readonly market: boolean;
+  /** 알아본 서버 패키지 이름(KNOWN_MCP_SERVERS 의 packageName) · 못 알아봤거나 둘 이상에 맞으면 null */
+  readonly knownServer: string | null;
 }
 
 export interface GuardResult {
@@ -203,13 +218,178 @@ export function isReadLikeToolName(name: string): boolean {
   return words.some((w) => READ_TOOL_WORDS.has(w));
 }
 
+/** 우리가 아는 MCP 서버 한 줄 */
+export interface KnownMcpServer {
+  /** cmh-mcp `packages/<이 이름>`(= package.json name) */
+  readonly packageName: string;
+  /** MCP initialize 의 serverInfo.name(서버 소스의 `new McpServer({ name })`) */
+  readonly serverInfoNames: readonly string[];
+  /** 서버 테이블 `cmh_ai_mcp_server.code` 로 쓰이는 이름(CmhAiAgent `src/Service/Agent/CmhAiMcpSeeder.php` 의 code) — 사용자가 고른 code 와만 맞춘다 */
+  readonly codes: readonly string[];
+  /** true 면 `mcp:<이 서버>:<도구>` 는 읽기 꼴(isNoApprovalToolName)이 아니면 마켓 쓰기(requiresApproval) */
+  readonly market: boolean;
+  /**
+   * 【AI 임시 결정 · 나중에 테이블 행】 이 서버의 읽기 전용 도구(이름이 읽기 꼴이 아니어도 needsApproval false · 마켓 쓰기 아님 · 검수 9 🟢).
+   * cmh-mcp 소스를 읽고 «쓰지 않고 돈을 쓰지 않는» 것만 넣었다(근거는 줄마다). 다음 차례에 서버 테이블 행으로 옮긴다.
+   */
+  readonly readOnlyTools: ReadonlySet<string>;
+}
+
 /**
- * 【AI 임시 결정】 마켓 MCP 서버 code — `mcp:<이 code>:<도구>` 는 읽기 꼴 도구(isReadLikeToolName)가 아니면 마켓 쓰기(requiresApproval).
- * 근거: CmhAiAgent `src/Service/Agent/CmhAiMcpSeeder.php:359`('cmh-market-mcp') · `:534`('camoufox').
- * 'cmh-camoufox-mcp' 는 패키지 이름(cmh-mcp/packages/cmh-camoufox-mcp) — 바깥 앱 설정을 가져오면 이 이름이 code 가 될 수 있어 넣었다.
- * 🔴 다음 차례에 서버 테이블(`cmh_ai_mcp_server` 행의 마켓 표시)에서 읽어 evaluateGuard 세 번째 인자로 넘긴다 — 여기 목록은 그때까지의 기본값.
+ * 【AI 임시 결정】 우리가 아는 MCP 서버 — 마켓 서버 판별(검수 9 🟡2)과 서버별 읽기 전용 도구(검수 9 🟢)의 단 하나 목록.
+ * 근거(cmh-mcp · CmhAiAgent 저장소 · 2026-10-08 읽음):
+ *  - serverInfo.name: `cmh-market-mcp/src/index.ts:18` · `cmh-camoufox-mcp/src/index.ts:13`('camoufox-mcp') · `cmh-gateway-mcp/src/index.ts:46` ·
+ *    `cmh-naver-api-mcp/src/index.ts:14` · `cmh-crawler-mcp/src/index.ts:12` · `cmh-openrouter-mcp/src/index.ts:131`('openrouter-mcp') · `cmh-shop-api-mcp/src/index.ts:32`
+ *  - code: `CmhAiMcpSeeder.php:359`('cmh-market-mcp') · `:452`('cmh-shop-api-mcp') · `:534`('camoufox') · `:576`('cmh-crawler-mcp') · `:593`('cmh-openrouter-mcp')
+ *  - cmh-gateway-mcp 를 마켓으로 둔 까닭: 하위 서버 도구를 `<서버키>__<도구>` 로 그대로 내보낸다(`cmh-gateway-mcp/src/filter.ts:57-64`) —
+ *    마켓 · camoufox 도구도 이 길로 온다(검수 9 `camoufox__browser_api`). 서버키는 사람이 정해서 읽기 전용 표는 붙이지 않았다.
+ * 🔴 다음 차례에 서버 테이블(`cmh_ai_mcp_server` 행의 마켓 표시)에서 읽는다 — 여기 목록은 그때까지의 기본값.
  */
-export const MARKET_MCP_SERVER_CODES: ReadonlySet<string> = new Set(['cmh-market-mcp', 'camoufox', 'cmh-camoufox-mcp']);
+export const KNOWN_MCP_SERVERS: readonly KnownMcpServer[] = Object.freeze([
+  {
+    packageName: 'cmh-market-mcp',
+    serverInfoNames: ['cmh-market-mcp'],
+    codes: ['cmh-market-mcp'],
+    market: true,
+    readOnlyTools: new Set([
+      // 서버 `POST /api/_action/cmh-ai/open-api/keyword-volume` · `tag-suggest`(openapi.service.ts:219-221 · :297) — 마켓에 저장 안 함(openapi.tools.ts:18 · :35).
+      // 서버는 쿼터 사용량 칸 · 캐시만 쓴다(CmhAiAgent `CmhAiOpenApiQuota.php:92-131`)
+      'market_keyword_volume',
+      'market_tag_suggest',
+      // GET `talk/threads`(shopware-client.ts:444 · CmhAiKnowledgeController.php:324) · GET `talk/order-candidates`(talk.service.ts:156-157)
+      'talk_threads',
+      'talk_order_candidates',
+    ]),
+  },
+  {
+    packageName: 'cmh-camoufox-mcp',
+    serverInfoNames: ['camoufox-mcp', 'cmh-camoufox-mcp'],
+    codes: ['camoufox', 'camoufox-mcp', 'cmh-camoufox-mcp'],
+    market: true,
+    readOnlyTools: new Set([
+      // GET 주소 이동(goTo · http/https 만 · core/guard.ts:6-19) + 기본 알림창 닫기(사람이 고른 선택자 없음 · navigation.ts:27-36 · serve.ts goto)
+      'browser_navigate',
+      // cmh_ai_screen 을 읽고 이동(goto-screen.ts:2-4 · :216 · :267) · 도구는 선택자를 넘기지 않는다(navigation.ts:137-139)
+      'browser_goto_screen',
+      // 휠 · scrollIntoView 만(interaction.ts:197-246)
+      'browser_scroll',
+      // 마우스 옮기기 · 굴리기만 · 누르지 않음(page/idle.ts:30-32 · 결과 clicked:false)
+      'browser_idle_like_human',
+      // 기록된 요청 목록 · 본문 읽기(network.ts:24-27 · :42-46)
+      'browser_network_requests',
+      'browser_network_body',
+      // 뺀 것: browser_back · browser_forward · browser_refresh(page.goBack/goForward/reload — POST 를 다시 보내는지 모릅니다) ·
+      //        browser_page_dump(파일을 쓴다 · inspection.ts:113-140 writeDump) · browser_close_popups(사람이 준 선택자를 누른다 · popup.ts:213-214)
+    ]),
+  },
+  {
+    packageName: 'cmh-gateway-mcp',
+    serverInfoNames: ['cmh-gateway-mcp'],
+    codes: ['cmh-gateway-mcp'],
+    market: true,
+    readOnlyTools: new Set<string>(),
+  },
+  {
+    packageName: 'cmh-naver-api-mcp',
+    serverInfoNames: ['cmh-naver-api-mcp'],
+    codes: ['cmh-naver-api-mcp'],
+    market: false,
+    // 서버 `POST /api/_action/cmh-ai/open-api/check/{kind}` · datalab(check.ts:76-110 · datalab.ts:83) — 판별 · 조회만 · 서버는 쿼터 칸 · 캐시만 쓴다
+    readOnlyTools: new Set(['naver_check', 'naver_check_adult', 'naver_check_errata', 'naver_datalab_shopping_insight']),
+  },
+  {
+    packageName: 'cmh-crawler-mcp',
+    serverInfoNames: ['cmh-crawler-mcp'],
+    codes: ['cmh-crawler-mcp'],
+    market: false,
+    // 식별자 계산만(library.ts:167-186) · 환경변수만 읽음(cmh-crawler `src/api.ts:154-176`).
+    // 뺀 것: crawler_fetch_product · crawler_fetch_content · crawler_fetch_quotes · crawler_page_capture — 브라우저가 기본으로 유료 프록시를 쓴다
+    // (cmh-crawler `src/engine/browser/browsers.ts:457-460` 환경변수 프록시 · `src/engine/proxy/index.ts` 머리 주석 «프록시 아이피 구입»)
+    readOnlyTools: new Set(['crawler_check_identifier', 'crawler_proxy_usage']),
+  },
+  {
+    packageName: 'cmh-openrouter-mcp',
+    serverInfoNames: ['openrouter-mcp', 'cmh-openrouter-mcp'],
+    codes: ['cmh-openrouter-mcp'],
+    market: false,
+    // GET https://openrouter.ai/api/v1/models 목록만(index.ts:93-104 · :247-262) — 요금이 붙는지는 OpenRouter 문서로 확인 안 함
+    readOnlyTools: new Set(['openrouter_models']),
+  },
+  {
+    packageName: 'cmh-shop-api-mcp',
+    serverInfoNames: ['cmh-shop-api-mcp'],
+    codes: ['cmh-shop-api-mcp'],
+    market: false,
+    // GET 두 번(importer.ts:58-61 · 설명 «읽기만 합니다» :47)
+    readOnlyTools: new Set(['importer_profiles']),
+  },
+] satisfies KnownMcpServer[]);
+
+/** 이름 맞추기 — 소문자 · `-` `_` `.` 떼기(`cmh_market_mcp` · `CMH-MARKET-MCP` 도 같은 이름) */
+function compactServerName(name: string): string {
+  return name.trim().toLowerCase().replace(/[-_.]/g, '');
+}
+
+/**
+ * 【AI 임시 결정】 마켓 MCP 서버 code — `mcp:<이 code>:<도구>` 는 읽기 꼴 도구(isNoApprovalToolName)가 아니면 마켓 쓰기(requiresApproval).
+ * KNOWN_MCP_SERVERS 의 market 줄에서 만든다(목록은 한 곳) · 그대로 비교하는 표라 소문자 꼴만 담는다(code 는 서버 code 규칙상 소문자).
+ * 근거: CmhAiAgent `src/Service/Agent/CmhAiMcpSeeder.php:359`('cmh-market-mcp') · `:534`('camoufox') · 패키지 이름 · serverInfo.name('camoufox-mcp').
+ * 사용자가 다른 code 로 가져와도 연결 때 serverInfo.name · command · args · url 로 알아본다(identifyMcpServer · GuardRequest.server).
+ */
+export const MARKET_MCP_SERVER_CODES: ReadonlySet<string> = new Set(
+  KNOWN_MCP_SERVERS.filter((s) => s.market).flatMap((s) => [s.packageName, ...s.serverInfoNames, ...s.codes].map((n) => n.toLowerCase())),
+);
+
+/** identifyMcpServer 입력 — 서버 테이블 행의 칸과 initialize 의 serverInfo.name */
+export interface McpServerIdentityInput {
+  readonly code: string;
+  readonly name?: string | null;
+  readonly command?: string | null;
+  readonly args?: readonly string[];
+  readonly url?: string | null;
+  readonly serverInfoName?: string | null;
+}
+
+/** 경로 · 주소에서 이름 마디 후보를 뗀다(`/` `\` `?` `#` `:` 로 나누고 뒤의 `@판` 을 뗀다) */
+function pathSegments(text: string): string[] {
+  return text
+    .split(/[\\/?#:\s]+/)
+    .map((s) => s.replace(/@[^@]*$/, ''))
+    .filter((s) => s.length > 0)
+    .map(compactServerName);
+}
+
+/**
+ * MCP 서버를 알아본다(검수 9 🟡2) — 사용자가 고른 code 말고도 serverInfo.name · command · args 경로 · url 경로의 이름 마디로 맞춘다.
+ * ①code · name(사람이 정함) · serverInfo.name(서버가 밝힘)은 KNOWN_MCP_SERVERS 의 packageName · serverInfoNames · codes 와 이름 맞추기 비교
+ * ②command · args · url 은 경로 마디 하나가 packageName · serverInfoNames 와 같을 때(짧은 code `camoufox` 는 경로에서 안 본다 — camoufox 브라우저 설치 경로와 헷갈림)
+ * market = 맞은 줄 중 하나라도 market · knownServer = 맞은 줄이 꼭 하나일 때 그 packageName(둘 이상이면 null — 읽기 전용 표를 붙이지 않는다).
+ */
+export function identifyMcpServer(input: McpServerIdentityInput): GuardServerInfo {
+  const names = [input.code, input.name ?? '', input.serverInfoName ?? ''].map(compactServerName).filter((n) => n.length > 0);
+  const segments = [input.command ?? '', ...(input.args ?? []), input.url ?? ''].flatMap(pathSegments);
+  const hits = KNOWN_MCP_SERVERS.filter((s) => {
+    const byName = [s.packageName, ...s.serverInfoNames, ...s.codes].map(compactServerName);
+    const byPath = [s.packageName, ...s.serverInfoNames].map(compactServerName);
+    return names.some((n) => byName.includes(n)) || segments.some((g) => byPath.includes(g));
+  });
+  return { market: hits.some((s) => s.market), knownServer: hits.length === 1 ? (hits[0]?.packageName ?? null) : null };
+}
+
+/** knownServer(패키지 이름)의 읽기 전용 도구 표에 이 도구 이름이 있나(정확히 같은 이름만) */
+export function isKnownReadOnlyTool(knownServer: string | null | undefined, toolName: string): boolean {
+  if (knownServer === null || knownServer === undefined) return false;
+  return KNOWN_MCP_SERVERS.find((s) => s.packageName === knownServer)?.readOnlyTools.has(toolName) === true;
+}
+
+/**
+ * 승인 관문이 따로 필요 없는 도구 이름인가 — ①읽기 꼴 이름(isReadLikeToolName) ②서버별 읽기 전용 표(isKnownReadOnlyTool)
+ * ③승인 요청 도구(market_approval_hold · market_approval_form_create — approval-entity.ts isApprovalRequestToolName · 검수 9 🟡1).
+ * needsApproval 기본값(mcp-server-manager.ts defaultNeedsApproval) · 마켓 MCP 서버 쓰기 판별(isMarketWrite)이 같이 쓴다.
+ */
+export function isNoApprovalToolName(toolName: string, knownServer: string | null = null): boolean {
+  return isReadLikeToolName(toolName) || isKnownReadOnlyTool(knownServer, toolName) || isApprovalRequestToolName(toolName);
+}
 
 /**
  * 범용 DAL 쓰기 동작 이름인가 — `[._-]` 를 떼고 소문자로 붙인 꼴이 `dal` 로 시작하고, 뒤 글이 읽기 동작(READ_ACTIONS)이 아니면 쓰기.
@@ -393,17 +573,23 @@ function isReadLikeLastSegment(rawTool: string): boolean {
 /**
  * 마켓 쓰기인가:
  * ①`market:<마켓>:<동작…>` — 동작 마디가 전부 읽기 꼴일 때만 읽기 · 나머지는 모두 쓰기
- * ②`mcp:<마켓 서버 code>:<도구>`(marketServers) — 도구 이름이 읽기 꼴(isReadLikeToolName)이 아니면 쓰기(검수 5 E4 · ToolRouter 는 `mcp:` 이름만 만든다)
+ * ②`mcp:<마켓 서버>:<도구>` — 서버 code 가 marketServers 에 있거나 GuardRequest.server.market(검수 9 🟡2)이면,
+ *   도구 이름이 isNoApprovalToolName(읽기 꼴 · 서버별 읽기 전용 표 · 승인 요청 도구)이 아닐 때 쓰기(검수 5 E4 · ToolRouter 는 `mcp:` 이름만 만든다)
+ *   서버별 읽기 전용 표는 server.knownServer 로 · 없으면 code 로 알아본 패키지로 본다.
  */
-function isMarketWrite(segments: readonly string[], rawTool: string, marketServers: ReadonlySet<string>): boolean {
+function isMarketWrite(segments: readonly string[], rawTool: string, marketServers: ReadonlySet<string>, server: GuardServerInfo | undefined): boolean {
   if (segments[0] === 'market') {
     const actions = segments.slice(2);
     return actions.length === 0 || !actions.every(isReadActionName);
   }
-  if (segments[0] === 'mcp' && segments.length >= 3 && marketServers.has(segments[1] ?? '')) {
-    return !isReadLikeToolName(rawTool.split(':').slice(2).join(':'));
-  }
-  return false;
+  if (segments[0] !== 'mcp' || segments.length < 3) return false;
+  const code = segments[1] ?? '';
+  // 기본 목록이면 code 를 이름 맞추기(`cmh_market_mcp` · `CMH-Market-MCP`)로도 본다 · 세 번째 인자로 바꿔 넣은 목록은 그대로 비교만
+  const byCode = identifyMcpServer({ code });
+  const codeIsMarket = marketServers.has(code) || (marketServers === MARKET_MCP_SERVER_CODES && byCode.market);
+  if (!codeIsMarket && server?.market !== true) return false;
+  const knownServer = server !== undefined ? server.knownServer : byCode.knownServer;
+  return !isNoApprovalToolName(rawTool.split(':').slice(2).join(':'), knownServer);
 }
 
 /**
@@ -413,7 +599,7 @@ function isMarketWrite(segments: readonly string[], rawTool: string, marketServe
  * ②'' 읽기 꼴이 아닌 도구 인자에 승인 엔티티 연관 칸(target.association) → deny(내장 · APPROVAL_ASSOCIATION_PATTERN)
  * ②''' target 없는 범용 DAL 쓰기(`…:dal_update` 등 · listing 평가 제외) → deny(내장)
  * ③정책 글롭 전부 중 deny > ask > allow ④맞는 규칙 없음 → guard 는 ask · full 은 allow ⑤known=false 면 최소 ask
- * ⑥deny 가 아니면 마켓 쓰기(`market:*` · `mcp:<마켓 서버>:*`) · needsApproval 은 requiresApproval
+ * ⑥deny 가 아니면 마켓 쓰기(`market:*` · `mcp:<마켓 서버>:*` · request.server.market) · needsApproval 은 requiresApproval
  * marketServers 는 마켓 MCP 서버 code 목록(기본 MARKET_MCP_SERVER_CODES · 소문자로 비교한다).
  *
  * deny 규칙의 마디 전체 `*` 는 «한 마디 이상»으로 넓혀 읽는다(allow · ask 는 그대로 한 마디):
@@ -451,7 +637,7 @@ export function evaluateGuard(policy: GuardPolicy, request: GuardRequest, market
   if (!request.known && decision === 'allow') decision = 'ask';
 
   const lowerMarketServers = marketServers === MARKET_MCP_SERVER_CODES ? marketServers : new Set([...marketServers].map((c) => c.toLowerCase()));
-  const requiresApproval = decision !== 'deny' && (isMarketWrite(segments, request.tool, lowerMarketServers) || request.needsApproval === true);
+  const requiresApproval = decision !== 'deny' && (isMarketWrite(segments, request.tool, lowerMarketServers, request.server) || request.needsApproval === true);
   return { decision, requiresApproval, matchedPattern };
 }
 

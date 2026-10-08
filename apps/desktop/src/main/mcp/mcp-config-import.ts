@@ -126,8 +126,8 @@ const URL_LIKE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)([\s\S]*)$/;
 const POSITIONAL_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
 /** 위치 인자 `Basic <b64>` · `Bearer <토큰>` 꼴 인증 값(검수 5 권고 7) — 값을 버리고 «검토 필요» 경고 */
 const AUTH_SCHEME_VALUE = /^(Basic|Bearer|Token|Digest)\s+(\S+)$/i;
-/** 위치 인자 `Authorization: …` 꼴 헤더(이름이 비밀 이름 규칙에 맞을 때만 값을 버린다) */
-const HEADER_LIKE_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s/;
+/** 위치 인자 `Authorization: …` · `Authorization:Bearer …`(콜론 뒤 공백 없음 · 검수 9 🟡7) 꼴 헤더(이름이 비밀 이름 규칙에 맞을 때만 값을 버린다) */
+const HEADER_LIKE_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s*/;
 /**
  * 【AI 임시 결정】 뒤에 값이 오면 «검토 필요» 경고만 내는 짧은 플래그 — `-k`(key) · `-t`(token) · `-a`(auth) · `-u`(user:pass).
  * 도구마다 뜻이 달라(`curl -k` 는 값 없음) 값은 버리지 않는다. 근거 없는 고른 글자다 — 실제 가져오기 사례가 쌓이면 고친다.

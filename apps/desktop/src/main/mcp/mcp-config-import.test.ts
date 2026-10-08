@@ -425,6 +425,14 @@ describe('검수 5 권고 7 — 위치 인자 KEY=값 · Basic · 짧은 플래�
     expect(warnings.filter((w) => w.includes('Authorization') && w.includes('review needed'))).toHaveLength(2);
   });
 
+  it('검수 9 🟡7 — `Authorization:Bearer …` 처럼 콜론 뒤 공백이 없어도 값을 버린다 · 비밀 아닌 이름:값 은 남는다', () => {
+    const S = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const { server, warnings } = one({ command: 'npx', args: ['x', `Authorization:Bearer ${S}`, `x-api-key:${S}`, 'localhost:8080', 'mode:fast'] });
+    expect(JSON.stringify(server)).not.toContain(S);
+    expect(server.args).toEqual(['x', 'Authorization:', 'x-api-key:', 'localhost:8080', 'mode:fast']);
+    expect(warnings.join('\n')).not.toContain(S);
+  });
+
   it('mcp import: -k · -t · -a · -u 뒤 값은 남기되 «검토 필요» 경고(값은 경고 글에 없다)', () => {
     const { server, warnings } = one({ command: 'npx', args: ['x', '-k', 'short2val', '-p', '8080'] });
     expect(server.args).toEqual(['x', '-k', 'short2val', '-p', '8080']);

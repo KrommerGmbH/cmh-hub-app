@@ -230,8 +230,13 @@ export function parseToolArgs(argumentsJson: string): { ok: true; args: Record<s
   return { ok: true, args: parsed as Record<string, unknown> };
 }
 
-/** 보이지 않거나 글자 순서를 뒤집는 글자 — 훑기 전에 뗀다(`cmh_ai_appro\u200Bval`) · 승인 화면 표시는 revealHiddenChars 가 보이게 바꾼다 */
-const HIDDEN_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g;
+/**
+ * 보이지 않거나 글자 순서를 뒤집는 글자 — 훑기 전에 뗀다(`cmh_ai_appro\u200Bval`) · 승인 화면 표시는 revealHiddenChars 가 보이게 바꾼다.
+ * `u` 플래그(코드 포인트 단위 — 서로게이트 짝 글자를 한 글자로 본다). 검수 9 🟡6 으로 더한 것: U+2028 · U+2029(줄 · 문단 구분) ·
+ * U+FFF9~FFFB(interlinear annotation) · U+1D173~1D17A(음악 기호 서식 글자) · U+E0000~E007F(태그 글자).
+ */
+const HIDDEN_CHARS =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB\u{1D173}-\u{1D17A}\u{E0000}-\u{E007F}]/gu;
 
 /** `%XX` 를 글자로(바이트 하나 = 글자 하나 · 깨진 꼴은 그대로). 엔티티 이름은 ASCII 라 UTF-8 여러 바이트를 다시 묶지 않아도 된다 */
 function percentDecode(text: string): string {
@@ -262,13 +267,39 @@ export function deobfuscateText(text: string): string {
   return cur.normalize('NFKC').replace(HIDDEN_CHARS, '');
 }
 
-/** 글자 값 하나가 승인 엔티티를 언급하나 — 원래 글 · 푼 글 · 푼 글의 구분 글자(`/` · 공백 등)를 `_` 로 맞춘 글 차례. 맞은 꼴을 돌려준다 */
+/** 주소처럼 보이는 글 — `scheme://` 또는 `/` · `\` 로 시작하거나, `.` · `..` 점 마디가 있다(점 마디를 풀어 다시 볼 대상) */
+const URL_LIKE_TEXT = /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|[\\/])|(?:^|[\\/])\.{1,2}(?:[\\/]|$)/;
+
+/**
+ * 주소 꼴 글의 점 마디(`.` · `..`)를 푼 경로(검수 9 🟡5) — `new URL(v, 'http://x').pathname`. 주소 꼴이 아니거나 풀 수 없거나 그대로면 null.
+ * `/api/_action/cmh-ai/x/../approval/{id}/decide` → `/api/_action/cmh-ai/approval/{id}/decide`.
+ */
+function resolvedUrlPath(text: string): string | null {
+  if (!URL_LIKE_TEXT.test(text)) return null;
+  let pathname: string;
+  try {
+    pathname = new URL(text, 'http://x').pathname;
+  } catch {
+    return null;
+  }
+  return pathname !== text ? pathname : null;
+}
+
+/**
+ * 글자 값 하나가 승인 엔티티를 언급하나 — 원래 글 · 푼 글 · 푼 글의 구분 글자(`/` · 공백 등)를 `_` 로 맞춘 글 ·
+ * 주소 꼴이면 점 마디를 푼 경로(검수 9 🟡5)의 구분 글자를 `_` 로 맞춘 글 차례. 맞은 꼴을 돌려준다
+ */
 function protectedMentionIn(raw: string, decoded: string): string | null {
   if (mentionsWriteProtectedEntity(raw)) return raw;
   if (decoded !== raw && mentionsWriteProtectedEntity(decoded)) return decoded;
   // `/api/_action/cmh-ai/approval/x/decide` 처럼 `/` 로 나뉜 이름 — 영숫자 아닌 글자 덩이를 `_` 로 맞춰 다시 본다
   const joined = decoded.replace(/[^A-Za-z0-9]+/g, '_');
-  return mentionsWriteProtectedEntity(joined) ? joined : null;
+  if (mentionsWriteProtectedEntity(joined)) return joined;
+  // `…/cmh-ai/x/../approval/…` — 서버 라우터가 점 마디를 푼 경로로 받으면 승인 경로가 된다 · 풀어서 다시 본다
+  const resolved = resolvedUrlPath(decoded);
+  if (resolved === null) return null;
+  const resolvedJoined = resolved.replace(/[^A-Za-z0-9]+/g, '_');
+  return mentionsWriteProtectedEntity(resolvedJoined) ? resolvedJoined : null;
 }
 
 /** JSON 처럼 생긴 글이면 풀어 본다(`body: '{"entity":"cmh_ai_task","data":{"approvals":[…]}}'`). 아니면 undefined */
@@ -379,7 +410,7 @@ export function isDalWriteToolName(toolName: string): boolean {
 /** 도구 호출 한 번의 Guard 평가(실제 호출 · listing 아님): target 꺼내기 + target 없는 범용 DAL 쓰기 deny + evaluateGuard */
 export function evaluateToolCall(
   policy: GuardPolicy,
-  tool: Pick<RoutedTool, 'name' | 'known' | 'needsApproval'>,
+  tool: Pick<RoutedTool, 'name' | 'known' | 'needsApproval' | 'server'>,
   args: Record<string, unknown>,
 ): GuardResult {
   const target = guardTargetFor(tool.name, args);
@@ -388,7 +419,13 @@ export function evaluateToolCall(
   if (target?.entity === undefined && target?.association === undefined && isDalWriteToolName(tool.name)) {
     return { decision: 'deny', requiresApproval: false, matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN };
   }
-  return evaluateGuard(policy, { tool: tool.name, known: tool.known, needsApproval: tool.needsApproval, ...(target ? { target } : {}) });
+  return evaluateGuard(policy, {
+    tool: tool.name,
+    known: tool.known,
+    needsApproval: tool.needsApproval,
+    ...(target ? { target } : {}),
+    ...(tool.server ? { server: tool.server } : {}),
+  });
 }
 
 /** 글자 수 → 토큰 어림 */
@@ -553,7 +590,8 @@ export class AgentRunner {
         maxTotalChars: limits.maxToolDefinitionChars,
         // 이름만으로 deny 인 도구는 모델에게 보이지 않는다(원칙 2 토큰 절약) — 그래도 불리면 아래 Guard 가 다시 막는다.
         // listing: true — 인자가 아직 없으므로 «target 없는 범용 DAL 쓰기 deny» 는 실제 호출 때 본다(검수 4 차단 4)
-        filter: (t: RoutedTool) => evaluateGuard(policy, { tool: t.name, known: t.known, needsApproval: t.needsApproval, listing: true }).decision !== 'deny',
+        filter: (t: RoutedTool) =>
+          evaluateGuard(policy, { tool: t.name, known: t.known, needsApproval: t.needsApproval, listing: true, ...(t.server ? { server: t.server } : {}) }).decision !== 'deny',
       });
       const definitions: ChatToolDefinition[] = defSet.tools;
       // 이번 run 의 고정 이름 표 — 보여 준 도구만(검수 4 권고 3 · 10)

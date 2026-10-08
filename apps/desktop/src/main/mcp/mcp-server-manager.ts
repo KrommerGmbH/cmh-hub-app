@@ -3,8 +3,9 @@
 // API 는 `node_modules/@modelcontextprotocol/client` 2.3.1 의 d.ts 를 읽고 썼다(`Client` · `StreamableHTTPClientTransport` · `/stdio` 의 `StdioClientTransport` · `getDefaultEnvironment`).
 // 🔴 비밀값(env 값 · http 헤더 값)은 `resolveSecret` 로 연결할 때만 꺼내 메모리에만 둔다 — 로그 · 예외 · errorMessage · 도구 결과 글에서 값은 `***` 로 가린다.
 // 🔴 Guard(allow/ask/deny)와 승인 관문은 여기서 부르지 않는다 — 도구 호출 앞단(RA `AgentRunner` · R7 Guard)의 몫이다. 이 모듈은 «켠 서버만 띄운다» 와 «받아들인 도구만 부른다» 까지만 지킨다.
-//    다만 도구 행의 `needsApproval`(= `cmh_ai_mcp_tool.needs_approval`)은 여기서 채운다 — 저장된 행(사람이 정한 값)이 이기고 처음 보는 도구는 이름 규칙
-//    (3차 검수 차단 1 · 검수 5 차단 2 로 거꾸로: 읽기 꼴 이름만 false · 나머지는 true).
+//    다만 도구 행의 `needsApproval`(= `cmh_ai_mcp_tool.needs_approval`)은 여기서 채운다 — 이름 규칙(3차 검수 차단 1 · 검수 5 차단 2 로 거꾸로:
+//    읽기 꼴 이름 · 서버별 읽기 전용 표 · 승인 요청 도구만 false · 나머지는 true)에 저장 행 true 만 더한다(검수 9 🟡3 — 저장 행 false 로는 못 푼다).
+//    서버를 알아본 결과(state.market · state.knownServer — guard-policy.ts identifyMcpServer)도 여기서 채운다(검수 9 🟡2).
 // 행 꼴은 서버 `cmh_ai_mcp_server` · `cmh_ai_mcp_tool` 칸 이름(camelCase)과 맞춘다(research/05). `mcp-config-import.ts` 와는 일부러 묶지 않았다(입력 꼴을 여기서 따로 정의).
 import { constants as fsConstants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
@@ -14,7 +15,7 @@ import { Client, SdkError, SdkErrorCode, StreamableHTTPClientTransport } from '@
 import type { ContentBlock, FetchLike, StreamableHTTPClientTransportOptions, Transport } from '@modelcontextprotocol/client';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
 
-import { isReadLikeToolName } from '../settings/guard-policy.js';
+import { identifyMcpServer, isNoApprovalToolName } from '../settings/guard-policy.js';
 
 export type McpServerType = 'stdio' | 'http';
 
@@ -52,6 +53,12 @@ export interface McpServerState {
   pid: number | null;
   /** 협상된 규격 판(예 `2026-07-28` · 옛 서버면 `2025-11-25`) */
   protocolVersion: string | null;
+  /** 서버가 밝힌 이름(initialize 의 serverInfo.name · `Client.getServerVersion()`) · 연결 전이거나 안 밝혔으면 null */
+  serverInfoName: string | null;
+  /** 마켓 쓰기를 할 수 있는 서버인가(guard-policy.ts identifyMcpServer — code · name · command · args · url · serverInfo.name) */
+  market: boolean;
+  /** 알아본 서버 패키지 이름(guard-policy.ts KNOWN_MCP_SERVERS) · 못 알아봤거나 둘 이상에 맞으면 null */
+  knownServer: string | null;
 }
 
 /** = 서버 `cmh_ai_mcp_tool` 한 행(camelCase · id 없음 — 저장은 R1 Repository 몫) */
@@ -65,7 +72,7 @@ export interface McpToolRow {
   parameters: Record<string, unknown>;
   /** 저장 행이 active=false 인 도구는 목록에서 빠지므로 늘 true */
   active: true;
-  /** = `cmh_ai_mcp_tool.needs_approval`. 저장 행 값이 이기고 · 없으면 이름 규칙(defaultNeedsApproval) */
+  /** = `cmh_ai_mcp_tool.needs_approval`. 이름 규칙(defaultNeedsApproval) 또는 저장 행 true(검수 9 🟡3 — 저장 행 false 는 이름 규칙을 못 푼다) */
   needsApproval: boolean;
 }
 
@@ -183,14 +190,15 @@ export const MCP_SNIPPET_KEYS = {
 } as const;
 
 /**
- * 【AI 임시 결정】 저장 행이 없는 처음 보는 도구의 needsApproval 기본값 — 거꾸로 된 규칙(검수 5 차단 2 · E4):
- * 처음 보는 도구는 true(승인 관문) · 이름이 읽기 꼴(guard-policy.ts isReadLikeToolName — 읽기 낱말이 있고 쓰기 낱말이 없음)일 때만 false.
- * 예: browser_api · browser_api_patch · browser_evaluate · market_task_done · talk_send → true / browser_snapshot · market_product_search · dal_get → false.
+ * 【AI 임시 결정】 도구의 needsApproval 이름 규칙 — 거꾸로 된 규칙(검수 5 차단 2 · E4):
+ * 기본은 true(승인 관문) · guard-policy.ts isNoApprovalToolName(읽기 꼴 이름 · knownServer 의 읽기 전용 표 · 승인 요청 도구)일 때만 false.
+ * 예: browser_api · browser_api_patch · browser_evaluate · market_task_done · talk_send → true / browser_snapshot · market_product_search · dal_get ·
+ *     market_approval_hold → false · browser_navigate 는 knownServer 가 'cmh-camoufox-mcp' 일 때만 false.
  * ⚠️ PLAN 결정 21(needsApproval 기본값 «쓰기 꼴 이름만 true»)을 바꾼다 — 낱말 표는 guard-policy.ts READ_TOOL_WORDS · WRITE_TOOL_WORDS 한 곳.
- * 사람이 `cmh_ai_mcp_tool.needs_approval` 을 정하면 그 값이 이긴다(mergeKnownRows).
+ * 저장 행 true 는 늘 이긴다 · 저장 행 false 는 이 규칙을 못 푼다(mergeKnownRows · 검수 9 🟡3).
  */
-export function defaultNeedsApproval(toolName: string): boolean {
-  return !isReadLikeToolName(toolName);
+export function defaultNeedsApproval(toolName: string, knownServer: string | null = null): boolean {
+  return !isNoApprovalToolName(toolName, knownServer);
 }
 
 /** 흔한 런타임 — 없으면 «설치 안내» 를 보일 대상(설명용 · 확인은 모든 command 에 한다) */
@@ -337,7 +345,7 @@ export class McpServerManager {
         description,
         parameters: { ...(tool.inputSchema as Record<string, unknown>) },
         active: true,
-        needsApproval: defaultNeedsApproval(tool.name),
+        needsApproval: defaultNeedsApproval(tool.name, entry.state.knownServer),
       });
     }
     if (overflow > 0) warnings.push(`${code}: kept ${this.opts.maxTools} tools, dropped ${overflow} (maxTools)`);
@@ -460,7 +468,10 @@ export class McpServerManager {
   }
 
   /**
-   * 서버가 준 도구 + 저장된 `cmh_ai_mcp_tool` 행. 저장 행이 있으면 그 needsApproval 이 이기고 · active=false 면 목록에서 뺀다.
+   * 서버가 준 도구 + 저장된 `cmh_ai_mcp_tool` 행. active=false 면 목록에서 뺀다.
+   * needsApproval = 이름 규칙(t.needsApproval) || 저장 행 true — 【AI 임시 결정】 저장 행 false 는 이름 규칙을 못 푼다(검수 9 🟡3):
+   * 서버 시더가 모든 도구를 `needs_approval = false` 로 넣는다(CmhAiAgent `src/Service/Agent/CmhAiMcpSeeder.php:624`) — 그 false 는 사람이 정한 값이 아니다.
+   * 나중에 «사람이 정함» 표시 칸(예: needs_approval 을 사람이 바꾼 때 · 바꾼 사람)이 서버 테이블에 생기면 그 표시가 있는 false 만 이름 규칙을 풀게 바꿀 수 있다.
    * 저장 행을 못 읽으면 【AI 임시 결정】 모든 도구를 needsApproval true 로(사람이 정한 true 를 잃지 않게 막는 쪽).
    * warnings 가 null 이면(캐시에서 부름) 경고를 쌓지 않는다.
    */
@@ -482,7 +493,7 @@ export class McpServerManager {
         inactive.push(t.name);
         continue;
       }
-      out.push({ ...t, needsApproval: k ? k.needsApproval : t.needsApproval });
+      out.push({ ...t, needsApproval: t.needsApproval || k?.needsApproval === true });
     }
     if (warnings && inactive.length > 0) {
       const w = `${entry.row.code}: skipped ${inactive.length} tools turned off in cmh_ai_mcp_tool (active=false): ${inactive.join(', ')}`;
@@ -495,7 +506,18 @@ export class McpServerManager {
   private newEntry(row: McpServerRow): Entry {
     return {
       row: { ...row, args: [...row.args], envKeys: [...row.envKeys] },
-      state: { code: row.code, serverId: row.id, status: 'idle', errorMessage: null, errorKey: null, pid: null, protocolVersion: null },
+      state: {
+        code: row.code,
+        serverId: row.id,
+        status: 'idle',
+        errorMessage: null,
+        errorKey: null,
+        pid: null,
+        protocolVersion: null,
+        serverInfoName: null,
+        // 연결 전에는 행 칸만으로 알아본다 · 연결되면 serverInfo.name 을 더해 다시 본다(doConnect)
+        ...identifyMcpServer({ code: row.code, name: row.name, command: row.command, args: row.args, url: row.url }),
+      },
       client: null,
       transport: null,
       secrets: [],
@@ -586,6 +608,10 @@ export class McpServerManager {
     }
 
     // 2026-07-28 서버면 modern · 아니면 옛 initialize 로(ClientOptions.versionNegotiation · stdio 는 떠보기용 자식을 하나 더 잠깐 띄운다)
+    // 🔴 capabilities 를 주지 않는다 — 특히 elicitation. cmh-market-mcp 의 market_approval_hold 는 클라이언트가 elicitation 을 알리면
+    //    확인 창 답을 그대로 승인 결정으로 적는다(cmh-mcp `approval.service.ts:146-147` · `:318-330`). 이 앱이 elicitation 을 받게 되면
+    //    그 답은 반드시 사람 클릭이어야 한다(합의안 5) — approval-entity.ts APPROVAL_REQUEST_TOOL_NAMES 가 이것을 전제로 hold 를 열어 둔다.
+    //    SDK 기본값은 빈 능력(`@modelcontextprotocol/client` 2.3.1 dist/index.mjs `this._capabilities = options?.capabilities ? … : {}`).
     const client = new Client(this.opts.clientInfo, { versionNegotiation: { mode: 'auto' } });
     client.onclose = () => this.onConnectionClosed(entry, client);
     client.onerror = (err) => this.opts.logger.warn(`[mcp] ${row.code}: ${this.redact(entry, errorText(err))}`);
@@ -610,6 +636,8 @@ export class McpServerManager {
       await this.teardown(entry);
       return closed();
     }
+    // 서버가 밝힌 이름(initialize serverInfo · modern 은 discover `_meta` 에 있을 때만 — Client.getServerVersion d.ts 주석)으로 다시 알아본다(검수 9 🟡2)
+    const serverInfoName = client.getServerVersion()?.name ?? null;
     entry.state = {
       ...entry.state,
       status: 'connected',
@@ -617,6 +645,8 @@ export class McpServerManager {
       errorMessage: null,
       pid: transport instanceof StdioClientTransport ? transport.pid : null,
       protocolVersion: client.getNegotiatedProtocolVersion() ?? null,
+      serverInfoName,
+      ...identifyMcpServer({ code: row.code, name: row.name, command: row.command, args: row.args, url: row.url, serverInfoName }),
     };
     return { ...entry.state };
   }

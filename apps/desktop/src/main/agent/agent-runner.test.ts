@@ -846,12 +846,13 @@ describe('검수 5 차단 1 — 승인 결정 도구 · 연관 칸 · 글자 꾸
     ]);
     const events = await collectEvents(runner.run({ messages: user, model: modelRef, tools, policy: ALLOW }));
     // 이름만으로 deny 라 모델에게 보이지 않는다 → 불러도 모르는 도구
-    expect((model.requests[0]?.tools ?? []).map((t) => t.function.name)).toEqual(['mcp__cmh-market-mcp__market_approval_pending']);
+    // 검수 9 🟡1 — 승인 요청 도구(market_approval_hold)는 보인다 · 결정 도구만 빠진다
+    expect((model.requests[0]?.tools ?? []).map((t) => t.function.name)).toEqual(['mcp__cmh-market-mcp__market_approval_hold', 'mcp__cmh-market-mcp__market_approval_pending']);
     expect(events.find((e) => e.type === 'tool_denied')).toMatchObject({ reason: 'unknown_tool' });
     expect(mcp.calls).toHaveLength(0);
     // 표에서 직접 평가해도 deny
     expect(decide('mcp:cmh-market-mcp:market_approval_decide', { approvalId: 'a', chosen: 'approve' })).toBe('deny builtin:approval-decision-tool');
-    expect(decide('mcp:cmh-market-mcp:market_approval_hold', { market: 'naver' })).toBe('deny builtin:approval-decision-tool');
+    expect(decide('mcp:cmh-market-mcp:market_approval_hold', { market: 'naver' })).toBe('allow');
     expect(decide('mcp:cmh-market-mcp:market_approval_pending', {})).toBe('allow');
     expect(eventInvariantViolations(events)).toEqual([]);
   });
@@ -984,5 +985,46 @@ describe('검수 5 권고 5 — argsFull 보이지 않는 글자', () => {
     expect(required[0]?.argsFull.includes('\u202E')).toBe(true); // 실행 인자 그대로
     expect(required[0]?.argsHiddenChars).toBe(2);
     expect(mcp.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------- 검수 9(research/15-review-code-guard-fix-recheck.md) 🟡2 · 🟡5 · 🟡6
+
+describe('검수 9 — 점 마디 · 보이지 않는 글자 · 서버 알아보기', () => {
+  const decide = (name: string, args: Record<string, unknown>, extra: Partial<Pick<RoutedTool, 'server'>> = {}) => {
+    const g = evaluateToolCall(ALLOW, { name, ...KNOWN, ...extra }, args);
+    return `${g.decision}${g.requiresApproval ? '+approval' : ''}${g.matchedPattern ? ` ${g.matchedPattern}` : ''}`;
+  };
+
+  it('🟡5 주소의 점 마디(`..` · `%2e%2e`)를 풀어 승인 경로를 찾는다 · 점 마디가 없는 평범한 주소는 그대로', () => {
+    for (const url of [
+      'https://shop.example/api/_action/cmh-ai/x/../approval/0190aa/decide',
+      'https://shop.example/api/_action/cmh-ai/x/%2e%2e/approval/0190aa/decide',
+      '/api/_action/cmh-ai/x/y/../../approval/1/decide',
+      '/api/_action/cmh-ai/./x/../approval/1/decide',
+      String.raw`\api\_action\cmh-ai\x\..\approval\1\decide`,
+    ]) {
+      expect(guardTargetFor('x', { url })?.entity, url).toMatch(/cmh_ai_approval/);
+      expect(decide('mcp:camoufox:browser_api', { url, method: 'POST' }), url).toBe('deny entity:cmh_ai_approval:*');
+    }
+    expect(guardTargetFor('x', { url: 'https://shop.example/api/_action/cmh-ai/task/../run/1' })).toBeUndefined();
+    expect(guardTargetFor('x', { note: 'a..b approval' })).toBeUndefined();
+  });
+
+  it('🟡6 태그 글자 · 줄 구분 · interlinear · 음악 서식 글자를 떼고 · 승인 화면에서 보이게 바꾼다', () => {
+    for (const cp of [0xe0041, 0xe007f, 0x2028, 0x2029, 0xfff9, 0xfffb, 0x1d173, 0x1d17a]) {
+      const ch = String.fromCodePoint(cp);
+      const label = cp.toString(16);
+      expect(deobfuscateText(`cmh_ai_appro${ch}val`), label).toBe('cmh_ai_approval');
+      expect(decide('mcp:x:product_search', { body: `cmh_ai_appro${ch}val` }), label).toBe('deny entity:cmh_ai_approval:*');
+      const shown = revealHiddenChars(`a${ch}b`);
+      expect(shown, label).toEqual({ text: `a\\u{${cp.toString(16).toUpperCase().padStart(4, '0')}}b`, hiddenChars: 1 });
+    }
+  });
+
+  it('🟡2 RoutedTool.server(매니저가 알아본 서버)를 Guard 에 넘긴다 — code 가 달라도 마켓 쓰기', () => {
+    expect(decide('mcp:my-browser:browser_click', {})).toBe('allow');
+    expect(decide('mcp:my-browser:browser_click', {}, { server: { market: true, knownServer: 'cmh-camoufox-mcp' } })).toBe('allow+approval');
+    expect(decide('mcp:my-browser:browser_navigate', { url: 'https://example.com' }, { server: { market: true, knownServer: 'cmh-camoufox-mcp' } })).toBe('allow');
   });
 });

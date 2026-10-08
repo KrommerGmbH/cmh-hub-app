@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   APPROVAL_ASSOCIATION_KEYS,
+  APPROVAL_REQUEST_TOOL_NAMES,
   WRITE_PROTECTED_ENTITIES,
   isApprovalAssociationKey,
   isApprovalDecisionToolName,
+  isApprovalRequestToolName,
   isWriteProtectedEntity,
   mentionsWriteProtectedEntity,
   normalizeEntityName,
@@ -44,12 +46,58 @@ describe('검수 5 차단 1 — 승인 결정 도구 이름 · 승인 엔티티 
     expect(toolNameWords('')).toEqual([]);
   });
 
-  it('isApprovalDecisionToolName — 결정 · 쓰기 낱말이 있거나 읽기 낱말이 없으면 true', () => {
-    for (const n of ['market_approval_decide', 'market_approval_hold', 'market_approval_form_create', 'marketApprovalDecide', 'approval', 'cmhaiapproval', 'mcp:s:approvals_set']) {
+  it('isApprovalDecisionToolName — 결정 · 쓰기 낱말이 있거나 화이트리스트(읽기 낱말 · 명사)를 벗어나면 true', () => {
+    for (const n of ['market_approval_decide', 'marketApprovalDecide', 'approval', 'cmhaiapproval', 'mcp:s:approvals_set', 'market_approval_holdx', 'approval_hold', 'approval_create']) {
       expect(isApprovalDecisionToolName(n), n).toBe(true);
     }
     for (const n of ['market_approval_pending', 'mcp:cmh-market-mcp:market_approval_pending', 'approval_list', 'browser_api', 'mcp:approval-server:echo_list', 'market_task_done']) {
       expect(isApprovalDecisionToolName(n), n).toBe(false);
+    }
+  });
+
+  it('검수 9 🟡4 화이트리스트 — 읽기 낱말 하나로는 못 지난다 · 마디를 건너 나뉜 승인 낱말도 막는다', () => {
+    for (const n of [
+      'approval_status_toggle',
+      'approvalStatusFlip',
+      'approval_detail_override',
+      'approval_view_and_ok',
+      'approvalz_vote',
+      'approvalflip_list',
+      'approval_list_x',
+      'market:naver:appro:val_list',
+      'aprobacion_approval_list_todo',
+    ]) {
+      expect(isApprovalDecisionToolName(n), n).toBe(true);
+    }
+    for (const n of ['approvals_list', 'cmh_ai_approval_list', 'mcp:x:market_approval_status', 'entity:cmh_ai_approval:dal_search', 'entity:cmh-ai-approval:get']) {
+      expect(isApprovalDecisionToolName(n), n).toBe(false);
+    }
+  });
+
+  it('검수 9 🟡1 승인 요청 도구(hold · form_create)는 결정 도구가 아니다 — 정확한 이름 · 게이트웨이 꼴만', () => {
+    expect(APPROVAL_REQUEST_TOOL_NAMES).toEqual(['market_approval_hold', 'market_approval_form_create']);
+    for (const n of [
+      'market_approval_hold',
+      'market_approval_form_create',
+      'MARKET_APPROVAL_HOLD',
+      'mcp:cmh-market-mcp:market_approval_hold',
+      'mcp:cmh-gateway-mcp:market__market_approval_hold',
+      'mcp:cmh-gateway-mcp:cmh-market-mcp__market_approval_form_create',
+    ]) {
+      expect(isApprovalRequestToolName(n), n).toBe(true);
+      expect(isApprovalDecisionToolName(n), n).toBe(false);
+    }
+    for (const n of [
+      'marketApprovalHold',
+      'market_approval_hold_and_decide',
+      'mcp:g:approval__market_approval_hold',
+      'mcp:g:decide__market_approval_hold',
+      'market_approval_pending',
+    ]) {
+      expect(isApprovalRequestToolName(n), n).toBe(false);
+    }
+    for (const n of ['marketApprovalHold', 'market_approval_hold_and_decide', 'mcp:g:approval__market_approval_hold', 'mcp:g:decide__market_approval_hold']) {
+      expect(isApprovalDecisionToolName(n), n).toBe(true);
     }
   });
 
