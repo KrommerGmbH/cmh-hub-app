@@ -145,8 +145,9 @@ export interface BrowserToolInfo {
 
 /**
  * 브라우저 도구 다리. 연결은 다음 차례 — 네이버는 U11 크롬 확장 브리지 길만(Electron pane 자동화 0 · PLAN RA «9. 예외»).
- * 🔴 Guard 의 마켓 쓰기 규칙(`isMarketWrite`)은 이름이 `market:` 으로 시작할 때만 걸린다 — `browser:*` 로 들어오는 마켓 쓰기는
- * 다리가 needsApproval true 를 붙여야 승인 관문을 지난다(이름 규칙은 다리를 붙일 때 정한다).
+ * 🔴 Guard 의 마켓 쓰기 규칙(`isMarketWrite`)은 `market:*` 와 `mcp:<마켓 서버 code>:*`(guard-policy.ts MARKET_MCP_SERVER_CODES)에만 걸린다 —
+ * `browser:*` 로 들어오는 마켓 쓰기는 다리가 needsApproval true 를 붙여야 승인 관문을 지난다(기본이 true · 이름 규칙은 다리를 붙일 때 정한다).
+ * listTools 는 ToolRouterOptions.browserListTimeoutMs 안에 끝나야 한다 — 넘으면 그 출처를 빼고 errors 에 적는다(검수 5 권고 1).
  */
 export interface BrowserToolBridge {
   listTools(): Promise<BrowserToolInfo[]>;
@@ -189,7 +190,27 @@ export interface ToolRouterOptions {
   readonly mcp?: McpRouteOptions;
   readonly appTools?: readonly AppTool[];
   readonly browser?: BrowserToolBridge;
+  /** 브라우저 다리 listTools 시간 상한(ms) — 기본 BROWSER_LIST_TIMEOUT_MS */
+  readonly browserListTimeoutMs?: number;
   readonly logger?: { warn: (message: string) => void };
+}
+
+/** 【AI 임시 결정】 브라우저 다리 listTools 시간 상한 기본값 10초 — 근거 없음 · 다리를 붙일 때(U11 크롬 확장 브리지) 잰 값으로 바꾼다 */
+export const BROWSER_LIST_TIMEOUT_MS = 10_000;
+
+/** p 가 ms 안에 안 끝나면 예외(타이머는 끝나면 치운다) */
+async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 type Route =
@@ -230,6 +251,7 @@ export class ToolRouter {
   private readonly mcp: McpRouteOptions | undefined;
   private readonly appTools: readonly AppTool[];
   private readonly browser: BrowserToolBridge | undefined;
+  private readonly browserListTimeoutMs: number;
   private readonly logger: { warn: (message: string) => void };
   /** 차례 = 등록 차례(앱 → 브라우저 → MCP 서버 차례). 상한으로 뺄 때 뒤에서부터 빠진다 */
   private catalog: CatalogEntry[] = [];
@@ -240,6 +262,7 @@ export class ToolRouter {
     this.mcp = options.mcp;
     this.appTools = options.appTools ?? [];
     this.browser = options.browser;
+    this.browserListTimeoutMs = options.browserListTimeoutMs ?? BROWSER_LIST_TIMEOUT_MS;
     this.logger = options.logger ?? { warn: () => undefined };
     for (const t of this.appTools) {
       if (!nameSegmentOk(t.name)) throw new Error(`tool router: app tool name must match [A-Za-z0-9_.-]+ ("${t.name}")`);
@@ -258,7 +281,13 @@ export class ToolRouter {
 
     if (this.browser) {
       try {
-        for (const info of await this.browser.listTools()) {
+        const browser = this.browser;
+        const infos = await withTimeout(
+          Promise.resolve().then(() => browser.listTools()),
+          this.browserListTimeoutMs,
+          'browser: tools list',
+        );
+        for (const info of infos) {
           if (!nameSegmentOk(info.name)) {
             errors.push(`browser: skipped tool "${info.name.slice(0, 80)}" — name must match [A-Za-z0-9_.-]+`);
             continue;

@@ -105,6 +105,19 @@ describe('ToolRouter', () => {
     ]);
   });
 
+  it('브라우저 다리 listTools 가 끝나지 않으면 browserListTimeoutMs 뒤 그 출처만 빼고 errors 에 적는다(검수 5 권고 1)', async () => {
+    const browser: BrowserToolBridge = {
+      listTools: () => new Promise(() => undefined),
+      callTool: async () => ({ ok: true, text: '', truncated: false }),
+    };
+    const router = new ToolRouter({ browser, appTools: [spyTool('a')], browserListTimeoutMs: 30 });
+    const t0 = Date.now();
+    const { errors } = await router.refresh();
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(errors).toEqual(['browser: tools list failed: browser: tools list timed out after 30 ms']);
+    expect(router.list().map((t) => t.name)).toEqual(['app:a']);
+  });
+
   it('definitions 는 보여 준 도구만 담은 이름 표(모델 이름 · Guard 이름)를 함께 돌려준다', () => {
     const router = new ToolRouter({ appTools: [spyTool('a'), spyTool('b'), createWebSearchTool(null)] });
     const set = router.definitions({ maxTools: 1, maxDescriptionChars: 10, maxTotalChars: 10_000 });

@@ -74,7 +74,7 @@ describe('McpServerManager · stdio', () => {
       description: 'Returns the given text.',
       parameters: expect.objectContaining({ type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }),
       active: true,
-      needsApproval: false,
+      needsApproval: true, // 검수 5 차단 2 — 저장 행 없는 처음 보는 도구는 읽기 꼴 이름(get · list · search …)이 아니면 true
     });
     const cached = await m.listTools('echo');
     expect(cached.tools).toEqual(first.tools);
@@ -291,7 +291,7 @@ describe('3차 검수 차단 1 — needsApproval', () => {
       for (const n of ['echo', 'save_draft', 'lookup', 'off_tool']) textTool(s, n);
     });
     const stored = [
-      { name: 'echo', needsApproval: true, active: true }, // 사람이 true 로 정함 — 이름 규칙(false)보다 이긴다
+      { name: 'lookup', needsApproval: true, active: true }, // 사람이 true 로 정함 — 이름 규칙(읽기 꼴 → false)보다 이긴다
       { name: 'save_draft', needsApproval: false, active: true }, // 사람이 false 로 정함 — 이름 규칙(true)보다 이긴다
       { name: 'off_tool', needsApproval: false, active: false }, // 꺼 둔 도구는 목록에서 빠지고 부를 수 없다
     ];
@@ -300,15 +300,15 @@ describe('3차 검수 차단 1 — needsApproval', () => {
     expect((await m.connect(httpRow())).status).toBe('connected');
     const first = await m.listTools('remote');
     expect(first.tools.map((t) => [t.name, t.needsApproval])).toEqual([
-      ['echo', true],
+      ['echo', true], // 저장 행 없음 · 읽기 꼴 이름 아님 → true(검수 5 차단 2)
       ['save_draft', false],
-      ['lookup', false],
+      ['lookup', true],
     ]);
     expect(first.warnings.join('\n')).toContain('off_tool');
     expect(knownToolRows).toHaveBeenCalledWith('srv-http');
     // 캐시에서도 저장 행을 다시 합친다 — 사람이 바꾼 값이 바로 먹는다
-    stored[0] = { name: 'echo', needsApproval: false, active: true };
-    expect((await m.listTools('remote')).tools.find((t) => t.name === 'echo')?.needsApproval).toBe(false);
+    stored[0] = { name: 'lookup', needsApproval: false, active: true };
+    expect((await m.listTools('remote')).tools.find((t) => t.name === 'lookup')?.needsApproval).toBe(false);
     expect(await m.callTool('remote', 'off_tool', { text: 'x' })).toMatchObject({ ok: false, errorKey: MCP_SNIPPET_KEYS.toolNotFound });
     // 저장 행을 못 읽으면 모두 승인 필요(막는 쪽)
     knownToolRows.mockRejectedValueOnce(new Error('db down'));
@@ -340,6 +340,54 @@ describe('3차 검수 차단 1 — needsApproval', () => {
     await m.close('remote');
     await handler.close();
   }, 30_000);
+
+  it('검수 5 차단 2(E4) — 처음 보는 도구는 needsApproval true · 읽기 꼴 이름만 false · 쓰기 낱말이 읽기 낱말을 이긴다', () => {
+    // cmh-mcp packages 의 실제 도구 이름(registerTool) — 이름 규칙이 거꾸로 되기 전에는 모두 false 였다(검수 5 재현)
+    for (const n of [
+      'browser_api',
+      'browser_api_patch',
+      'browser_evaluate',
+      'browser_click',
+      'browser_type',
+      'browser_press',
+      'browser_act',
+      'browser_cookies_import',
+      'market_task_done',
+      'market_element_fix',
+      'market_approval_hold',
+      'market_approval_decide',
+      'talk_send',
+      'browser_field_save',
+      'echo',
+      'unknown',
+      '',
+      'search_and_delete', // 쓰기 낱말이 이긴다
+      'getAndUpdate',
+      'list_then_patch',
+    ]) {
+      expect(defaultNeedsApproval(n), n).toBe(true);
+    }
+    for (const n of [
+      'browser_snapshot',
+      'browser_take_screenshot',
+      'browser_wait_for',
+      'browser_status',
+      'browser_extract',
+      'market_product_search',
+      'market_approval_pending',
+      'market_screen_brief',
+      'market_screen_detail',
+      'market_capabilities',
+      'market_help_read',
+      'dal_get',
+      'dal_search',
+      'dalAggregate',
+      'order_list',
+      'getPrice',
+    ]) {
+      expect(defaultNeedsApproval(n), n).toBe(false);
+    }
+  });
 });
 
 describe('3차 검수 권고 — connect · close 경합', () => {

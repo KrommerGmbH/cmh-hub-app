@@ -11,6 +11,8 @@
 //    3차 검수 차단 3: `--header`/`-H` 값(헤더 이름은 남기고 값만) · `--pat`/`cookie`/`credential`/`session` 플래그 값 · args 안 주소의 쿼리 · 토큰 꼴 경로 마디,
 //    공백 든 command(첫 낱말만 command · 나머지는 args 로 옮겨 같은 규칙) · 토큰 꼴 위치 인자(알려진 앞붙이 · 24자 이상 영숫자 섞임)도 버린다.
 //    `--x=값` 은 플래그 이름이 비밀 꼴일 때만 값을 버린다(`--port=8080` · `--root=/home/me/docs` 는 남김 — 3차 검수 권고).
+//    검수 5 권고 7: 위치 인자 `KEY=값`(KEY 가 비밀 이름 꼴) · `Basic <b64>` · `Bearer <토큰>` · `Authorization: …` 의 값도 버린다.
+//    `-k` · `-t` · `-a` · `-u` 뒤 값은 뜻을 몰라 남기고 «검토 필요» 경고만(SHORT_REVIEW_FLAGS).
 // 검수 차단 5: 서버 키(code)는 `^[a-z0-9][a-z0-9_.-]{0,63}$` — 아니면 그 서버만 건너뛰고 경고. 서버 하나가 틀려도 나머지는 가져온다.
 // 칸 이름은 서버 `cmh_ai_mcp_server`(code · name · type · command · args · url · env_keys)와 맞춘다(research/05).
 import path from 'node:path';
@@ -120,6 +122,17 @@ const TOKEN_MIN_LENGTH = 24;
 const FLAG_WITH_VALUE = /^(--?[^=\s]+)=([\s\S]*)$/;
 /** 주소처럼 생긴 args 의 userinfo */
 const URL_LIKE = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)([\s\S]*)$/;
+/** 위치 인자 `KEY=값`(검수 5 권고 7) — KEY 가 비밀 이름 규칙(isSecretFlag)에 맞으면 값을 버린다 */
+const POSITIONAL_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+/** 위치 인자 `Basic <b64>` · `Bearer <토큰>` 꼴 인증 값(검수 5 권고 7) — 값을 버리고 «검토 필요» 경고 */
+const AUTH_SCHEME_VALUE = /^(Basic|Bearer|Token|Digest)\s+(\S+)$/i;
+/** 위치 인자 `Authorization: …` 꼴 헤더(이름이 비밀 이름 규칙에 맞을 때만 값을 버린다) */
+const HEADER_LIKE_ARG = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):\s/;
+/**
+ * 【AI 임시 결정】 뒤에 값이 오면 «검토 필요» 경고만 내는 짧은 플래그 — `-k`(key) · `-t`(token) · `-a`(auth) · `-u`(user:pass).
+ * 도구마다 뜻이 달라(`curl -k` 는 값 없음) 값은 버리지 않는다. 근거 없는 고른 글자다 — 실제 가져오기 사례가 쌓이면 고친다.
+ */
+const SHORT_REVIEW_FLAGS: ReadonlySet<string> = new Set(['-k', '-t', '-a', '-u']);
 /** command 앞 `NAME=값 ` 접두(값은 따옴표 가능) */
 const ENV_PREFIX = /^([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'[^']*'|\S*)\s+/;
 
@@ -520,6 +533,28 @@ function sanitizeHeaderArg(c: ServerCollector, flag: string, value: string): str
 /** 비밀 이름이 아닌 자리의 값 — 주소면 주소 규칙 · 토큰 꼴이면 버림(검토 필요) · 그 밖은 그대로(자리표만 기록) */
 function sanitizePlainArg(c: ServerCollector, index: number, value: string): string {
   const label = `args[${index}]`;
+  // `API_KEY=값` — 비밀 이름이면 값을 버린다(자리표면 남긴다 · classifySecretValue 가 경고)
+  const assignment = POSITIONAL_ASSIGNMENT.exec(value);
+  if (assignment) {
+    const key = assignment[1] as string;
+    const assigned = assignment[2] ?? '';
+    if (assigned !== '' && isSecretFlag(key)) {
+      return classifySecretValue(c, 'args', `${label} ${key}`, assigned) === 'drop' ? `${key}=` : value;
+    }
+  }
+  // `Basic dXNl…` · `Bearer …` — 인증 값이면 값을 버리고 검토 필요
+  const auth = AUTH_SCHEME_VALUE.exec(value);
+  if (auth) {
+    const scheme = auth[1] as string;
+    if (classifySecretValue(c, 'args', `${label} ${scheme}`, auth[2] ?? '') === 'drop') {
+      c.warnings.push(`Server "${c.code}": ${label} looks like an Authorization ${scheme} credential — value dropped, review needed`);
+      return scheme;
+    }
+    return value;
+  }
+  // `Authorization: Bearer …` 를 -H 없이 넘긴 꼴
+  const header = HEADER_LIKE_ARG.exec(value);
+  if (header && isSecretFlag(header[1] as string)) return sanitizeHeaderArg(c, label, value);
   let out = value;
   const url = URL_LIKE.exec(value);
   if (url) {
@@ -561,6 +596,10 @@ function sanitizeArgs(c: ServerCollector, raw: readonly string[]): string[] {
         }
       } else {
         recordPlaceholders(c, 'args', `args[${i}]`, arg);
+        const next = out[i + 1];
+        if (SHORT_REVIEW_FLAGS.has(arg) && next !== undefined && next !== '' && !next.startsWith('-')) {
+          c.warnings.push(`Server "${c.code}": args[${i}] short flag "${arg}" is followed by a value — check it is not a secret (review needed)`);
+        }
       }
       continue;
     }

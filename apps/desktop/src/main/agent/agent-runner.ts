@@ -16,8 +16,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { ChatChunk, ChatMessage, ChatRequest, ChatToolCallRef, ChatToolDefinition, ChatUsage, ModelProvider } from '../models/model-provider.js';
 import { errorText } from '../models/model-provider.js';
-import { mentionsWriteProtectedEntity } from '../settings/approval-entity.js';
-import { DAL_WRITE_WITHOUT_TARGET_PATTERN, evaluateGuard, isReadActionName, normalizeEntityName } from '../settings/guard-policy.js';
+import { isApprovalAssociationKey, mentionsWriteProtectedEntity } from '../settings/approval-entity.js';
+import { DAL_WRITE_WITHOUT_TARGET_PATTERN, evaluateGuard, isDalWriteActionName } from '../settings/guard-policy.js';
 import type { GuardPolicy, GuardResult, GuardTarget } from '../settings/guard-policy.js';
 import type { AgentDoneEvent, AgentDoneReason, AgentEvent, ToolDeniedReason } from './agent-events.js';
 import { APPROVAL_ARGS_MAX_BYTES, restrictGate } from './approval-gate.js';
@@ -136,6 +136,13 @@ const MASKED_KEYS_MAX = 100;
 /** 승인 엔티티 언급을 찾는 인자 훑기 상한 — 깊이 · 글자 값(키 포함) 수. 넘으면 다 못 봤으므로 막는 쪽 */
 export const ARGS_SCAN_MAX_DEPTH = 8;
 export const ARGS_SCAN_MAX_VALUES = 2_000;
+/**
+ * 【AI 임시 결정】 글자 값 하나를 풀어(퍼센트 · JSON 이스케이프) 다시 보는 상한 — 이보다 긴 글은 다 못 본 것(막는 쪽).
+ * 인자 전체 상한(maxToolArgsChars 기본 = APPROVAL_ARGS_MAX_BYTES)과 같게 둬서 보통 호출은 걸리지 않는다.
+ */
+export const ARGS_SCAN_DECODE_MAX_CHARS = APPROVAL_ARGS_MAX_BYTES;
+/** 【AI 임시 결정】 퍼센트 · JSON 이스케이프 풀기를 되풀이하는 횟수 상한(`%252D` 같은 겹 인코딩) */
+const ARGS_SCAN_DECODE_ROUNDS = 3;
 /** 훑기를 다 못 했을 때 Guard 에 넘기는 target — 모양이 깨진 엔티티 이름이라 Guard 가 deny 한다 */
 export const ARGS_SCAN_INCOMPLETE_ENTITY = '?args-scan-limit';
 /** 훑기를 다 못 해 막은 경우의 matchedPattern(evaluateToolCall) */
@@ -223,19 +230,96 @@ export function parseToolArgs(argumentsJson: string): { ok: true; args: Record<s
   return { ok: true, args: parsed as Record<string, unknown> };
 }
 
+/** 보이지 않거나 글자 순서를 뒤집는 글자 — 훑기 전에 뗀다(`cmh_ai_appro\u200Bval`) · 승인 화면 표시는 revealHiddenChars 가 보이게 바꾼다 */
+const HIDDEN_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g;
+
+/** `%XX` 를 글자로(바이트 하나 = 글자 하나 · 깨진 꼴은 그대로). 엔티티 이름은 ASCII 라 UTF-8 여러 바이트를 다시 묶지 않아도 된다 */
+function percentDecode(text: string): string {
+  return text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h: string) => String.fromCharCode(Number.parseInt(h, 16)));
+}
+
+/** JSON · JS 이스케이프(`\u0076` · `\x76` · `\/`)를 글자로 */
+function unescapeJsonLike(text: string): string {
+  return text
+    .replace(/\\u([0-9A-Fa-f]{4})/g, (_m, h: string) => String.fromCharCode(Number.parseInt(h, 16)))
+    .replace(/\\x([0-9A-Fa-f]{2})/g, (_m, h: string) => String.fromCharCode(Number.parseInt(h, 16)))
+    .replace(/\\\//g, '/');
+}
+
 /**
- * 인자 안 모든 글자 값(객체 키 포함)을 깊이 훑어 쓰기 보호 엔티티(cmh_ai_approval)를 언급하는 첫 값을 찾는다.
- * 깊이 ARGS_SCAN_MAX_DEPTH · 값 ARGS_SCAN_MAX_VALUES 상한 — 넘으면 complete false(다 못 봤다).
+ * 글자 꾸미기를 푼 꼴(검수 5 E3) — 퍼센트 · JSON 이스케이프를 바뀌지 않을 때까지(최대 ARGS_SCAN_DECODE_ROUNDS) 풀고 NFKC(전각 → ASCII) · 보이지 않는 글자 떼기.
+ * 정규식은 모두 고정 길이 꼴이라 길이에 선형이다(ReDoS 없음).
+ * 🔴 base64 · rot13 · 압축처럼 «사람이 정한 아무 꼴» 로 바꾼 글은 여기서 못 푼다 — 클라이언트 글자 훑기로는 원리상 닫을 수 없다.
+ *    진짜 막기는 서버 몫: `CmhAiApprovalController` decide 와 `cmh_ai_approval` PreWrite 가 사람 Admin 세션이 아닌 쓰기를 거부해야 한다(검수 5 차단 1).
  */
-export function scanProtectedEntityMention(args: unknown): { hit: string | null; complete: boolean } {
-  const stack: Array<{ v: unknown; d: number }> = [{ v: args, d: 0 }];
+export function deobfuscateText(text: string): string {
+  let cur = text;
+  for (let i = 0; i < ARGS_SCAN_DECODE_ROUNDS; i += 1) {
+    const next = unescapeJsonLike(percentDecode(cur));
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur.normalize('NFKC').replace(HIDDEN_CHARS, '');
+}
+
+/** 글자 값 하나가 승인 엔티티를 언급하나 — 원래 글 · 푼 글 · 푼 글의 구분 글자(`/` · 공백 등)를 `_` 로 맞춘 글 차례. 맞은 꼴을 돌려준다 */
+function protectedMentionIn(raw: string, decoded: string): string | null {
+  if (mentionsWriteProtectedEntity(raw)) return raw;
+  if (decoded !== raw && mentionsWriteProtectedEntity(decoded)) return decoded;
+  // `/api/_action/cmh-ai/approval/x/decide` 처럼 `/` 로 나뉜 이름 — 영숫자 아닌 글자 덩이를 `_` 로 맞춰 다시 본다
+  const joined = decoded.replace(/[^A-Za-z0-9]+/g, '_');
+  return mentionsWriteProtectedEntity(joined) ? joined : null;
+}
+
+/** JSON 처럼 생긴 글이면 풀어 본다(`body: '{"entity":"cmh_ai_task","data":{"approvals":[…]}}'`). 아니면 undefined */
+function parseJsonLike(text: string): unknown {
+  const t = text.trim();
+  if (!(t.startsWith('{') || t.startsWith('['))) return undefined;
+  try {
+    return JSON.parse(t) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ProtectedEntityScan {
+  /** 승인 엔티티를 언급한 첫 글(원래 글 · 또는 푼 꼴) */
+  readonly hit: string | null;
+  /** 승인 엔티티로 가는 연관 칸 키(approval-entity.ts APPROVAL_ASSOCIATION_KEYS)를 처음 만난 키 */
+  readonly association: string | null;
+  /** false = 상한(깊이 · 값 수 · 풀기 글 길이)에 걸려 다 못 봤다 */
+  readonly complete: boolean;
+}
+
+/**
+ * 인자 안 모든 글자 값(객체 키 포함)을 깊이 훑어 ①쓰기 보호 엔티티(cmh_ai_approval)를 언급하는 첫 값 ②승인 엔티티 연관 칸 키를 찾는다.
+ * 글자 값은 원래 꼴과 푼 꼴(deobfuscateText — 퍼센트 · JSON 이스케이프 · 전각 · 보이지 않는 글자)을 둘 다 보고,
+ * JSON 처럼 생긴 글(원래 꼴 · 푼 꼴)은 풀어서 그 안의 키 · 값도 훑는다(깊이 하나 더).
+ * 깊이 ARGS_SCAN_MAX_DEPTH · 값 ARGS_SCAN_MAX_VALUES · 글 길이 ARGS_SCAN_DECODE_MAX_CHARS 상한 — 넘으면 complete false(다 못 봤다).
+ */
+export function scanProtectedEntityMention(args: unknown): ProtectedEntityScan {
+  const stack: Array<{ v: unknown; d: number; key: boolean }> = [{ v: args, d: 0, key: false }];
   let values = 0;
+  let association: string | null = null;
+  const incomplete = (): ProtectedEntityScan => ({ hit: null, association, complete: false });
   for (let top = stack.pop(); top !== undefined; top = stack.pop()) {
-    const { v, d } = top;
+    const { v, d, key } = top;
     if (typeof v === 'string') {
       values += 1;
-      if (values > ARGS_SCAN_MAX_VALUES) return { hit: null, complete: false };
-      if (mentionsWriteProtectedEntity(v)) return { hit: v, complete: true };
+      if (values > ARGS_SCAN_MAX_VALUES) return incomplete();
+      if (v.length > ARGS_SCAN_DECODE_MAX_CHARS) return incomplete();
+      if (key && association === null && isApprovalAssociationKey(v)) association = v;
+      const decoded = deobfuscateText(v);
+      if (key && association === null && decoded !== v && isApprovalAssociationKey(decoded)) association = decoded;
+      const hit = protectedMentionIn(v, decoded);
+      if (hit !== null) return { hit, association, complete: true };
+      if (!key) {
+        const inner = parseJsonLike(v) ?? (decoded !== v ? parseJsonLike(decoded) : undefined);
+        if (inner !== undefined && inner !== null && typeof inner === 'object') {
+          if (d >= ARGS_SCAN_MAX_DEPTH) return incomplete();
+          stack.push({ v: inner, d: d + 1, key: false });
+        }
+      }
       continue;
     }
     if (v === null || typeof v !== 'object') continue;
@@ -243,42 +327,53 @@ export function scanProtectedEntityMention(args: unknown): { hit: string | null;
       ? v.map((x): [null, unknown] => [null, x])
       : Object.entries(v as Record<string, unknown>);
     if (entries.length === 0) continue;
-    if (d >= ARGS_SCAN_MAX_DEPTH) return { hit: null, complete: false };
+    if (d >= ARGS_SCAN_MAX_DEPTH) return incomplete();
     for (const [k, x] of entries) {
-      if (k !== null) stack.push({ v: k, d: d + 1 });
-      stack.push({ v: x, d: d + 1 });
+      if (k !== null) stack.push({ v: k, d: d + 1, key: true });
+      stack.push({ v: x, d: d + 1, key: false });
     }
   }
-  return { hit: null, complete: true };
+  return { hit: null, association, complete: true };
+}
+
+/** 승인 화면에 보일 때 보이지 않는 글자를 `\u{…}` 글로 바꾼 꼴과 바꾼 글자 수(검수 5 권고 5 · E8). 🔴 표시용 — 실행 인자(argsFull)는 바꾸지 않는다 */
+export function revealHiddenChars(text: string): { text: string; hiddenChars: number } {
+  let hiddenChars = 0;
+  const out = text.replace(HIDDEN_CHARS, (ch) => {
+    hiddenChars += 1;
+    return `\\u{${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}}`;
+  });
+  return { text: out, hiddenChars };
 }
 
 /**
- * Guard target — 도구 이름과 상관없이(RA 검수 4 차단 1):
- * ①인자 어디든(중첩 `operations[].entity` · 객체 키 포함) 승인 엔티티를 언급하는 글자 값이 있으면 그 값
- * ②다 못 훑었으면(깊이 · 값 수 상한) 모양이 깨진 이름(ARGS_SCAN_INCOMPLETE_ENTITY) → Guard deny(모르면 막는 쪽)
+ * Guard target — 도구 이름과 상관없이(RA 검수 4 차단 1 · 검수 5 차단 1):
+ * ①인자 어디든(중첩 `operations[].entity` · 객체 키 · JSON 글 안 · 퍼센트/JSON 이스케이프를 푼 꼴 포함) 승인 엔티티를 언급하는 글자 값이 있으면 그 값
+ * ②다 못 훑었으면(깊이 · 값 수 · 글 길이 상한) 모양이 깨진 이름(ARGS_SCAN_INCOMPLETE_ENTITY) → Guard deny(모르면 막는 쪽)
  * ③인자에 `entity` · `entityName` · `entity_name` 이 있으면 그 값(글이 아니면 JSON 글 — Guard 가 모양이 깨진 엔티티로 보고 deny)
- * 셋 다 아니면 undefined. 이름 판별(범용 DAL)은 evaluateToolCall 이 한다.
+ * + 인자 어디든 승인 엔티티 연관 칸 키(approvals 등)가 있으면 association — Guard 가 읽기 꼴 도구가 아니면 deny.
+ * 아무것도 없으면 undefined. 이름 판별(범용 DAL)은 evaluateToolCall 이 한다.
  */
 export function guardTargetFor(_toolName: string, args: Record<string, unknown>): GuardTarget | undefined {
   const scan = scanProtectedEntityMention(args);
   if (scan.hit !== null) return { entity: scan.hit };
   if (!scan.complete) return { entity: ARGS_SCAN_INCOMPLETE_ENTITY };
+  const association = scan.association !== null ? { association: scan.association } : {};
   for (const key of ENTITY_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(args, key)) continue;
     const entity = args[key];
-    return { entity: typeof entity === 'string' ? entity : (JSON.stringify(entity) ?? 'undefined') };
+    return { entity: typeof entity === 'string' ? entity : (JSON.stringify(entity) ?? 'undefined'), ...association };
   }
-  return undefined;
+  return scan.association !== null ? { association: scan.association } : undefined;
 }
 
 /**
- * 범용 DAL 쓰기 이름인가 — 마지막 마디를 Guard 와 같은 normalizeEntityName 으로 맞춘 뒤 `dal_` 로 시작하고 읽기 꼴이 아니면.
- * 원래 글자(대소문자 그대로)로 맞추므로 `dalUpdate` · `dal-update` · `DAL_UPDATE` 모두 잡는다.
- * (Guard 는 마디를 먼저 소문자로 바꿔 `dalUpdate` → `dalupdate` 가 되어 이 판별을 놓친다 — 검수 4 R13. 그래서 runner 가 앞에서 한 번 더 본다.)
+ * 범용 DAL 쓰기 이름인가 — 마지막 마디를 Guard 와 같은 isDalWriteActionName 으로 본다(`[._-]` 를 떼고 `^dal` · 뒤가 읽기 동작이 아니면 쓰기).
+ * `dalUpdate` · `dal-update` · `dal.update` · `dalupdate` · `DAL_UPDATE` 모두 잡는다(검수 5 권고 6).
+ * Guard(evaluateGuard)도 원래 글자 마지막 마디로 같은 판별을 한다 — runner 는 target 을 꺼낸 바로 그 자리에서 한 번 더 본다.
  */
 export function isDalWriteToolName(toolName: string): boolean {
-  const last = toolName.split(':').pop() ?? '';
-  return normalizeEntityName(last).startsWith('dal_') && !isReadActionName(last);
+  return isDalWriteActionName(toolName.split(':').pop() ?? '');
 }
 
 /** 도구 호출 한 번의 Guard 평가(실제 호출 · listing 아님): target 꺼내기 + target 없는 범용 DAL 쓰기 deny + evaluateGuard */
@@ -289,7 +384,8 @@ export function evaluateToolCall(
 ): GuardResult {
   const target = guardTargetFor(tool.name, args);
   if (target?.entity === ARGS_SCAN_INCOMPLETE_ENTITY) return { decision: 'deny', requiresApproval: false, matchedPattern: ARGS_SCAN_LIMIT_PATTERN };
-  if (target === undefined && isDalWriteToolName(tool.name)) {
+  // 연관 칸(association)이 있으면 Guard 가 그 규칙(builtin:approval-association)으로 먼저 막는다 — 더 알맞은 matchedPattern
+  if (target?.entity === undefined && target?.association === undefined && isDalWriteToolName(tool.name)) {
     return { decision: 'deny', requiresApproval: false, matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN };
   }
   return evaluateGuard(policy, { tool: tool.name, known: tool.known, needsApproval: tool.needsApproval, ...(target ? { target } : {}) });
@@ -436,9 +532,17 @@ export class AgentRunner {
 
     try {
       // ---- 도구 목록(한 번) — 출처 실패는 조용히 넘기지 않고 error 이벤트(run 은 이어 간다)
+      // 출처가 끝나지 않아도(브라우저 다리 · MCP 저장 행 읽기 등) 시간 상한 · 취소로 멈춘다(검수 5 권고 1 · E6)
       try {
-        const { errors } = await input.tools.refresh();
-        for (const message of errors) yield { type: 'error', runId, step, source: 'catalog', message: capError(message) };
+        const refreshed = await raceAbort(
+          Promise.resolve().then(() => input.tools.refresh()),
+          aborted,
+        );
+        if (refreshed === ABORTED) {
+          yield* stopEvents(stopReason());
+          return;
+        }
+        for (const message of refreshed.errors) yield { type: 'error', runId, step, source: 'catalog', message: capError(message) };
       } catch (e) {
         yield { type: 'error', runId, step, source: 'catalog', message: capError(errorText(e)) };
       }
@@ -641,6 +745,8 @@ export class AgentRunner {
             const reason = guard.decision === 'ask' ? 'guard_ask' : 'requires_approval';
             // 사람이 볼 인자 전문 — 자르지 않고 가리지 않는다(검수 4 차단 2). 상한을 넘으면 승인을 열지 않는다
             const argsFull = canonicalJson(parsed.args);
+            // 보이지 않는 글자(RTL override · zero-width 등) 수 — R6 승인 화면이 revealHiddenChars 로 보이게 그리고 경고한다(검수 5 권고 5)
+            const { hiddenChars } = revealHiddenChars(argsFull);
             if (Buffer.byteLength(argsFull, 'utf8') > APPROVAL_ARGS_MAX_BYTES) {
               yield deny('args_too_large', AGENT_TEXT.argsTooLarge, guard.matchedPattern);
               continue;
@@ -678,6 +784,7 @@ export class AgentRunner {
                 maskedKeys,
                 matchedPattern: guard.matchedPattern,
                 reason,
+                ...(hiddenChars > 0 ? { argsHiddenChars: hiddenChars } : {}),
                 ...(typeof ticket.expiresAt === 'number' ? { expiresAt: ticket.expiresAt } : {}),
               };
               // decision 이 reject 되면 바깥 catch 로 — 남은 호출을 닫고 done error(검수 4 권고 2)

@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   APPROVAL_ENTITY_PATTERN,
   DAL_WRITE_WITHOUT_TARGET_PATTERN,
+  MARKET_MCP_SERVER_CODES,
   credentialAccessFor,
   evaluateGuard,
+  isDalWriteActionName,
   isReadActionName,
+  isReadLikeToolName,
   matchToolPattern,
   mcpToolName,
   parseGuardPolicy,
@@ -266,10 +269,16 @@ describe('검수 차단 2 — 마켓 쓰기 · needsApproval 은 requiresApprova
   });
 
   it('needsApproval(cmh_ai_mcp_tool.needs_approval) 은 OR — MCP 마켓 쓰기 도구도 승인 관문', () => {
+    // 마켓 MCP 서버(MARKET_MCP_SERVER_CODES)의 쓰기 꼴 도구는 needsApproval 이 false 여도 승인 관문(검수 5 차단 2)
     for (const tool of ['mcp:cmh-camoufox-mcp:browser_field_save', 'mcp:cmh-market-mcp:naver_product_save']) {
       expect(evaluateGuard(full, { tool, known: true, needsApproval: true })).toEqual(result('allow', '**', true));
+      expect(evaluateGuard(full, { tool, known: true, needsApproval: false })).toEqual(result('allow', '**', true));
+      expect(evaluateGuard(full, { tool, known: true })).toEqual(result('allow', '**', true));
+    }
+    // 마켓 서버가 아니면 needsApproval 만 본다
+    for (const tool of ['mcp:other-mcp:browser_field_save', 'mcp:x:naver_product_save']) {
+      expect(evaluateGuard(full, { tool, known: true, needsApproval: true })).toEqual(result('allow', '**', true));
       expect(evaluateGuard(full, { tool, known: true, needsApproval: false })).toEqual(result('allow', '**'));
-      expect(evaluateGuard(full, { tool, known: true })).toEqual(result('allow', '**'));
     }
     // deny 면 승인 관문까지 가지 않는다
     expect(evaluateGuard(policy({ 'mcp:**': 'deny' }), { tool: 'mcp:a:b', known: true, needsApproval: true })).toEqual(result('deny', 'mcp:**'));
@@ -377,5 +386,87 @@ describe('Guard — camelCase 범용 DAL 쓰기도 target 없으면 deny (2026-1
   });
   it('camelCase 읽기 꼴 dalSearch 는 target 없어도 정책대로', () => {
     expect(evaluateGuard(policy, { tool: 'mcp:shop:dalSearch', known: true }).decision).toBe('allow');
+  });
+});
+
+describe('검수 5 차단 1 — 승인 결정 도구 · 승인 엔티티 연관 칸 쓰기는 정책과 상관없이 deny', () => {
+  const full = policy({ '**': 'allow' }, 'full');
+  it('승인 결정 도구 deny — market_approval_decide · market_approval_hold · form_create · camelCase · 붙인 꼴 · listing 포함', () => {
+    for (const tool of [
+      'mcp:cmh-market-mcp:market_approval_decide',
+      'mcp:cmh-market-mcp:market_approval_hold',
+      'mcp:cmh-market-mcp:market_approval_form_create',
+      'mcp:x:marketApprovalDecide',
+      'mcp:x:MARKET-APPROVAL-DECIDE',
+      'mcp:x:approvals_update',
+      'mcp:x:approval',
+      'mcp:x:marketapprovaldecide', // 구분 없는 이름 — 읽기 낱말을 못 찾으니 막는다
+      'market:naver:approval:decide',
+      'app:approval_set',
+    ]) {
+      expect(evaluateGuard(full, { tool, known: true }), tool).toEqual(result('deny', 'builtin:approval-decision-tool'));
+      expect(evaluateGuard(full, { tool, known: true, listing: true }).decision, tool).toBe('deny');
+    }
+  });
+
+  it('승인 읽기 도구(market_approval_pending)와 서버 code 의 낱말은 막지 않는다', () => {
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-market-mcp:market_approval_pending', known: true })).toEqual(result('allow', '**'));
+    expect(evaluateGuard(full, { tool: 'mcp:approval-sync:product_list', known: true })).toEqual(result('allow', '**'));
+  });
+
+  it('target.association(approvals 등)이 있으면 읽기 꼴이 아닌 도구는 deny · 읽기 도구(dal_search)는 정책대로', () => {
+    for (const tool of ['mcp:cmh-shop-api-mcp:dal_update', 'mcp:cmh-shop-api-mcp:dal_upsert', 'mcp:x:http_request', 'mcp:x:dal.update']) {
+      expect(evaluateGuard(full, { tool, known: true, target: { entity: 'cmh_ai_task', association: 'approvals' } }), tool).toEqual(
+        result('deny', 'builtin:approval-association'),
+      );
+    }
+    expect(evaluateGuard(full, { tool: 'mcp:x:http_request', known: true, target: { association: 'cmhAiDecidedApprovals' } })).toEqual(
+      result('deny', 'builtin:approval-association'),
+    );
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-shop-api-mcp:dal_search', known: true, target: { entity: 'cmh_ai_task', association: 'approvals' } })).toEqual(
+      result('allow', '**'),
+    );
+  });
+});
+
+describe('검수 5 차단 2 — mcp:<마켓 서버>:* 는 읽기 꼴이 아니면 requiresApproval', () => {
+  const full = policy({ '**': 'allow' }, 'full');
+  it('camoufox · cmh-market-mcp 의 쓰기 꼴 도구는 needsApproval false 여도 requiresApproval', () => {
+    for (const server of ['camoufox', 'cmh-camoufox-mcp', 'cmh-market-mcp', 'CMH-MARKET-MCP']) {
+      for (const n of ['browser_api', 'browser_api_patch', 'browser_evaluate', 'browser_click', 'browser_type', 'browser_cookies_import', 'market_task_done', 'market_element_fix', 'talk_send']) {
+        expect(evaluateGuard(full, { tool: `mcp:${server}:${n}`, known: true, needsApproval: false }), `${server}:${n}`).toEqual(result('allow', '**', true));
+      }
+      for (const n of ['browser_snapshot', 'browser_take_screenshot', 'market_product_search', 'market_screen_brief']) {
+        expect(evaluateGuard(full, { tool: `mcp:${server}:${n}`, known: true, needsApproval: false }), `${server}:${n}`).toEqual(result('allow', '**'));
+      }
+    }
+  });
+
+  it('마켓 서버 목록은 세 번째 인자로 바꿔 넣을 수 있다(나중에 테이블에서 읽을 자리)', () => {
+    expect(MARKET_MCP_SERVER_CODES.has('cmh-market-mcp')).toBe(true);
+    const req = { tool: 'mcp:my-market:item_update', known: true, needsApproval: false } as const;
+    expect(evaluateGuard(full, req)).toEqual(result('allow', '**'));
+    expect(evaluateGuard(full, req, new Set(['My-Market']))).toEqual(result('allow', '**', true));
+    expect(evaluateGuard(full, { tool: 'mcp:cmh-market-mcp:market_task_done', known: true }, new Set())).toEqual(result('allow', '**'));
+  });
+
+  it('isReadLikeToolName — 쓰기 낱말이 이기고 모르는 이름은 false', () => {
+    for (const n of ['browser_snapshot', 'dal_search', 'getPrice', 'market_approval_pending', 'browser_wait_for']) expect(isReadLikeToolName(n), n).toBe(true);
+    for (const n of ['browser_api', 'browser_api_patch', 'search_and_delete', 'echo', '', 'getAndUpdate']) expect(isReadLikeToolName(n), n).toBe(false);
+  });
+});
+
+describe('검수 5 권고 6 — DAL 이름은 [._-] 를 떼고 ^dal 로 본다', () => {
+  it('isDalWriteActionName — dal.update · dalupdate 도 쓰기 · dal.search · dalget 은 읽기', () => {
+    for (const n of ['dal_update', 'dalUpdate', 'DalDelete', 'dal-update', 'dal.update', 'dalupdate', 'DAL_UPDATE', 'dal', 'dal_upsert']) expect(isDalWriteActionName(n), n).toBe(true);
+    for (const n of ['dal_search', 'dal.search', 'dalget', 'DAL-AGGREGATE', 'product_update', 'update']) expect(isDalWriteActionName(n), n).toBe(false);
+  });
+
+  it('Guard: target 없는 dal.update · dalupdate 는 deny', () => {
+    const full = policy({ '**': 'allow' }, 'full');
+    for (const tool of ['mcp:s:dal.update', 'mcp:s:dalupdate']) {
+      expect(evaluateGuard(full, { tool, known: true }), tool).toEqual(result('deny', DAL_WRITE_WITHOUT_TARGET_PATTERN));
+    }
+    expect(evaluateGuard(full, { tool: 'mcp:s:dal.search', known: true })).toEqual(result('allow', '**'));
   });
 });

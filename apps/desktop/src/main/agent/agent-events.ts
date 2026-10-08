@@ -81,6 +81,11 @@ export interface AgentApprovalRequiredEvent extends EventBase {
   /** Guard 가 맞춘 규칙 · 없으면 null */
   readonly matchedPattern: string | null;
   readonly reason: ApprovalReason;
+  /**
+   * argsFull 안 보이지 않는 글자(RTL override U+202E · zero-width 등) 수 — 있을 때만(1 이상). R6 승인 화면은 이때 경고를 띄우고
+   * `revealHiddenChars(argsFull).text`(agent-runner.ts)로 그 글자를 `\u{…}` 로 보이게 그린다(검수 5 권고 5 · E8).
+   */
+  readonly argsHiddenChars?: number;
   /** 이 때(ms · epoch)가 지나면 'timeout' — 관문이 알려 줄 때만 */
   readonly expiresAt?: number;
 }

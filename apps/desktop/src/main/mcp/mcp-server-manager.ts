@@ -3,7 +3,8 @@
 // API 는 `node_modules/@modelcontextprotocol/client` 2.3.1 의 d.ts 를 읽고 썼다(`Client` · `StreamableHTTPClientTransport` · `/stdio` 의 `StdioClientTransport` · `getDefaultEnvironment`).
 // 🔴 비밀값(env 값 · http 헤더 값)은 `resolveSecret` 로 연결할 때만 꺼내 메모리에만 둔다 — 로그 · 예외 · errorMessage · 도구 결과 글에서 값은 `***` 로 가린다.
 // 🔴 Guard(allow/ask/deny)와 승인 관문은 여기서 부르지 않는다 — 도구 호출 앞단(RA `AgentRunner` · R7 Guard)의 몫이다. 이 모듈은 «켠 서버만 띄운다» 와 «받아들인 도구만 부른다» 까지만 지킨다.
-//    다만 도구 행의 `needsApproval`(= `cmh_ai_mcp_tool.needs_approval`)은 여기서 채운다 — 저장된 행(사람이 정한 값)이 이기고 처음 보는 도구는 이름 규칙(3차 검수 차단 1).
+//    다만 도구 행의 `needsApproval`(= `cmh_ai_mcp_tool.needs_approval`)은 여기서 채운다 — 저장된 행(사람이 정한 값)이 이기고 처음 보는 도구는 이름 규칙
+//    (3차 검수 차단 1 · 검수 5 차단 2 로 거꾸로: 읽기 꼴 이름만 false · 나머지는 true).
 // 행 꼴은 서버 `cmh_ai_mcp_server` · `cmh_ai_mcp_tool` 칸 이름(camelCase)과 맞춘다(research/05). `mcp-config-import.ts` 와는 일부러 묶지 않았다(입력 꼴을 여기서 따로 정의).
 import { constants as fsConstants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
@@ -12,6 +13,8 @@ import path from 'node:path';
 import { Client, SdkError, SdkErrorCode, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { ContentBlock, FetchLike, StreamableHTTPClientTransportOptions, Transport } from '@modelcontextprotocol/client';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
+
+import { isReadLikeToolName } from '../settings/guard-policy.js';
 
 export type McpServerType = 'stdio' | 'http';
 
@@ -180,14 +183,14 @@ export const MCP_SNIPPET_KEYS = {
 } as const;
 
 /**
- * 【AI 임시 결정】 저장 행이 없는 처음 보는 도구의 needsApproval 기본값 — 이름에 쓰기 꼴 낱말이 들어 있으면 true.
- * 낱말 경계를 보지 않는 «들어 있으면» 이라 `display`(pay) · `postgres_query`(post) 처럼 읽기 도구도 true 가 될 수 있다 — 막는 쪽으로 틀린다.
- * 사람이 `cmh_ai_mcp_tool.needs_approval` 을 정하면 그 값이 이긴다.
+ * 【AI 임시 결정】 저장 행이 없는 처음 보는 도구의 needsApproval 기본값 — 거꾸로 된 규칙(검수 5 차단 2 · E4):
+ * 처음 보는 도구는 true(승인 관문) · 이름이 읽기 꼴(guard-policy.ts isReadLikeToolName — 읽기 낱말이 있고 쓰기 낱말이 없음)일 때만 false.
+ * 예: browser_api · browser_api_patch · browser_evaluate · market_task_done · talk_send → true / browser_snapshot · market_product_search · dal_get → false.
+ * ⚠️ PLAN 결정 21(needsApproval 기본값 «쓰기 꼴 이름만 true»)을 바꾼다 — 낱말 표는 guard-policy.ts READ_TOOL_WORDS · WRITE_TOOL_WORDS 한 곳.
+ * 사람이 `cmh_ai_mcp_tool.needs_approval` 을 정하면 그 값이 이긴다(mergeKnownRows).
  */
-export const WRITE_LIKE_TOOL_NAME = /save|send|delete|update|upload|submit|create|write|remove|publish|post|order|pay|approve/i;
-
 export function defaultNeedsApproval(toolName: string): boolean {
-  return WRITE_LIKE_TOOL_NAME.test(toolName);
+  return !isReadLikeToolName(toolName);
 }
 
 /** 흔한 런타임 — 없으면 «설치 안내» 를 보일 대상(설명용 · 확인은 모든 command 에 한다) */

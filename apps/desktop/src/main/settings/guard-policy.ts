@@ -7,8 +7,19 @@
 // 공백 · 제어문자 · zero-width · 전각 · 비ASCII 가 하나라도 있으면 deny — 겉보기만 같은 이름으로 deny 규칙 · 승인 엔티티 검사를 비껴가지 못하게.
 // (소문자로 바꾸기 «전에» 검사한다 — Kelvin 기호 U+212A 처럼 toLowerCase 하면 ASCII 'k' 가 되는 글자도 막으려고.)
 // 쓰기 보호 엔티티 목록 · 이름 맞추기는 `approval-entity.ts` 한 곳(3차 검수 권고) — 플러그인 매니페스트 · 권한 검사와 같은 목록을 쓴다.
+// 검수 5 차단 1(E1 · E2): 승인 결정 도구 이름(market_approval_decide 등) · 승인 엔티티로 가는 연관 칸(approvals 등) 쓰기도 내장 deny — 표는 approval-entity.ts.
+// 검수 5 차단 2(E4): 마켓 MCP 서버(`mcp:<마켓 서버>:*`)의 읽기 꼴이 아닌 도구도 마켓 쓰기(requiresApproval) — 서버 code 목록은 MARKET_MCP_SERVER_CODES.
 
-import { WRITE_PROTECTED_ENTITIES, isWriteProtectedEntity, mentionsWriteProtectedEntity, normalizeEntityName } from './approval-entity.js';
+import {
+  APPROVAL_ASSOCIATION_PATTERN,
+  APPROVAL_DECISION_TOOL_PATTERN,
+  WRITE_PROTECTED_ENTITIES,
+  isApprovalDecisionToolName,
+  isWriteProtectedEntity,
+  mentionsWriteProtectedEntity,
+  normalizeEntityName,
+  toolNameWords,
+} from './approval-entity.js';
 
 export { normalizeEntityName };
 
@@ -36,6 +47,8 @@ export interface GuardPolicy {
 export interface GuardTarget {
   /** 범용 DAL 도구(dal_update 등)가 건드리는 엔티티 이름(예 'cmh_ai_approval') */
   readonly entity?: string;
+  /** 인자(중첩 data · JSON 글 안 포함)에서 찾은 승인 엔티티 연관 칸 키(예 'approvals') — 읽기 꼴 도구가 아니면 deny(검수 5 E2) */
+  readonly association?: string;
 }
 
 export interface GuardRequest {
@@ -80,6 +93,134 @@ export const DAL_WRITE_WITHOUT_TARGET_PATTERN = 'builtin:dal-write-without-targe
  * 늘릴 때는 이 표만 고친다.
  */
 export const READ_ACTIONS: ReadonlySet<string> = new Set(['read', 'search', 'get', 'list', 'count', 'aggregate', 'find']);
+
+/**
+ * 【AI 임시 결정】 도구 이름 낱말(toolNameWords) 중 읽기 꼴 — 쓰기 낱말이 없고 이 낱말이 하나라도 있어야 «읽기 꼴 도구».
+ * 처음 보는 MCP 도구의 needsApproval 기본값(mcp-server-manager.ts defaultNeedsApproval) · 마켓 MCP 서버 쓰기 판별이 같이 쓴다.
+ * 실제 도구 이름(cmh-mcp packages 의 registerTool 이름 · 2026-10-07 읽음)에 맞춰 골랐다 — 근거 없는 낱말은 넣지 않았다. 늘릴 때는 이 표만.
+ */
+export const READ_TOOL_WORDS: ReadonlySet<string> = new Set([
+  'get',
+  'list',
+  'search',
+  'read',
+  'find',
+  'count',
+  'aggregate',
+  'snapshot',
+  'status',
+  'extract',
+  'screenshot',
+  'wait',
+  'pending',
+  'brief',
+  'detail',
+  'details',
+  'capabilities',
+  'help',
+  'lookup',
+  'view',
+  'show',
+  'describe',
+  'info',
+  'schema',
+  'overview',
+  'metrics',
+  'stats',
+]);
+
+/**
+ * 【AI 임시 결정】 쓰기 꼴 낱말 — 읽기 낱말과 같이 있어도 이것이 이긴다(`browser_api_patch` · `search_and_delete` → 쓰기).
+ * 명사로도 흔한 낱말(type · act · run · order)은 넣지 않았다 — 읽기 낱말이 없는 이름은 어차피 쓰기로 본다.
+ */
+export const WRITE_TOOL_WORDS: ReadonlySet<string> = new Set([
+  'save',
+  'send',
+  'delete',
+  'del',
+  'update',
+  'upsert',
+  'upload',
+  'submit',
+  'create',
+  'write',
+  'remove',
+  'publish',
+  'post',
+  'put',
+  'patch',
+  'set',
+  'insert',
+  'apply',
+  'commit',
+  'approve',
+  'reject',
+  'decide',
+  'hold',
+  'done',
+  'import',
+  'execute',
+  'exec',
+  'evaluate',
+  'eval',
+  'click',
+  'press',
+  'login',
+  'logout',
+  'pay',
+  'purchase',
+  'buy',
+  'refund',
+  'cancel',
+  'transfer',
+  'move',
+  'rename',
+  'reset',
+  'clear',
+  'close',
+  'release',
+  'claim',
+  'assign',
+  'change',
+  'edit',
+  'modify',
+  'replace',
+  'sync',
+  'drop',
+  'truncate',
+  'kill',
+  'restart',
+  'install',
+]);
+
+/**
+ * 도구 이름이 읽기 꼴인가 — 낱말 중 쓰기 낱말이 하나도 없고 읽기 낱말이 하나라도 있을 때만 true. 모르는 이름은 false(막는 쪽).
+ * 예: browser_snapshot · market_product_search · dal_get · getPrice → true / browser_api · browser_api_patch · market_task_done → false.
+ */
+export function isReadLikeToolName(name: string): boolean {
+  const words = toolNameWords(name);
+  if (words.some((w) => WRITE_TOOL_WORDS.has(w))) return false;
+  return words.some((w) => READ_TOOL_WORDS.has(w));
+}
+
+/**
+ * 【AI 임시 결정】 마켓 MCP 서버 code — `mcp:<이 code>:<도구>` 는 읽기 꼴 도구(isReadLikeToolName)가 아니면 마켓 쓰기(requiresApproval).
+ * 근거: CmhAiAgent `src/Service/Agent/CmhAiMcpSeeder.php:359`('cmh-market-mcp') · `:534`('camoufox').
+ * 'cmh-camoufox-mcp' 는 패키지 이름(cmh-mcp/packages/cmh-camoufox-mcp) — 바깥 앱 설정을 가져오면 이 이름이 code 가 될 수 있어 넣었다.
+ * 🔴 다음 차례에 서버 테이블(`cmh_ai_mcp_server` 행의 마켓 표시)에서 읽어 evaluateGuard 세 번째 인자로 넘긴다 — 여기 목록은 그때까지의 기본값.
+ */
+export const MARKET_MCP_SERVER_CODES: ReadonlySet<string> = new Set(['cmh-market-mcp', 'camoufox', 'cmh-camoufox-mcp']);
+
+/**
+ * 범용 DAL 쓰기 동작 이름인가 — `[._-]` 를 떼고 소문자로 붙인 꼴이 `dal` 로 시작하고, 뒤 글이 읽기 동작(READ_ACTIONS)이 아니면 쓰기.
+ * `dal_update` · `dalUpdate` · `DalDelete` · `dal-update` · `dal.update` · `dalupdate` · `DAL_UPDATE` 모두 쓰기 · `dal_search` · `dal.get` 은 읽기(검수 5 권고 6).
+ * ⚠️ `dal` 로 시작하는 다른 이름(예 `dalle_generate`)도 쓰기로 본다 — 막는 쪽으로 틀린다.
+ */
+export function isDalWriteActionName(action: string): boolean {
+  const compact = normalizeEntityName(action).replace(/[^a-z0-9]/g, '');
+  if (!compact.startsWith('dal')) return false;
+  return !READ_ACTIONS.has(compact.slice(3));
+}
 
 /** 도구 이름 전체 길이 상한 — 이보다 길면 deny(글롭 평가 비용 상한) */
 export const TOOL_NAME_MAX = 512;
@@ -238,30 +379,47 @@ function approvalTargetWrite(target: GuardTarget | undefined, segments: readonly
  */
 function isUntargetedDalWrite(target: GuardTarget | undefined, segments: readonly string[], rawTool: string): boolean {
   if (target?.entity !== undefined) return false;
-  // 소문자로 바꾸기 전 이름의 마지막 마디로 본다 — segments 는 이미 소문자라 camelCase `dalUpdate` 가 `dalupdate` 로 뭉개진다(RA 검수 4 남은 것)
+  // 소문자로 바꾸기 전 이름의 마지막 마디로 본다 — segments 는 이미 소문자라 camelCase 경계가 뭉개진다(RA 검수 4 남은 것)
   const action = rawTool.split(':').pop() ?? segments[segments.length - 1];
-  if (action === undefined || !normalizeEntityName(action).startsWith('dal_')) return false;
-  return !isReadActionName(action);
+  return action !== undefined && isDalWriteActionName(action);
 }
 
-/** 마켓(market:<마켓>:<동작…>) 쓰기 — 동작 마디가 전부 읽기 꼴일 때만 읽기 · 나머지는 모두 쓰기 */
-function isMarketWrite(segments: readonly string[]): boolean {
-  if (segments[0] !== 'market') return false;
-  const actions = segments.slice(2);
-  return actions.length === 0 || !actions.every(isReadActionName);
+/** 마지막 마디(원래 글자)가 읽기 꼴 도구인가 — 정확한 읽기 동작(dal_search 등) 또는 읽기 꼴 낱말 이름(product_list 등) */
+function isReadLikeLastSegment(rawTool: string): boolean {
+  const last = rawTool.split(':').pop() ?? '';
+  return isReadActionName(last) || isReadLikeToolName(last);
+}
+
+/**
+ * 마켓 쓰기인가:
+ * ①`market:<마켓>:<동작…>` — 동작 마디가 전부 읽기 꼴일 때만 읽기 · 나머지는 모두 쓰기
+ * ②`mcp:<마켓 서버 code>:<도구>`(marketServers) — 도구 이름이 읽기 꼴(isReadLikeToolName)이 아니면 쓰기(검수 5 E4 · ToolRouter 는 `mcp:` 이름만 만든다)
+ */
+function isMarketWrite(segments: readonly string[], rawTool: string, marketServers: ReadonlySet<string>): boolean {
+  if (segments[0] === 'market') {
+    const actions = segments.slice(2);
+    return actions.length === 0 || !actions.every(isReadActionName);
+  }
+  if (segments[0] === 'mcp' && segments.length >= 3 && marketServers.has(segments[1] ?? '')) {
+    return !isReadLikeToolName(rawTool.split(':').slice(2).join(':'));
+  }
+  return false;
 }
 
 /**
  * 도구 호출 한 번을 평가한다. 차례:
  * ①모양이 깨진 이름 · 깨진 target.entity → deny ②승인 엔티티 쓰기(이름 어느 마디든 · target.entity) → deny(내장)
- * ②' target 없는 범용 DAL 쓰기(`…:dal_update` 등 · listing 평가 제외) → deny(내장)
+ * ②' 승인 결정 도구 이름(market_approval_decide 등 · listing 포함) → deny(내장 · APPROVAL_DECISION_TOOL_PATTERN)
+ * ②'' 읽기 꼴이 아닌 도구 인자에 승인 엔티티 연관 칸(target.association) → deny(내장 · APPROVAL_ASSOCIATION_PATTERN)
+ * ②''' target 없는 범용 DAL 쓰기(`…:dal_update` 등 · listing 평가 제외) → deny(내장)
  * ③정책 글롭 전부 중 deny > ask > allow ④맞는 규칙 없음 → guard 는 ask · full 은 allow ⑤known=false 면 최소 ask
- * ⑥deny 가 아니면 마켓 쓰기 · needsApproval 은 requiresApproval
+ * ⑥deny 가 아니면 마켓 쓰기(`market:*` · `mcp:<마켓 서버>:*`) · needsApproval 은 requiresApproval
+ * marketServers 는 마켓 MCP 서버 code 목록(기본 MARKET_MCP_SERVER_CODES · 소문자로 비교한다).
  *
  * deny 규칙의 마디 전체 `*` 는 «한 마디 이상»으로 넓혀 읽는다(allow · ask 는 그대로 한 마디):
  * `mcp:evil:*` deny 를 `mcp:evil:a:b` 처럼 마디를 하나 더 붙여 비껴가지 못하게(검수 1-3). 막는 쪽만 넓히면 잘못 넓어도 덜 열린다.
  */
-export function evaluateGuard(policy: GuardPolicy, request: GuardRequest): GuardResult {
+export function evaluateGuard(policy: GuardPolicy, request: GuardRequest, marketServers: ReadonlySet<string> = MARKET_MCP_SERVER_CODES): GuardResult {
   const segments = toolSegments(request.tool);
   if (segments === null) return { decision: 'deny', requiresApproval: false, matchedPattern: null };
   const targetWrite = approvalTargetWrite(request.target, segments);
@@ -271,6 +429,10 @@ export function evaluateGuard(policy: GuardPolicy, request: GuardRequest): Guard
   }
   const nameWrite = approvalEntityWriteSegment(segments);
   if (nameWrite !== null) return { decision: 'deny', requiresApproval: false, matchedPattern: protectedPattern(nameWrite) };
+  if (isApprovalDecisionToolName(request.tool)) return { decision: 'deny', requiresApproval: false, matchedPattern: APPROVAL_DECISION_TOOL_PATTERN };
+  if (request.target?.association !== undefined && !isReadLikeLastSegment(request.tool)) {
+    return { decision: 'deny', requiresApproval: false, matchedPattern: APPROVAL_ASSOCIATION_PATTERN };
+  }
   if (request.listing !== true && isUntargetedDalWrite(request.target, segments, request.tool)) {
     return { decision: 'deny', requiresApproval: false, matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN };
   }
@@ -288,7 +450,8 @@ export function evaluateGuard(policy: GuardPolicy, request: GuardRequest): Guard
   if (decision === null) decision = policy.defaultMode === 'guard' ? 'ask' : 'allow';
   if (!request.known && decision === 'allow') decision = 'ask';
 
-  const requiresApproval = decision !== 'deny' && (isMarketWrite(segments) || request.needsApproval === true);
+  const lowerMarketServers = marketServers === MARKET_MCP_SERVER_CODES ? marketServers : new Set([...marketServers].map((c) => c.toLowerCase()));
+  const requiresApproval = decision !== 'deny' && (isMarketWrite(segments, request.tool, lowerMarketServers) || request.needsApproval === true);
   return { decision, requiresApproval, matchedPattern };
 }
 

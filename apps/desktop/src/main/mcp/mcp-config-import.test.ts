@@ -404,3 +404,32 @@ describe('3차 검수 차단 3 — 가져오기 비밀값 평문 7종', () => {
     expect(warnings.some((w) => w.includes('--port') || w.includes('--root') || w.includes('--transport'))).toBe(false);
   });
 });
+
+describe('검수 5 권고 7 — 위치 인자 KEY=값 · Basic · 짧은 플래그', () => {
+  it('mcp import: 위치 인자 API_KEY=값 은 값을 버리고 경고 · 자리표 값과 비밀 아닌 KEY=값 은 남는다', () => {
+    const { server, warnings } = one({ command: 'npx', args: ['x', 'API_KEY=supersecretvalue', 'GITHUB_TOKEN=${env:GH}', 'PORT=8080', 'LOG_LEVEL=debug'] });
+    expect(server.args).toEqual(['x', 'API_KEY=', 'GITHUB_TOKEN=${env:GH}', 'PORT=8080', 'LOG_LEVEL=debug']);
+    expect(JSON.stringify(server)).not.toContain('supersecretvalue');
+    expect(server.secretRefs).toEqual([
+      { field: 'args', name: 'args[1] API_KEY', placeholder: '', syntax: 'literal' },
+      { field: 'args', name: 'args[2] GITHUB_TOKEN', placeholder: 'GH', syntax: 'env' },
+    ]);
+    expect(warnings).toContain('Server "x": args "args[1] API_KEY" has a literal value — value dropped, re-enter it');
+  });
+
+  it('mcp import: Basic · Bearer 인증 값(위치 인자 · Authorization: 꼴)은 결과에 없고 검토 필요 경고', () => {
+    const { server, warnings } = one({ command: 'npx', args: ['x', 'Basic dXNlcjpwYXNzd29yZA==', 'bearer abc.def', 'Authorization: Basic Zm9vOmJhcg=='] });
+    const text = JSON.stringify(server);
+    for (const secret of ['dXNlcjpwYXNzd29yZA==', 'abc.def', 'Zm9vOmJhcg==']) expect(text).not.toContain(secret);
+    expect(server.args).toEqual(['x', 'Basic', 'bearer', 'Authorization:']);
+    expect(warnings.filter((w) => w.includes('Authorization') && w.includes('review needed'))).toHaveLength(2);
+  });
+
+  it('mcp import: -k · -t · -a · -u 뒤 값은 남기되 «검토 필요» 경고(값은 경고 글에 없다)', () => {
+    const { server, warnings } = one({ command: 'npx', args: ['x', '-k', 'short2val', '-p', '8080'] });
+    expect(server.args).toEqual(['x', '-k', 'short2val', '-p', '8080']);
+    expect(warnings).toContain('Server "x": args[1] short flag "-k" is followed by a value — check it is not a secret (review needed)');
+    expect(warnings.some((w) => w.includes('"-p"'))).toBe(false);
+    expect(warnings.join('\n')).not.toContain('short2val');
+  });
+});

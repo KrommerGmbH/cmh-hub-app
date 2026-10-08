@@ -9,8 +9,11 @@ import {
   ARGS_SCAN_MAX_VALUES,
   AgentRunner,
   canonicalJson,
+  deobfuscateText,
   evaluateToolCall,
   guardTargetFor,
+  revealHiddenChars,
+  scanProtectedEntityMention,
   summarizeArgs,
 } from './agent-runner.js';
 import type { AgentLimits, AgentToolbox } from './agent-runner.js';
@@ -824,4 +827,162 @@ describe('검수 4 — 모든 tool_call 이벤트에 닫는 이벤트가 하나 
       expect(eventInvariantViolations(events)).toEqual([]);
     });
   }
+});
+
+// ---------------------------------------------------------------- 검수 5(research/11-review-code-shell-ra-guard.md) 차단 · 권고
+
+describe('검수 5 차단 1 — 승인 결정 도구 · 연관 칸 · 글자 꾸미기', () => {
+  const decide = (name: string, args: Record<string, unknown>, policy: GuardPolicy = ALLOW) => {
+    const g = evaluateToolCall(policy, { name, ...KNOWN }, args);
+    return `${g.decision}${g.matchedPattern ? ` ${g.matchedPattern}` : ''}`;
+  };
+
+  it('E1 승인 결정 도구 deny — full + known 이어도 실행하지 않고 모델 목록에도 없다', async () => {
+    const mcp = fakeMcp('cmh-market-mcp', ['market_approval_decide', 'market_approval_hold', 'market_approval_pending']);
+    const tools = new ToolRouter({ mcp: { manager: mcp.manager, isKnown: () => true } });
+    const { runner, model, modelRef } = setup([
+      callStep('mcp__cmh-market-mcp__market_approval_decide', { approvalId: '0190aa00000000000000000000000001', chosen: 'approve' }),
+      answerStep('x'),
+    ]);
+    const events = await collectEvents(runner.run({ messages: user, model: modelRef, tools, policy: ALLOW }));
+    // 이름만으로 deny 라 모델에게 보이지 않는다 → 불러도 모르는 도구
+    expect((model.requests[0]?.tools ?? []).map((t) => t.function.name)).toEqual(['mcp__cmh-market-mcp__market_approval_pending']);
+    expect(events.find((e) => e.type === 'tool_denied')).toMatchObject({ reason: 'unknown_tool' });
+    expect(mcp.calls).toHaveLength(0);
+    // 표에서 직접 평가해도 deny
+    expect(decide('mcp:cmh-market-mcp:market_approval_decide', { approvalId: 'a', chosen: 'approve' })).toBe('deny builtin:approval-decision-tool');
+    expect(decide('mcp:cmh-market-mcp:market_approval_hold', { market: 'naver' })).toBe('deny builtin:approval-decision-tool');
+    expect(decide('mcp:cmh-market-mcp:market_approval_pending', {})).toBe('allow');
+    expect(eventInvariantViolations(events)).toEqual([]);
+  });
+
+  it('E2 approvals 연관 키 deny — cmh_ai_task · cmh_ai_run · user · media · 중첩 data · sync payload · JSON 글 안', () => {
+    for (const [entity, key] of [
+      ['cmh_ai_task', 'approvals'],
+      ['cmh_ai_run', 'approvals'],
+      ['user', 'cmhAiDecidedApprovals'],
+    ] as const) {
+      const args = { entity, id: 'p1', data: { [key]: [{ id: 'a1', decision: 'approved', chosen: 'approve' }] } };
+      expect(guardTargetFor('mcp:cmh-shop-api-mcp:dal_update', args)).toEqual({ entity, association: key });
+      expect(decide('mcp:cmh-shop-api-mcp:dal_update', args), `${entity}.${key}`).toBe('deny builtin:approval-association');
+    }
+    // media.cmhAiApprovals 는 키 이름 자체가 승인 엔티티를 언급한다(전과 같이 엔티티 deny)
+    expect(decide('mcp:cmh-shop-api-mcp:dal_update', { entity: 'media', data: { cmhAiApprovals: [{ id: 'a1' }] } })).toBe('deny entity:cmh_ai_approval:*');
+    // 깊은 중첩 · 배열 · sync payload · JSON 글 안의 키
+    expect(decide('mcp:s:dal_sync', { operations: [{ entity: 'cmh_ai_task', payload: [{ id: 't', nested: { approvals: [{ id: 'a' }] } }] }] })).toBe(
+      'deny builtin:approval-association',
+    );
+    expect(decide('mcp:x:http_request', { method: 'PATCH', path: '/api/cmh-ai-task/t1', body: '{"approvals":[{"id":"a1","decision":"approved"}]}' })).toBe(
+      'deny builtin:approval-association',
+    );
+    // 읽기(dal_search 의 associations.approvals)는 정책대로
+    expect(decide('mcp:cmh-shop-api-mcp:dal_search', { entity: 'cmh_ai_task', associations: { approvals: {} } })).toBe('allow');
+  });
+
+  it('E2 실행 — needsApproval false · full + known 이어도 연관 쓰기는 도구를 부르지 않는다', async () => {
+    const mcp = fakeMcp('cmh-shop-api-mcp', ['dal_update']);
+    const tools = new ToolRouter({ mcp: { manager: mcp.manager, isKnown: () => true } });
+    const { runner, modelRef } = setup([
+      callStep('mcp__cmh-shop-api-mcp__dal_update', { entity: 'cmh_ai_task', id: 'p1', data: { approvals: [{ id: 'a1', decision: 'approved' }] } }),
+      answerStep('x'),
+    ]);
+    const events = await collectEvents(runner.run({ messages: user, model: modelRef, tools, policy: ALLOW }));
+    expect(events.find((e) => e.type === 'tool_denied')).toMatchObject({ reason: 'guard', matchedPattern: 'builtin:approval-association' });
+    expect(mcp.calls).toHaveLength(0);
+  });
+
+  it('E3 퍼센트 인코딩 · JSON 이스케이프 · 겹 인코딩 · 전각 · zero-width · `/` 로 나눈 이름도 승인 엔티티로 본다', () => {
+    const t = 'mcp:x:http_request';
+    expect(decide(t, { method: 'PATCH', path: '/api/cmh%2Dai%2Dapproval/a1', body: { decision: 'approved' } })).toMatch(/^deny/);
+    expect(decide(t, { method: 'PATCH', path: '/api/cmh%252Dai%252Dapproval/a1' })).toMatch(/^deny/);
+    expect(
+      decide(t, { method: 'POST', path: '/api/_action/sync', body: '[{"action":"upsert","entity":"cmh_ai_appro\\u0076al","payload":[{"id":"a1","decision":"approved"}]}]' }),
+    ).toMatch(/^deny/);
+    expect(decide(t, { entity: 'cmh_ai_appro\\x76al' })).toMatch(/^deny/);
+    expect(decide(t, { path: '/api/cmh_ai_appro\u200Bval/a1' })).toMatch(/^deny/);
+    expect(decide(t, { path: '/api/\uFF43\uFF4D\uFF48_ai_approval/a1' })).toMatch(/^deny/);
+    expect(decide(t, { method: 'POST', path: '/api/_action/cmh-ai/approval/a1/decide' })).toMatch(/^deny/);
+    expect(decide(t, { body: '%7B%22entity%22%3A%22cmh_ai_task%22%2C%22approvals%22%3A%5B%5D%7D' })).toBe('deny builtin:approval-association');
+    // 평범한 글은 그대로
+    expect(decide(t, { method: 'GET', path: '/api/product/p1?x=%20' })).toBe('allow');
+    expect(deobfuscateText('cmh%2Dai%5Fappro\\u0076al')).toBe('cmh-ai_approval');
+  });
+
+  it('E3 base64 는 클라이언트에서 못 닫는다(서버 몫) — 이 시험은 «열려 있음» 을 적어 둔다', () => {
+    const b64 = Buffer.from('cmh_ai_approval').toString('base64');
+    expect(decide('mcp:x:http_request', { method: 'POST', b64 })).toBe('allow');
+  });
+
+  it('훑기 상한: 풀기 글 길이 상한을 넘는 글은 다 못 본 것(deny)', () => {
+    const scan = scanProtectedEntityMention({ big: 'a'.repeat(256 * 1024 + 1) });
+    expect(scan.complete).toBe(false);
+  });
+});
+
+describe('검수 5 권고 6 — DAL 이름 [._-] 떼고 ^dal', () => {
+  it('target 없는 dal.update · dalupdate 도 deny · dal.search 는 정책대로', () => {
+    const g = (name: string) => evaluateToolCall(ALLOW, { name, ...KNOWN }, {});
+    expect(g('mcp:s:dal.update')).toMatchObject({ decision: 'deny', matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN });
+    expect(g('mcp:s:dalupdate')).toMatchObject({ decision: 'deny', matchedPattern: DAL_WRITE_WITHOUT_TARGET_PATTERN });
+    expect(g('mcp:s:dal.search').decision).toBe('allow');
+    // 연관 키만 있고 entity 가 없어도 target 없는 DAL 쓰기
+    expect(evaluateToolCall(ALLOW, { name: 'mcp:s:dal.update', ...KNOWN }, { data: { approvals: [] } }).decision).toBe('deny');
+  });
+});
+
+describe('검수 5 권고 1 — refresh 가 끝나지 않아도 run 은 끝난다', () => {
+  it('tools.refresh 가 안 끝나면 시간 상한으로 done max_time', async () => {
+    const tools: AgentToolbox = {
+      refresh: () => new Promise(() => undefined),
+      definitions: () => ({ tools: [], dropped: [], byName: new Map() }),
+      lookup: () => null,
+      call: async () => ({ ok: true, text: 'ok', truncated: false }),
+    };
+    const { runner, modelRef } = setup([answerStep('x')]);
+    const events = await withDeadline(collectEvents(runner.run({ messages: user, model: modelRef, tools, policy: ALLOW, limits: { maxDurationMs: 50 } })), 2_000);
+    expect(events).not.toBe('HANG');
+    if (events === 'HANG') return;
+    expect(doneOf(events).reason).toBe('max_time');
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+  });
+
+  it('tools.refresh 가 안 끝나도 바깥 취소로 done aborted', async () => {
+    const tools: AgentToolbox = {
+      refresh: () => new Promise(() => undefined),
+      definitions: () => ({ tools: [], dropped: [], byName: new Map() }),
+      lookup: () => null,
+      call: async () => ({ ok: true, text: 'ok', truncated: false }),
+    };
+    const ctrl = new AbortController();
+    setTimeout(() => ctrl.abort(), 30);
+    const { runner, modelRef } = setup([answerStep('x')]);
+    const events = await withDeadline(collectEvents(runner.run({ messages: user, model: modelRef, tools, policy: ALLOW, signal: ctrl.signal })), 2_000);
+    expect(events).not.toBe('HANG');
+    if (events === 'HANG') return;
+    expect(doneOf(events).reason).toBe('aborted');
+  });
+});
+
+describe('검수 5 권고 5 — argsFull 보이지 않는 글자', () => {
+  it('revealHiddenChars 는 RTL override · zero-width 를 \\u{…} 로 보이게 하고 센다', () => {
+    expect(revealHiddenChars('Sale \u202E0001 :ecirp\u202C x\u200By')).toEqual({ text: 'Sale \\u{202E}0001 :ecirp\\u{202C} x\\u{200B}y', hiddenChars: 3 });
+    expect(revealHiddenChars('평범한 글 {"a":1}')).toEqual({ text: '평범한 글 {"a":1}', hiddenChars: 0 });
+  });
+
+  it('approval_required 는 argsFull 을 바꾸지 않고 argsHiddenChars 로 알린다', async () => {
+    const mcp = fakeMcp('shop', ['dal_update']);
+    const tools = new ToolRouter({ mcp: { manager: mcp.manager } }); // known false → ask
+    const args = { entity: 'product', id: 'p1', data: { name: 'Sale \u202E0001 :ecirp\u202C', price: 1 } };
+    const { gate, runner, modelRef } = setup([callStep('mcp__shop__dal_update', args), answerStep('ok')]);
+    const required: Array<Extract<AgentEvent, { type: 'approval_required' }>> = [];
+    for await (const e of runner.run({ messages: user, model: modelRef, tools, policy: ASK })) {
+      if (e.type === 'approval_required') {
+        required.push(e);
+        gate.decide(e.approvalId, 'rejected', 'human-ui');
+      }
+    }
+    expect(required[0]?.argsFull.includes('\u202E')).toBe(true); // 실행 인자 그대로
+    expect(required[0]?.argsHiddenChars).toBe(2);
+    expect(mcp.calls).toHaveLength(0);
+  });
 });
