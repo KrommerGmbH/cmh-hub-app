@@ -17,6 +17,11 @@
       "naver": "네이버",
       "loading": "불러오는 중"
     },
+    "chat": {
+      "fallbackTitle": "챗 화면(chat-app)이 아직 없습니다",
+      "fallbackBody": "이 앱 빌드에 CmhAiAgent 의 chat-app 빌드 결과가 들어 있지 않습니다. 아래 차례로 chat-app 을 빌드한 뒤 앱을 다시 빌드하고 다시 여십시오.",
+      "fallbackEnv": "chat-app 빌드 결과 폴더가 다른 곳에 있으면 앱을 빌드하기 전에 환경 변수 {env} 에 그 폴더를 적으십시오."
+    },
     "composer": {
       "placeholder": "답장 입력, @ 로 컨텍스트 추가",
       "send": "보내기",

@@ -37,6 +37,23 @@ describe('newTab kind — admin · naver · web 만', () => {
   });
 });
 
+describe('R6-a — chat 탭은 챗 pane 호스트가 있을 때 newTab 으로만', () => {
+  it('chatEnabled 면 주소 없음 · CHAT_ENTRY_URL 만 통과', () => {
+    expect(rejectTabCreation({ cmd: 'newTab', paneId: 'p', kind: 'chat' }, DEFAULT_SPEC, { chatEnabled: true })).toBeNull();
+    expect(rejectTabCreation({ cmd: 'newTab', paneId: 'p', kind: 'chat', url: 'app://chat/index.html' }, DEFAULT_SPEC, { chatEnabled: true })).toBeNull();
+  });
+  it('chatEnabled 여도 다른 주소 · 새 탭 기본값 chat(split 등)은 거절', () => {
+    for (const url of ['https://evil.example/', 'app://chat/', 'app://chat/index.html?x=1', 'app://evil/index.html', 'file:///etc/passwd']) {
+      expect(rejectTabCreation({ cmd: 'newTab', paneId: 'p', kind: 'chat', url }, DEFAULT_SPEC, { chatEnabled: true }), url).toMatch(/'chat'/);
+    }
+    expect(rejectTabCreation({ cmd: 'split', paneId: 'p', orientation: 'horizontal' }, { kind: 'chat', url: 'app://chat/index.html' }, { chatEnabled: true })).toMatch(/split/);
+  });
+  it('chatEnabled 가 없으면(호스트 없음) 주소가 맞아도 거절', () => {
+    expect(rejectTabCreation({ cmd: 'newTab', paneId: 'p', kind: 'chat', url: 'app://chat/index.html' }, DEFAULT_SPEC)).toMatch(/'chat'/);
+    expect(rejectTabCreation({ cmd: 'newTab', paneId: 'p', kind: 'chat' }, DEFAULT_SPEC, { chatEnabled: false })).toMatch(/'chat'/);
+  });
+});
+
 describe('첫 loadURL — 이동과 같은 검사', () => {
   it('admin 첫 화면(DEFAULT_TAB) · AI 채팅 · 대시보드는 그대로(기존 admin 동작 그대로)', () => {
     expect(initialTabUrl('admin', ADMIN_FIRST, null)).toBe(ADMIN_FIRST);

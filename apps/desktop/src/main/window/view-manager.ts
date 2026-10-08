@@ -1,8 +1,13 @@
 // U02(main 쪽) — 탭 id → WebContentsView. LayoutChange 로 만들고 닫고, LayoutGeometry 로 setBounds · setVisible 한다.
 import { WebContentsView, type BaseWindow } from 'electron';
-import type { LayoutChange, LayoutEngineApi, LayoutGeometry, Rect } from '@cmh-hub-app/contracts';
+import type { LayoutChange, LayoutEngineApi, LayoutGeometry, Rect, TabRecord } from '@cmh-hub-app/contracts';
 import { createAdminView, type TabViewEvents } from '../admin-view.js';
 import { splitForDevTools, type DevToolsSplit } from './devtools-split.js';
+
+/** R6-a — kind 'chat' 탭의 view 를 만드는 쪽(main/chat/chat-pane-host.ts ChatPaneHost). 없으면 chat 탭은 만들지 않는다(createAdminView 가 거절) */
+export interface ChatViewFactory {
+  createView(tab: TabRecord, events: TabViewEvents): WebContentsView;
+}
 
 export class ViewManager {
   private readonly views = new Map<string, WebContentsView>();
@@ -20,6 +25,7 @@ export class ViewManager {
     private readonly engine: LayoutEngineApi,
     private readonly events: TabViewEvents,
     private readonly onViewCreated: (view: WebContentsView) => void,
+    private readonly chatViews: ChatViewFactory | null = null,
   ) {}
 
   get(tabId: string): WebContentsView | undefined {
@@ -169,7 +175,8 @@ export class ViewManager {
   private create(tabId: string): void {
     const tab = this.engine.getTab(tabId);
     if (!tab) return;
-    const view = createAdminView(tab, this.events);
+    // R6-a — chat 은 챗 pane 호스트가 만든다(자기 partition · preload · app://chat). 나머지는 그대로 createAdminView
+    const view = tab.kind === 'chat' && this.chatViews ? this.chatViews.createView(tab, this.events) : createAdminView(tab, this.events);
     this.views.set(tabId, view);
     this.window.contentView.addChildView(view); // 맨 위에 붙는다 — 셸 view 는 처음에 붙어 맨 아래
     this.onViewCreated(view);

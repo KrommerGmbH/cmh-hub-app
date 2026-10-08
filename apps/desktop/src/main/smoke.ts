@@ -1,7 +1,11 @@
 // 검증 하네스 — CMH_HUB_SMOKE=1 로 띄우면 셸 단추를 «실제로 눌러» split · 새 탭 · sash · 닫기 · 단축키를 돌리고 결과를 찍는다.
 // 셸 페이지(우리 로컬 HTML)에만 executeJavaScript 를 쓴다 — 서버 · 네이버 페이지에는 쓰지 않는다(U07 8-5).
 import { app } from 'electron';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ShellWindow } from './window/shell-window.js';
+import { CHAT_ENTRY_URL, isChatUrl } from './chat/chat-policy.js';
 
 const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 /** 정해진 시간 대신 조건이 맞을 때까지(최대 timeoutMs) — PC 가 바쁘면 셸 다시 그리기가 300ms 를 넘겨 판정이 흔들렸다(2026-10-04) */
@@ -500,6 +504,66 @@ export async function runSmokeIfRequested(w: ShellWindow): Promise<void> {
       if (wasMax) w.window.maximize();
       else w.window.setContentSize(1440, 900);
       await wait(400);
+    }
+  }
+
+  // ⑲ R6-a — 사이드바 «New Chat» → 포커스 pane 에 챗 탭(app://chat). chat-app 을 복사한 빌드면 Vue 가 #app 을 그리고 · 아니면 안내 화면.
+  //   그 pane 을 좌우로 나눠도 챗 view 가 자기 pane 자리를 따라간다(split view 그대로) · 챗 화면의 이동 · 새 창 · 바깥 fetch 는 막힌다.
+  //   챗 화면은 우리 로컬 페이지(app://chat)라 executeJavaScript 를 쓴다(서버 · 네이버 페이지에는 안 쓴다 — 머리 주석 그대로)
+  {
+    const chatIds = (): string[] => Object.values(w.engine.getTree().tabs).filter((t) => t.kind === 'chat').map((t) => t.id);
+    const before = new Set(chatIds());
+    const panesBefore = w.engine.paneCount();
+    const builtIndex = join(dirname(fileURLToPath(import.meta.url)), '..', 'chat-app', 'index.html'); // dist/main → dist/chat-app
+    const built = existsSync(builtIndex);
+    const newChat = await shellJs<{ disabled: boolean } | null>(`(() => { const b = document.querySelector('#sb-new-chat'); if (!b) return null; b.click(); return { disabled: b.disabled }; })()`);
+    const opened = await waitFor(() => chatIds().some((id) => !before.has(id)), 4000);
+    const chatId = chatIds().find((id) => !before.has(id));
+    const chatWc = chatId ? w.views.get(chatId)?.webContents : undefined;
+    if (!opened || !chatId || !chatWc) {
+      log('New Chat → 챗 탭', `FAIL 단추 ${JSON.stringify(newChat)} · 챗 탭 ${chatIds().length}`);
+    } else {
+      const loaded = await waitFor(() => !chatWc.isLoading() && isChatUrl(chatWc.getURL()), 8000);
+      // chat-app 은 Vue 가 그리기까지 한 박자 — #app 에 자식이 생기거나 안내 화면 표시가 보일 때까지
+      const probe = `(async () => ({ title: document.title, fallback: document.body?.dataset.chatFallback ?? null, appChildren: document.querySelector('#app')?.childElementCount ?? -1, bridge: typeof window.cmhChat === 'object' ? window.cmhChat.bridge : null, ping: typeof window.cmhChat === 'object' ? await window.cmhChat.ping() : null, node: typeof require !== 'undefined' || typeof process !== 'undefined' }))()`;
+      type Probe = { title: string; fallback: string | null; appChildren: number; bridge: number | null; ping: { ok?: boolean; version?: string } | null; node: boolean };
+      let page: Probe | null = null;
+      await waitFor(async () => {
+        page = await chatWc.executeJavaScript(probe).catch(() => null) as Probe | null;
+        return page !== null && (built ? page.appChildren > 0 : page.fallback === '1');
+      }, 8000);
+      const p = page as Probe | null;
+      const pane = w.engine.getPaneOfTab(chatId);
+      const shows = p !== null && (built ? p.appChildren > 0 && p.fallback === null : p.fallback === '1');
+      const pingOk = p?.ping?.ok === true && typeof p.ping.version === 'string' && p.bridge === 1;
+      const ok = loaded && chatWc.getURL() === CHAT_ENTRY_URL && shows && pingOk && p?.node === false
+        && pane?.id === w.focusedPaneId() && pane.activeTabId === chatId && w.engine.paneCount() === panesBefore;
+      log('New Chat → 챗 탭', `${ok ? 'OK' : 'FAIL'} ${built ? 'chat-app' : '안내 화면'} · 주소 ${chatWc.getURL()} · 제목 ${p?.title} · #app 자식 ${p?.appChildren} · ping ${JSON.stringify(p?.ping)} · node ${p?.node} · pane ${w.engine.paneCount()}`);
+
+      // split — 챗 pane 을 좌우로 나눈다(상한 4 면 건너뜀). 챗 view 자리 = 엔진 geometry 의 그 pane 내용 자리 · 다른 pane 의 활성 view 는 보임
+      if (pane && w.engine.paneCount() < 4) {
+        const widthBefore = w.views.get(chatId)?.getBounds().width ?? 0;
+        w.handleCommand({ cmd: 'split', paneId: pane.id, orientation: 'horizontal' });
+        await wait(600);
+        const geo = w.engine.computeGeometry(w.paneViewport());
+        const chatPane = w.engine.getPaneOfTab(chatId);
+        const rect = geo.panes.find((g) => g.paneId === chatPane?.id)?.contentRect;
+        const bounds = w.views.get(chatId)?.getBounds();
+        const same = !!rect && !!bounds && rect.x === bounds.x && rect.y === bounds.y && rect.width === bounds.width && rect.height === bounds.height;
+        const others = w.engine.listPanes().filter((x) => x.id !== chatPane?.id);
+        const othersVisible = others.every((x) => !!x.activeTabId && w.views.get(x.activeTabId)?.getVisible() === true);
+        const split = w.engine.paneCount() === panesBefore + 1 && chatPane?.activeTabId === chatId && same && othersVisible && (bounds?.width ?? 0) < widthBefore;
+        log('챗 pane split', `${split ? 'OK' : 'FAIL'} pane ${panesBefore}→${w.engine.paneCount()} · 챗 view ${widthBefore}→${bounds?.width} · geometry 와 같음 ${same} · 다른 pane 보임 ${othersVisible}`);
+      } else {
+        log('챗 pane split', '건너뜀(pane 상한 4)');
+      }
+
+      // 이동 · 새 창 · 바깥 fetch 막힘
+      const navBefore = chatWc.getURL();
+      const res = await chatWc.executeJavaScript(`(async () => { const opened = window.open('https://example.com/') !== null; let fetched = 'blocked'; try { await fetch('https://example.com/'); fetched = 'allowed'; } catch {} location.href = 'https://example.com/'; return { opened, fetched }; })()`).catch(() => null) as { opened: boolean; fetched: string } | null;
+      await wait(1000);
+      const stayed = chatWc.getURL() === navBefore;
+      log('챗 이동 · 새 창 · fetch 막힘', `${stayed && res?.opened === false && res.fetched === 'blocked' ? 'OK' : 'FAIL'} 주소 그대로 ${stayed} · window.open ${res?.opened} · fetch ${res?.fetched}`);
     }
   }
 

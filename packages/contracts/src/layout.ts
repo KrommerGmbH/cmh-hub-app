@@ -19,8 +19,9 @@ export const LAYOUT_PRESET_PANES: Readonly<Record<LayoutPreset, number>> = { sin
 /**
  * 탭 종류 — admin · naver · web 셋은 preload 0. 지금 챗봇은 admin 탭(cmh-ai-chat 라우트). PLAN U02 · U06.
  * web = 빈 탭(2026-10-05 사장님 «빈 탭 · url 넣고 크롬처럼 검색») — 주소창이 있고 아무 http(s) 로 간다 · 저장 공간(persist:web)이 따로라 어드민 · 네이버 로그인 쿠키 · 저장된 계정을 안 쓴다.
- * chat = R6 챗 pane · `app://` · preload **있음**(다른 셋은 preload 0 — 예외 · PLAN 합의안 6). 이 종류의 탭을 만드는 코드는 아직 없다(만드는 쪽은 R6) —
- * LayoutEngine.loadTree 는 아직 chat 을 받지 않는다(틀린 트리로 거절).
+ * chat = R6 챗 pane · `app://chat` · preload **있음**(다른 셋은 preload 0 — 예외 · PLAN 합의안 6). R6-a(2026-10-08)부터 view 는 desktop
+ * `main/chat/chat-pane-host.ts` 만 만들고, 셸 명령은 newTab 으로만 연다(`tab-view-policy.ts` rejectTabCreation).
+ * LayoutEngine.loadTree 는 아직 chat 을 받지 않는다(틀린 트리로 거절) — 시작 때 트리를 되살리지 않으므로(shell-window.ts create) 지금은 영향 없음.
  */
 export type TabKind = 'admin' | 'naver' | 'web' | 'chat';
 

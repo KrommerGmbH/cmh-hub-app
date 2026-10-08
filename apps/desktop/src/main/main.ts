@@ -24,6 +24,8 @@ import { APP_CONFIG } from '../config.js';
 import { ExtensionBridge } from './extension-bridge.js';
 import { startAppServices } from './app-services.js';
 import { PLUGIN_UI_SCHEME_PRIVILEGES } from './plugin/plugin-ui-policy.js';
+import { CHAT_SCHEME_PRIVILEGES } from './chat/chat-policy.js';
+import { ChatPaneHost } from './chat/chat-pane-host.js';
 
 installAppLogger(); // 맨 먼저 — 아래 가드가 앱을 끄는 까닭도 파일에 남게
 assertNoRemoteDebugging();
@@ -34,8 +36,8 @@ app.commandLine.appendSwitch('lang', 'ko-KR');
 // Windows 작업 표시줄이 이 앱을 electron.exe 가 아니라 «CMH Hub» 로 묶고 창 아이콘을 쓰게(electron-builder appId 와 같은 값)
 if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
 // R2-b · R7-c — 사용자 scheme 은 ready 전에 이 한 번만 등록한다(plugin/plugin-ui-policy.ts 머리 주석 «그 함수는 한 번만 부를 수 있다»).
-// R6 챗 pane 의 app:// 등 새 scheme 은 따로 부르지 말고 이 배열에 더한다.
-protocol.registerSchemesAsPrivileged([PLUGIN_UI_SCHEME_PRIVILEGES]);
+// 새 scheme 은 따로 부르지 말고 이 배열에 더한다 — R6-a 챗 pane 의 app://(chat/chat-policy.ts)가 여기 들어 있다.
+protocol.registerSchemesAsPrivileged([PLUGIN_UI_SCHEME_PRIVILEGES, CHAT_SCHEME_PRIVILEGES]);
 
 app.whenReady().then(async () => {
   ensureDevShortcuts(); // 개발판만 — 작업 표시줄 · 알림에 Electron 로고 대신 CMH Hub 아이콘(2026-10-05)
@@ -57,7 +59,14 @@ app.whenReady().then(async () => {
   startErrorReporter(appSession);
   // 끝-끝 시험용(개발판만) — 서버 var/log/cmh_hub_app_errors-<날짜>.log 에 이 줄이 오면 길이 다 이어진 것이다
   if (process.env['CMH_HUB_TEST_ERROR'] && !app.isPackaged) console.error('[test] 오류 보내기 끝-끝 시험', new Date().toISOString());
-  const w = await createShellWindow(appSession); // U10 — 오른쪽 클릭 «AI 작업» 이 서버 화면 표(cmh-ai-screen)를 읽는 데 세션을 쓴다
+  // R6-a — 챗 pane(app://chat · persist:chat). 실패해도 창은 뜬다(그때 «New Chat» 은 옛 어드민 «AI 채팅» 탭)
+  let chatHost: ChatPaneHost | null = null;
+  try {
+    chatHost = await ChatPaneHost.create({ devTools: !app.isPackaged });
+  } catch (error) {
+    console.error('[chat] ChatPaneHost.create failed — chat pane disabled', error);
+  }
+  const w = await createShellWindow(appSession, chatHost); // U10 — 오른쪽 클릭 «AI 작업» 이 서버 화면 표(cmh-ai-screen)를 읽는 데 세션을 쓴다
   w.updater.start(); // G03 — 배포판만 확인(개발판은 안 함)
   // R7-c — 플러그인 scan · startup 은 창을 띄운 뒤(창을 막지 않는다 · 실패는 로그만)
   void services?.startPlugins();
@@ -74,6 +83,7 @@ app.whenReady().then(async () => {
     startTaskWorker(appSession, engine, { models: () => installedLocalModels(join(app.getPath('userData'), 'models')) });
   }
   app.on('before-quit', () => void engine.dispose());
+  app.on('will-quit', () => chatHost?.dispose());
   if (APP_CONFIG.extensionBridge.enabled) {
     const bridge = new ExtensionBridge({
       host: APP_CONFIG.extensionBridge.host,

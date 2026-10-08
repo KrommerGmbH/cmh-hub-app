@@ -746,7 +746,7 @@ sbNewTabEl.addEventListener('click', (e) => {
   if (!lastState || !paneId) return;
   openNewTabMenu(lastState, paneId, sbNewTabEl.getBoundingClientRect());
 });
-// «New Chat» = «+» 메뉴 «AI 채팅» 과 같은 newTab(포커스 pane · R6 챗 pane 이 오면 그쪽으로 바뀐다)
+// «New Chat» = main 이 준 newChat 으로 newTab(포커스 pane · R6-a: 챗 pane 호스트가 있으면 kind chat · 없으면 «+» 메뉴 «AI 채팅» 과 같은 어드민 탭)
 sbNewChatEl.addEventListener('click', () => {
   const chat = sidebarOf(lastState)?.newChat;
   const paneId = lastState ? focusedOrFirstPaneId(lastState) : undefined;

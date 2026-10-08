@@ -17,6 +17,11 @@
       "naver": "Naver",
       "loading": "Loading"
     },
+    "chat": {
+      "fallbackTitle": "The chat screen (chat-app) is not available yet",
+      "fallbackBody": "This app build does not contain the chat-app build output from CmhAiAgent. Build chat-app with the steps below, rebuild the app and open it again.",
+      "fallbackEnv": "If the chat-app build output is in another folder, set the environment variable {env} to that folder before building the app."
+    },
     "composer": {
       "placeholder": "Reply, @ for context",
       "send": "Send",

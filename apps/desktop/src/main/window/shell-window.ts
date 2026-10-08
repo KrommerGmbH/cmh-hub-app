@@ -25,7 +25,7 @@ import { LayoutEngine } from '../layout/layout-engine.js';
 import { LayoutStore } from '../layout/layout-store.js';
 import { attachShortcuts } from '../shortcuts.js';
 import { buildState } from './state-builder.js';
-import { ViewManager } from './view-manager.js';
+import { ViewManager, type ChatViewFactory } from './view-manager.js';
 import { resolveOmniboxInput } from '../omnibox.js';
 import { AppUpdater } from '../update/app-updater.js';
 import type { AppSession } from '../identity/app-session.js';
@@ -40,6 +40,7 @@ import {
 import { INTENTS, type ElementInfo } from '../ai-element/element-intents.js';
 import { isAllowedUrl } from '../url-policy.js';
 import { rejectTabCreation } from '../tab-view-policy.js';
+import { CHAT_ENTRY_URL } from '../chat/chat-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // dist/main/window
 const DIST = join(here, '..', '..');
@@ -73,8 +74,11 @@ export class ShellWindow {
   /** U10 — 네이버 주소 → 담당 AI(서버 화면 표 · 메모리) · 고른 작업을 «AI 채팅» 탭에 넘기기 */
   private readonly screenLookup: ScreenLookup;
   private readonly chatHandoff: ChatHandoff;
+  /** R6-a — 챗 pane 호스트(main/chat/chat-pane-host.ts). null 이면 chat 탭을 만들지 않고 «New Chat» 은 옛 어드민 «AI 채팅» 탭을 연다 */
+  private readonly chatViews: ChatViewFactory | null;
 
-  private constructor(appSession: AppSession | null) {
+  private constructor(appSession: AppSession | null, chatViews: ChatViewFactory | null) {
+    this.chatViews = chatViews;
     this.screenLookup = new ScreenLookup(appSession);
     this.chatHandoff = new ChatHandoff({ findChatTab: () => this.findChatTab(), openChatTab: (sourceTabId) => this.openChatTabBeside(sourceTabId) });
     this.store = new LayoutStore(join(app.getPath('userData'), 'layout.json'));
@@ -142,6 +146,7 @@ export class ShellWindow {
         },
       },
       (view) => attachShortcuts(view.webContents, this),
+      chatViews,
     );
     attachShortcuts(this.shellView.webContents, this);
 
@@ -156,8 +161,8 @@ export class ShellWindow {
   }
 
   /** appSession — U10 이 서버 화면 표를 읽는 데 쓴다(null 이면 담당 AI 없이 · smoke 등) */
-  static async create(appSession: AppSession | null = null): Promise<ShellWindow> {
-    const w = new ShellWindow(appSession);
+  static async create(appSession: AppSession | null = null, chatViews: ChatViewFactory | null = null): Promise<ShellWindow> {
+    const w = new ShellWindow(appSession, chatViews);
     // layout.json 에서 사이드바 상태만 읽어 둔다(2026-10-07 검수) — 첫 save 가 파일의 sidebar 를 기본값으로 덮지 않게.
     // 트리 · 탭은 아래처럼 되살리지 않는다(2026-10-04 «복원 끔» 그대로 · 돌려받은 트리는 버린다). 탭 owner 는 store 가 기억했다가 저장 때 붙인다
     await w.store.load();
@@ -244,7 +249,8 @@ export class ShellWindow {
 
     // 탭을 만드는 명령은 엔진에 넘기기 전에 종류부터(2026-10-07 검수) — admin · naver · web 이 아니면(chat · 아무 글자) 거절 · 로그.
     // 엔진(layout-engine.ts)은 newTab 의 kind 를 검사하지 않는다 — 여기가 셸 IPC · 단축키 · 덮개가 들어오는 한 곳이다
-    const refused = rejectTabCreation(cmd, newTab);
+    // R6-a — chat 은 챗 pane 호스트가 있을 때 newTab 으로만(주소는 CHAT_ENTRY_URL 하나 · tab-view-policy.ts)
+    const refused = rejectTabCreation(cmd, newTab, { chatEnabled: this.chatViews != null });
     if (refused) {
       console.warn('[layout] 거절:', refused);
       this.sendState();
@@ -263,6 +269,8 @@ export class ShellWindow {
       const url = APP_CONFIG.newTabChoices.find((c) => c.kind === 'naver')?.url;
       if (url) command = { ...cmd, url };
     }
+    // 주소 없는 chat newTab — 엔진은 주소가 없으면 새 탭 기본값(어드민 첫 화면)의 주소를 붙이므로 여기서 챗 첫 화면을 준다
+    if (cmd.cmd === 'newTab' && cmd.kind === 'chat' && cmd.url === undefined) command = { ...cmd, url: CHAT_ENTRY_URL };
     const change = this.engine.apply(command, { newTab });
     if (change.rejected) {
       console.info('[layout] 거절:', change.rejected, cmd);
@@ -495,7 +503,8 @@ export class ShellWindow {
       collapsed: sidebar.collapsed,
       width: sidebar.width,
       agentTabIds: Object.values(this.engine.getTree().tabs).filter((t) => t.owner === 'agent').map((t) => t.id),
-      newChat: { kind: 'admin', url: CHAT_TAB_URL },
+      // R6-a — 챗 pane 호스트가 있으면 챗 pane(app://chat) · 없으면 옛 «AI 채팅» 어드민 탭(«+» 메뉴와 같은 것)
+      newChat: this.chatViews ? { kind: 'chat', url: CHAT_ENTRY_URL } : { kind: 'admin', url: CHAT_TAB_URL },
     };
   }
 
@@ -557,8 +566,8 @@ export class ShellWindow {
 
 let current: ShellWindow | null = null;
 
-export async function createShellWindow(appSession: AppSession | null = null): Promise<ShellWindow> {
-  current = await ShellWindow.create(appSession);
+export async function createShellWindow(appSession: AppSession | null = null, chatViews: ChatViewFactory | null = null): Promise<ShellWindow> {
+  current = await ShellWindow.create(appSession, chatViews);
   current.window.on('closed', () => {
     current = null;
   });

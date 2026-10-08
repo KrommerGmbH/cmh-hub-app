@@ -85,6 +85,33 @@ describe('ShellWindow.handleCommand — 탭 종류', () => {
   });
 });
 
+describe('ShellWindow.handleCommand — R6-a 챗 pane 호스트가 있을 때', () => {
+  it('newTab kind chat(주소 없음) → 엔진에 chat 탭 · 주소는 app://chat/index.html · 다른 주소는 거절', () => {
+    const { self, engine, spies, paneId } = fakeShell();
+    Object.assign(self, { chatViews: { createView: vi.fn() } });
+    self.handleCommand({ cmd: 'newTab', paneId, kind: 'chat' });
+    const chat = Object.values(engine.getTree().tabs).find((t) => t.kind === 'chat');
+    expect(chat?.url).toBe('app://chat/index.html');
+    expect(spies.applyChange).toHaveBeenCalledTimes(1);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      self.handleCommand({ cmd: 'newTab', paneId, kind: 'chat', url: 'https://evil.example/' });
+      expect(warn).toHaveBeenCalledWith('[layout] 거절:', expect.stringMatching(/'chat'/));
+      expect(Object.values(engine.getTree().tabs).filter((t) => t.kind === 'chat')).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it('«New Chat» 은 호스트가 있으면 chat · 없으면 옛 어드민 AI 채팅', () => {
+    const { self } = fakeShell();
+    const sidebarOf = (s: ShellWindowInstance) => (s as unknown as { sidebarView(): { newChat: { kind: string; url: string } | null } }).sidebarView();
+    Object.assign(self, { window: { getContentSize: () => [1440, 900] }, store: { getSidebar: () => ({ collapsed: false, width: 252 }) } });
+    expect(sidebarOf(self).newChat?.kind).toBe('admin');
+    Object.assign(self, { chatViews: { createView: vi.fn() } });
+    expect(sidebarOf(self).newChat).toEqual({ kind: 'chat', url: 'app://chat/index.html' });
+  });
+});
+
 describe('ShellWindow 사이드바 — 좁은 창(검수 5 권고 2) · 트리 저장 전 저장(권고 8)', () => {
   /** 창 width × 600 · 저장 사이드바 · 2단 좌우 엔진 — viewport · sidebarView · setSidebar 가 쓰는 칸만 둔 가짜(메서드는 진짜) */
   function fakeSidebarShell(width: number, saved: { collapsed: boolean; width: number }) {
