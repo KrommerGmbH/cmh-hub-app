@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DATA_METHOD } from '../data/data-protocol.js';
 import type { CriteriaArg } from '../data/data-service.js';
 import { DataWorkerCore } from '../data/data-worker-core.js';
-import { DataSettingsBackend, toDataRow, toSystemConfigRow, type SettingsDataAccess } from './data-settings-backend.js';
+import { DataSettingsBackend, toDataRow, toSettingsRow, toSystemConfigRow, type SettingsDataAccess } from './data-settings-backend.js';
 import { SettingsStore } from './settings-store.js';
 
 const asAny = (raw: unknown): unknown => raw;
@@ -130,5 +130,82 @@ describe('DataSettingsBackend (R7-c · system_config 위 SettingsStore)', () => 
     expect(() => toSystemConfigRow({ ...ok, configurationKey: 3 })).toThrow(/configurationKey/);
     expect(() => toDataRow({ ...toSystemConfigRow(ok), configuration_value: 'not json' })).toThrow(/not JSON/);
     expect(() => toDataRow({ ...toSystemConfigRow(ok), configuration_value: '[1]' })).toThrow(/JSON object/);
+  });
+  it('검수 10 🟡1: 못 바꾸는 행(판매채널 행 · 값 null · createdAt 없음)은 load 가 던지지 않고 깨진 행으로 — repair 로 열어 보고 delete 로 지운다', async () => {
+    const core = await openCore();
+    const sc = 'b'.repeat(32);
+    await core.methods()[DATA_METHOD.upsert]!({
+      entity: 'system_config',
+      rows: [
+        { configurationKey: 'app.ui.shared', configurationValue: { _value: 1 }, createdAt: '2026-10-08T00:00:00.000Z' },
+        { configurationKey: 'app.ui.shared', configurationValue: { _value: 2 }, salesChannelId: sc, createdAt: '2026-10-08T00:00:00.000Z' },
+        { configurationKey: 'app.ui.nullValue', configurationValue: { _value: 3 }, createdAt: '2026-10-08T00:00:00.000Z' },
+        { configurationKey: 'app.ui.noCreated', configurationValue: { _value: 4 }, createdAt: '2026-10-08T00:00:00.000Z' },
+      ],
+    });
+    const rawRows = async () =>
+      ((await core.methods()[DATA_METHOD.search]!({ entity: 'system_config', criteria: {} })) as EntitySearchResult).elements.map((e) => ({
+        key: e['configurationKey'],
+        channel: e['salesChannelId'],
+        createdAt: e['createdAt'],
+      }));
+    const scId = ((await core.methods()[DATA_METHOD.search]!({
+      entity: 'system_config',
+      criteria: { filter: [{ type: 'equals', field: 'salesChannelId', value: sc }] },
+    })) as EntitySearchResult).elements[0]?.id;
+    expect(typeof scId).toBe('string');
+
+    // 자료층이 돌려주는 꼴이 깨진 행(값 null · createdAt 없음)은 진짜 DB 에 넣을 수 없어(required 칸) 읽는 쪽에서 바꾼다
+    const plain = accessOver(core);
+    const mangling: SettingsDataAccess = {
+      ...plain,
+      search: (async (entity: string, criteria?: CriteriaArg) => {
+        const result = await plain.search(entity, criteria);
+        return {
+          ...result,
+          elements: result.elements.map((e): Entity => {
+            if (e['configurationKey'] === 'app.ui.nullValue') return { ...e, configurationValue: null };
+            if (e['configurationKey'] === 'app.ui.noCreated') {
+              const { createdAt: _drop, ...rest } = e;
+              return rest as Entity;
+            }
+            return e;
+          }),
+        };
+      }) as SettingsDataAccess['search'],
+    };
+    const backend = new DataSettingsBackend(mangling);
+    await expect(SettingsStore.open(backend)).rejects.toThrow(/3 invalid row/);
+    const repair = await SettingsStore.open(backend, { repair: true });
+    expect(repair.invalidKeys().sort()).toEqual(['app.ui.noCreated', 'app.ui.nullValue', `system_config:${scId}`]);
+    expect(repair.get('app.ui.shared', asAny)).toBe(1);
+
+    // 로컬 키 지우기는 같은 키의 판매채널 행을 남긴다
+    await repair.delete('app.ui.shared');
+    expect((await rawRows()).filter((r) => r.key === 'app.ui.shared')).toEqual([{ key: 'app.ui.shared', channel: sc, createdAt: '2026-10-08T00:00:00.000Z' }]);
+    // 판매채널 행은 지은 키로 지운다(그 id 한 줄)
+    await repair.delete(`system_config:${scId}`);
+    await repair.delete('app.ui.nullValue');
+    await repair.set('app.ui.noCreated', 5); // 덮어쓰기 — createdAt 은 그때 시각
+    expect(repair.invalidKeys()).toEqual([]);
+    const after = await rawRows();
+    expect(after.map((r) => r.key)).toEqual(['app.ui.noCreated']);
+    expect(typeof after[0]?.createdAt).toBe('string');
+    const reopened = await SettingsStore.open(new DataSettingsBackend(plain));
+    expect(reopened.get('app.ui.noCreated', asAny)).toBe(5);
+    await core.close();
+  });
+
+  it('toSettingsRow — 못 바꾸는 행의 캐시 키 · 까닭(id 없는 행만 예외)', () => {
+    const ok: Entity = { id: 'a'.repeat(32), configurationKey: 'a.b.c', configurationValue: { _value: 1 }, salesChannelId: null, createdAt: 't', updatedAt: null };
+    expect(toSettingsRow(ok)).toEqual(toSystemConfigRow(ok));
+    expect(toSettingsRow({ ...ok, salesChannelId: 'b'.repeat(32) })).toMatchObject({
+      unmapped: true,
+      configuration_key: `system_config:${'a'.repeat(32)}`,
+      problem: expect.stringMatching(/salesChannelId/),
+    });
+    expect(toSettingsRow({ ...ok, configurationKey: 3 })).toMatchObject({ configuration_key: `system_config:${'a'.repeat(32)}` });
+    expect(toSettingsRow({ ...ok, createdAt: undefined })).toMatchObject({ configuration_key: 'a.b.c', created_at: null, problem: expect.stringMatching(/createdAt/) });
+    expect(() => toSettingsRow({ ...ok, id: undefined as unknown as string })).toThrow(/without id/);
   });
 });

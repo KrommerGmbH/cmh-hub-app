@@ -7,6 +7,7 @@ import {
   type SettingsBackend,
   type SettingsChangeEvent,
   type SystemConfigRow,
+  type UnmappedSystemConfigRow,
 } from './settings-store.js';
 
 const asNumber = (raw: unknown): number => {
@@ -332,5 +333,60 @@ describe('SettingsStore (R7-b · system_config 꼴)', () => {
     const value = store.get('a.b.c', (raw) => raw as { list: number[] });
     value?.list.push(2);
     expect(store.get('a.b.c', (raw) => raw)).toEqual({ list: [1] });
+  });
+  it('검수 10 🟡2: whenIdle 은 차례 줄의 쓰기(기다리는 사이 새로 선 것도)가 backend 에 다 쓰인 뒤 풀린다', async () => {
+    const written: string[] = [];
+    const releases: (() => void)[] = [];
+    const backend: SettingsBackend = {
+      load: () => [],
+      upsert: (row) =>
+        new Promise<void>((resolve) => {
+          releases.push(() => {
+            written.push(row.configuration_key);
+            resolve();
+          });
+        }),
+      delete: () => undefined,
+    };
+    const store = await SettingsStore.open(backend);
+    void store.set('a.b.one', 1);
+    let idle = false;
+    const waiting = store.whenIdle().then(() => void (idle = true));
+    void store.set('a.b.two', 2); // whenIdle 을 부른 뒤 선 쓰기
+    for (let i = 0; i < 2; i += 1) {
+      await vi.waitFor(() => expect(releases).toHaveLength(i + 1));
+      expect(idle).toBe(false);
+      releases[i]?.();
+    }
+    await waiting;
+    expect(written).toEqual(['a.b.one', 'a.b.two']);
+    expect(idle).toBe(true);
+    await store.whenIdle(); // 빈 줄이면 바로 풀린다
+  });
+
+  it('검수 10 🟡1: backend 가 못 바꾼 행(UnmappedSystemConfigRow)은 늘 깨진 행 — repair 로 열어 보고 · 덮어쓰기(created_at 없으면 그때 시각) · 지우기', async () => {
+    const unmapped: UnmappedSystemConfigRow[] = [
+      { unmapped: true, id: 'u1'.padEnd(32, '0'), configuration_key: 'a.b.nullValue', problem: 'no configurationValue', created_at: '2026-01-01T00:00:00.000Z' },
+      { unmapped: true, id: 'u2'.padEnd(32, '0'), configuration_key: 'a.b.noCreated', problem: 'no createdAt', created_at: null },
+      { unmapped: true, id: 'u3'.padEnd(32, '0'), configuration_key: 'system_config:u3', problem: 'sales channel row', created_at: 't' },
+    ];
+    const upserts: SystemConfigRow[] = [];
+    const deletes: string[] = [];
+    const backend: SettingsBackend = { load: () => unmapped, upsert: (row) => void upserts.push(row), delete: (key) => void deletes.push(key) };
+    await expect(SettingsStore.open(backend)).rejects.toThrow(/a\.b\.nullValue.*no configurationValue/);
+    const c = clock();
+    const store = await SettingsStore.open(backend, { repair: true, now: c.now });
+    expect(store.invalidKeys().sort()).toEqual(['a.b.noCreated', 'a.b.nullValue', 'system_config:u3']);
+    expect(() => store.get('a.b.nullValue', asNumber)).toThrow(/no configurationValue/);
+    await store.set('a.b.nullValue', 1);
+    await store.set('a.b.noCreated', 2);
+    expect(upserts.map((r) => [r.id, r.created_at])).toEqual([
+      ['u1'.padEnd(32, '0'), '2026-01-01T00:00:00.000Z'],
+      ['u2'.padEnd(32, '0'), c.now()],
+    ]);
+    await store.delete('system_config:u3'); // 키 모양이 아니어도 캐시에 있는 깨진 행은 지운다
+    expect(deletes).toEqual(['system_config:u3']);
+    expect(store.invalidKeys()).toEqual([]);
+    expect(store.get('a.b.noCreated', asNumber)).toBe(2);
   });
 });

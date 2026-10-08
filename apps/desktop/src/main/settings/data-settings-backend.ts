@@ -4,10 +4,13 @@
 //   (snake_case · `{"_value": …}` JSON 글)로 바꾼다. 쓸 때는 거꾸로(JSON 글 → 객체 · 저장 이름 snake_case 로 보낸다).
 // 비밀값은 여기 오지 않는다 — SettingsStore.set 이 비밀처럼 보이는 키 · 값 칸을 먼저 거부한다(settings-store.ts 머리 주석).
 // 이 backend 밖에서 system_config 를 바꾸면(DataService.upsert 를 직접 부르는 길) SettingsStore 캐시와 어긋난다 — 쓰기는 SettingsStore 하나로만.
+// 못 바꾸는 행(검수 10 🟡1 · 판매채널 행 · 값 null · createdAt 없음 …): load 가 던지지 않고 UnmappedSystemConfigRow 로 넘긴다 →
+//   SettingsStore.open(…, { repair: true }) 의 invalidKeys() 에 보이고 delete 로 지운다. 진짜 키를 캐시 키로 쓸 수 없는 행(판매채널 행 · 키 없음)은
+//   `system_config:<id>` 로 지은 키를 쓰고 delete 가 그 키를 id 로 지운다. id 가 없는 행만 아직 예외(어느 행인지 가리킬 길이 없다).
 
 import type { Entity } from '@cmh-hub-app/data';
 import type { DataService } from '../data/data-service.js';
-import type { SettingsBackend, SystemConfigRow } from './settings-store.js';
+import type { SettingsBackend, SystemConfigRow, UnmappedSystemConfigRow } from './settings-store.js';
 
 /** 설정 행 엔티티 이름(packages/data definition/entities/system-config.ts) */
 export const SYSTEM_CONFIG_ENTITY = 'system_config';
@@ -22,7 +25,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 자료층 응답 한 줄 → SystemConfigRow. 꼴이 틀리면 예외(조용히 버리지 않는다 — SettingsStore.open 이 실패로 받는다) */
+/** 자료층 응답 한 줄 → SystemConfigRow. 꼴이 틀리면 예외(조용히 버리지 않는다 — load 는 toSettingsRow 로 받아 깨진 행으로 넘긴다) */
 export function toSystemConfigRow(entity: Entity): SystemConfigRow {
   const key = entity['configurationKey'];
   const value = entity['configurationValue'];
@@ -49,6 +52,35 @@ export function toSystemConfigRow(entity: Entity): SystemConfigRow {
   };
 }
 
+/** 진짜 키를 캐시 키로 쓸 수 없는 행(판매채널 행 · 키 없음)의 지은 키 앞머리 — `:` 가 있어 SettingsStore 키 모양과 겹치지 않는다 */
+export const UNMAPPED_KEY_PREFIX = `${SYSTEM_CONFIG_ENTITY}:`;
+
+const ERROR_PREFIX = 'settings backend: ';
+
+/**
+ * 자료층 응답 한 줄 → SystemConfigRow, 못 바꾸면 UnmappedSystemConfigRow(던지지 않는다 · id 가 없는 행만 예외).
+ * 판매채널 행 · 키가 글이 아닌 행은 캐시 키로 `system_config:<id>` 를 쓴다(로컬 행과 같은 키여도 겹치지 않게).
+ */
+export function toSettingsRow(entity: Entity): SystemConfigRow | UnmappedSystemConfigRow {
+  if (typeof entity.id !== 'string') throw new Error(`${ERROR_PREFIX}row without id`);
+  try {
+    return toSystemConfigRow(entity);
+  } catch (error) {
+    const key = entity['configurationKey'];
+    const channel = entity['salesChannelId'];
+    const createdAt = entity['createdAt'];
+    const ownKey = typeof key === 'string' && (channel === null || channel === undefined);
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      unmapped: true,
+      id: entity.id,
+      configuration_key: ownKey ? key : `${UNMAPPED_KEY_PREFIX}${entity.id}`,
+      problem: message.startsWith(ERROR_PREFIX) ? message.slice(ERROR_PREFIX.length) : message,
+      created_at: typeof createdAt === 'string' ? createdAt : null,
+    };
+  }
+}
+
 /** SystemConfigRow → 자료층 쓰기 줄(저장 이름 · json 칸은 객체로) */
 export function toDataRow(row: SystemConfigRow): Record<string, unknown> {
   let value: unknown;
@@ -69,6 +101,9 @@ export function toDataRow(row: SystemConfigRow): Record<string, unknown> {
 }
 
 export class DataSettingsBackend implements SettingsBackend {
+  /** 마지막 load 에서 지은 키(`system_config:<id>`) → id */
+  private readonly unmappedIds = new Map<string, string>();
+
   constructor(
     private readonly data: SettingsDataAccess,
     private readonly pageSize: number = SETTINGS_LOAD_PAGE_SIZE,
@@ -76,28 +111,48 @@ export class DataSettingsBackend implements SettingsBackend {
     if (!Number.isInteger(pageSize) || pageSize < 1) throw new Error('settings backend: pageSize must be a positive integer');
   }
 
-  /** 모든 행 — id 차례로 쪽을 나눠 받는다(쪽이 pageSize 보다 짧으면 끝) */
-  async load(): Promise<readonly SystemConfigRow[]> {
-    const rows: SystemConfigRow[] = [];
+  /** 모든 행 — id 차례로 쪽을 나눠 받는다(쪽이 pageSize 보다 짧으면 끝) · 못 바꾸는 행은 UnmappedSystemConfigRow 로 */
+  async load(): Promise<readonly (SystemConfigRow | UnmappedSystemConfigRow)[]> {
+    const rows: (SystemConfigRow | UnmappedSystemConfigRow)[] = [];
+    const unmappedIds = new Map<string, string>();
     for (let page = 1; ; page += 1) {
       const result = await this.data.search(SYSTEM_CONFIG_ENTITY, {
         page,
         limit: this.pageSize,
         sort: [{ field: 'id', order: 'ASC', naturalSorting: false }],
       });
-      for (const entity of result.elements) rows.push(toSystemConfigRow(entity));
-      if (result.elements.length < this.pageSize) return rows;
+      for (const entity of result.elements) {
+        const row = toSettingsRow(entity);
+        if ('unmapped' in row && row.configuration_key.startsWith(UNMAPPED_KEY_PREFIX)) unmappedIds.set(row.configuration_key, row.id);
+        rows.push(row);
+      }
+      if (result.elements.length < this.pageSize) break;
     }
+    this.unmappedIds.clear();
+    for (const [key, id] of unmappedIds) this.unmappedIds.set(key, id);
+    return rows;
   }
 
   async upsert(row: SystemConfigRow): Promise<void> {
     await this.data.upsert(SYSTEM_CONFIG_ENTITY, [toDataRow(row)]);
   }
 
-  /** 키로 지운다 — 로컬은 판매채널이 늘 null 이라 키 하나에 한 줄(부분 UNIQUE 색인) · 없으면 아무것도 안 한다 */
+  /**
+   * 키로 지운다 — 판매채널이 null 인 행만(같은 키의 판매채널 행은 남긴다 · 부분 UNIQUE 색인이라 한 줄) · 없으면 아무것도 안 한다.
+   * load 가 지은 키(`system_config:<id>`)면 그 id 한 줄을 지운다.
+   */
   async delete(configurationKey: string): Promise<void> {
+    const unmappedId = this.unmappedIds.get(configurationKey);
+    if (unmappedId !== undefined) {
+      await this.data.delete(SYSTEM_CONFIG_ENTITY, [unmappedId]);
+      this.unmappedIds.delete(configurationKey);
+      return;
+    }
     const found = await this.data.search(SYSTEM_CONFIG_ENTITY, {
-      filter: [{ type: 'equals', field: 'configurationKey', value: configurationKey }],
+      filter: [
+        { type: 'equals', field: 'configurationKey', value: configurationKey },
+        { type: 'equals', field: 'salesChannelId', value: null },
+      ],
     });
     const ids = found.elements.map((e) => e.id);
     if (ids.length > 0) await this.data.delete(SYSTEM_CONFIG_ENTITY, ids);

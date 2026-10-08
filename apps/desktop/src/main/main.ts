@@ -43,7 +43,13 @@ app.whenReady().then(async () => {
   registerIpc();
   // R1 · R7-c — 자료층(SQLite · utilityProcess) · 설정(system_config) · 플러그인 레지스트리를 묶는다. 기다리지 않는다(실패해도 창은 뜬다)
   // 내리기는 will-quit 에서 플러그인 화면 → 플러그인 → 자료층 차례(app-services.ts · start-data-service.ts)
-  const services = startAppServices();
+  // 검수 10 🟢5 — 동기 예외(예: userData 경로)여도 창은 띄운다(로그만 · 그때는 자료층 · 설정 · 플러그인 없음)
+  let services: ReturnType<typeof startAppServices> | null = null;
+  try {
+    services = startAppServices();
+  } catch (error) {
+    console.error('[services] startAppServices failed — app continues without data · settings · plugins', error);
+  }
   // H01 · H03 — 설치 ID 와 서명은 창보다 먼저(첫 요청부터 서명이 붙게)
   const appSession = new AppSession(ensureInstallationIdentity());
   appSession.start();
@@ -54,7 +60,7 @@ app.whenReady().then(async () => {
   const w = await createShellWindow(appSession); // U10 — 오른쪽 클릭 «AI 작업» 이 서버 화면 표(cmh-ai-screen)를 읽는 데 세션을 쓴다
   w.updater.start(); // G03 — 배포판만 확인(개발판은 안 함)
   // R7-c — 플러그인 scan · startup 은 창을 띄운 뒤(창을 막지 않는다 · 실패는 로그만)
-  void services.startPlugins();
+  void services?.startPlugins();
   // G04 — 서버가 이 판을 거절하면(403 app-too-old) 필수 업데이트 모달(«나중에» 없음)
   appSession.onAppError((code) => { if (code === 'app-too-old') w.updater.markRequired(); });
   startHeartbeat(appSession, w.window, () => {

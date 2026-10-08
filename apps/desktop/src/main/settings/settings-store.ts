@@ -21,6 +21,7 @@
 // 깨진 행(검수 7 🟡5): open() 이 모든 행의 키 모양 · `{"_value": …}` 풀기 · 비밀값 이름을 보고, 하나라도 깨졌으면 깨진 키를 모두 적어 예외.
 //   【AI 임시 결정】 고치는 길: `SettingsStore.open(backend, { repair: true })` 로 열면 깨진 행도 캐시에 올리고(invalidKeys()),
 //   get 은 그 키에서 예외 · set 은 덮어쓰기(oldValue null) · delete 는 지우기(oldValue null · 키 모양이 깨진 행도 지운다)만 된다.
+//   R7-c(검수 10 🟡1): backend 가 SystemConfigRow 로 바꾸지 못한 행은 UnmappedSystemConfigRow 로 load 에 넣는다 — 같은 깨진 행 길로 다룬다.
 
 import { randomUUID } from 'node:crypto';
 import type { Disposable } from '../plugin/event-bus.js';
@@ -37,6 +38,21 @@ export interface SystemConfigRow {
   readonly updated_at: string | null;
 }
 
+/**
+ * R7-c — backend 가 SystemConfigRow 로 바꾸지 못한 행(판매채널 행 · 값 없음 · created_at 없음 …). open 은 이 행을 늘 깨진 행으로 올린다:
+ * repair 가 아니면 open 이 예외 · repair 면 invalidKeys() 에 보이고 delete 로 지운다(키가 키 모양이면 set 으로 덮어쓸 수도 있다).
+ * configuration_key 는 캐시 키다 — 진짜 키를 쓸 수 없으면(판매채널 행 · 키 없음) backend 가 지은 키를 넣고, backend.delete 가 그 키를 알아본다.
+ */
+export interface UnmappedSystemConfigRow {
+  readonly unmapped: true;
+  readonly id: string;
+  readonly configuration_key: string;
+  /** 왜 못 바꿨나(invalidKeys 까닭 · open 예외 글에 나온다) */
+  readonly problem: string;
+  /** 진짜 created_at(없으면 null — set 으로 덮어쓰면 그때 시각) */
+  readonly created_at: string | null;
+}
+
 type MaybePromise<T> = T | Promise<T>;
 
 /**
@@ -44,7 +60,7 @@ type MaybePromise<T> = T | Promise<T>;
  * 【AI 임시 결정】 sync 만 받으면 R1 위로 옮길 때 이 인터페이스를 다시 바꿔야 해서 처음부터 Promise 도 받는다.
  */
 export interface SettingsBackend {
-  load(): MaybePromise<readonly SystemConfigRow[]>;
+  load(): MaybePromise<readonly (SystemConfigRow | UnmappedSystemConfigRow)[]>;
   upsert(row: SystemConfigRow): MaybePromise<void>;
   delete(configurationKey: string): MaybePromise<void>;
 }
@@ -261,6 +277,8 @@ export class SettingsStore {
   private readonly invalid = new Map<string, string>();
   /** 쓰기 차례 줄 — 같은 키 set 두 번이 겹쳐 backend 와 캐시 차례가 엇갈리는 race condition 을 막는다 */
   private queue: Promise<void> = Promise.resolve();
+  /** UnmappedSystemConfigRow 로 올라온 키 중 created_at 을 모르는 것(덮어쓸 때 그때 시각을 넣는다) */
+  private readonly unknownCreatedAt = new Set<string>();
 
   private constructor(
     private readonly backend: SettingsBackend,
@@ -278,6 +296,21 @@ export class SettingsStore {
   static async open(backend: SettingsBackend, options: SettingsStoreOptions = {}): Promise<SettingsStore> {
     const store = new SettingsStore(backend, options);
     for (const row of await backend.load()) {
+      if ('unmapped' in row) {
+        // R7-c — backend 가 못 바꾼 행: 값은 풀 수 없으니 자리만 캐시에 두고(has · keys · delete) 깨진 행으로 친다
+        if (store.rows.has(row.configuration_key)) throw new Error(`settings: duplicate key "${row.configuration_key}" in backend`);
+        store.rows.set(row.configuration_key, {
+          id: row.id,
+          configuration_key: row.configuration_key,
+          configuration_value: '',
+          sales_channel_id: null,
+          created_at: row.created_at ?? '',
+          updated_at: null,
+        });
+        if (row.created_at === null) store.unknownCreatedAt.add(row.configuration_key);
+        store.invalid.set(row.configuration_key, row.problem);
+        continue;
+      }
       if (row.sales_channel_id !== null) {
         throw new Error(`settings: row "${row.configuration_key}" has sales_channel_id — local settings must be null`);
       }
@@ -338,12 +371,13 @@ export class SettingsStore {
         configuration_key: key,
         configuration_value: encoded,
         sales_channel_id: null,
-        created_at: previous?.created_at ?? at,
+        created_at: previous === undefined || this.unknownCreatedAt.has(key) ? at : previous.created_at,
         updated_at: previous === undefined ? null : at,
       };
       await this.backend.upsert(row);
       this.rows.set(key, row);
       this.invalid.delete(key);
+      this.unknownCreatedAt.delete(key);
       return { key, oldValue, newValue: decodeValue(row) };
     });
     if (event !== null) await this.notify(event);
@@ -363,9 +397,23 @@ export class SettingsStore {
       await this.backend.delete(key);
       this.rows.delete(key);
       this.invalid.delete(key);
+      this.unknownCreatedAt.delete(key);
       return { key, oldValue, newValue: null };
     });
     if (event !== null) await this.notify(event);
+  }
+
+  /**
+   * R7-c — 차례 줄에 선 쓰기(set · delete 의 backend 쓰기)가 모두 끝나면 풀린다. 기다리는 사이 새로 선 쓰기도 기다린다 · 거부하지 않는다.
+   * 앱을 끌 때(will-quit) 자료층을 내리기 전에 부른다 — 안 끝난 쓰기가 'data service is stopped' 로 사라지지 않게(검수 10 🟡2).
+   * listener(notify)는 줄 밖이라 기다리지 않는다.
+   */
+  async whenIdle(): Promise<void> {
+    let tail: Promise<void>;
+    do {
+      tail = this.queue;
+      await tail;
+    } while (tail !== this.queue);
   }
 
   /** 설정 변경 이벤트 구독. dispose 로 푼다 */
