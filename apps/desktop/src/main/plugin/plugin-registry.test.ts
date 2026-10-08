@@ -317,3 +317,48 @@ describe('PluginRegistry + PluginProcess(Node fork) — examples/plugin-hello', 
     }
   });
 });
+
+describe('PluginRegistry.request — 뜨는 중이면 시작을 기다린다(검수 8 🟡2)', () => {
+  /** start 가 ms 만큼 걸리고 그 전에는 요청을 «starting» 으로 거부하는 런타임(plugin-process.ts request 와 같은 태도) */
+  class SlowRuntime implements PluginRuntime {
+    running = false;
+    constructor(private readonly ms: number, private readonly failStart = false) {}
+    async start() {
+      await new Promise((r) => setTimeout(r, this.ms));
+      if (this.failStart) throw new Error('boom');
+      this.running = true;
+    }
+    async stop() { this.running = false; }
+    onExit(_listener: (info: PluginExitInfo) => void) {}
+    async request(method: string) {
+      if (!this.running) throw new Error('plugin is not running (starting)');
+      return `done ${method}`;
+    }
+  }
+  const json = JSON.stringify({ name: 'tooly', version: '1.0.0', minAppVersion: '0.1.0', main: 'main.mjs', activationEvents: ['onTool:echo', 'onView:tooly.view'], contributes: { views: [{ id: 'tooly.view', title: 't', where: 'pane' }], tools: [{ name: 'echo', description: 'e', access: 'read' }] } });
+
+  it('검수 8 재현 — onView 로 시작 중일 때 tool 요청(isRunning 이 이미 true)이 시작을 기다린 뒤 성공', async () => {
+    await addPlugin('tooly', json);
+    const registry = new PluginRegistry({ root, appVersion: '0.1.0', runtimeFactory: () => new SlowRuntime(40) });
+    await registry.scan();
+    await registry.install('tooly');
+    await registry.activate('tooly');
+    const firing = registry.fire('onView:tooly.view', 'tooly');
+    await new Promise((r) => setTimeout(r, 5));
+    expect(registry.isRunning('tooly')).toBe(true); // 아직 start 가 안 끝났는데 true — 도구 쪽이 fire 를 건너뛴다
+    await expect(registry.request('tooly', 'tool:echo')).resolves.toBe('done tool:echo');
+    await firing;
+  });
+
+  it('시작이 실패하면 «not running» 으로 거부(기다린 뒤)', async () => {
+    await addPlugin('tooly', json);
+    const registry = new PluginRegistry({ root, appVersion: '0.1.0', runtimeFactory: () => new SlowRuntime(20, true) });
+    await registry.scan();
+    await registry.install('tooly');
+    await registry.activate('tooly');
+    const firing = registry.fire('onView:tooly.view', 'tooly');
+    await new Promise((r) => setTimeout(r, 5));
+    await expect(registry.request('tooly', 'tool:echo')).rejects.toThrow(/is not running/);
+    await firing;
+  });
+});

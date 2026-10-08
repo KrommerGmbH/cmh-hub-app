@@ -190,11 +190,17 @@ export class PluginRegistry {
       .map((record) => ({ name: record.name, state: record.state, manifest: record.manifest, pluginDir: record.dir }));
   }
 
-  /** 떠 있는 플러그인에 요청 하나(R2-b · tool:<name>). 안 떠 있거나 런타임이 요청을 못 받으면 예외 */
-  request(name: string, method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
+  /**
+   * 떠 있는 플러그인에 요청 하나(R2-b · tool:<name>). 안 떠 있거나 런타임이 요청을 못 받으면 예외.
+   * 뜨는 중(starting)이면 그 시작이 끝나기를 먼저 기다린다 — 다른 길(onView · onStartup)로 시작 중일 때 isRunning 은 true 라서
+   * 도구 쪽이 fire 를 건너뛰고 바로 부르면 런타임이 «starting» 으로 거부했다(검수 8 🟡2). 시작이 실패하면 아래에서 «not running».
+   */
+  async request(name: string, method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
+    const starting = this.records.get(name)?.starting;
+    if (starting) await starting.catch(() => undefined);
     const runtime = this.records.get(name)?.runtime;
-    if (!runtime) return Promise.reject(new Error(`plugin "${name}" is not running`));
-    if (!runtime.request) return Promise.reject(new Error(`plugin "${name}" runtime does not accept requests`));
+    if (!runtime) throw new Error(`plugin "${name}" is not running`);
+    if (!runtime.request) throw new Error(`plugin "${name}" runtime does not accept requests`);
     return runtime.request(method, params, timeoutMs);
   }
 

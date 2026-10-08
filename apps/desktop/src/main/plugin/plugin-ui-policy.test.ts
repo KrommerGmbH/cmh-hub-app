@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -9,7 +9,10 @@ import {
   isAllowedPluginRequest,
   isPluginUiUrl,
   mimeTypeOf,
+  openAsset,
+  PLUGIN_UI_BLOCKED_PROXY,
   pluginUiCsp,
+  pluginUiProxyConfig,
   pluginUiPartition,
   pluginUiUrl,
   resolveAssetPath,
@@ -128,5 +131,53 @@ describe('폴더 안 파일 고르기(resolveAssetPath) — 심볼릭 링크 탈
     expect(await resolveAssetPath(dir, 'ui/alias.html')).toMatchObject({ ok: false, status: 403 });
     expect(await resolveAssetPath(dir, 'ui/none.html')).toMatchObject({ ok: false, status: 404 });
     expect(await resolveAssetPath(dir, 'ui')).toMatchObject({ ok: false, status: 404 });
+  });
+});
+
+describe('openAsset — 하드 링크 · 핸들로 읽기(검수 8 🟢1 · 🟢2)', () => {
+  let base = '';
+  let dir = '';
+  beforeAll(async () => {
+    base = await mkdtemp(join(tmpdir(), 'cmh-plugin-ui-open-'));
+    dir = join(base, 'viewy');
+    await mkdir(join(dir, 'ui'), { recursive: true });
+    await writeFile(join(dir, 'ui', 'index.html'), '<p>hi</p>');
+    await writeFile(join(dir, 'ui', 'empty.txt'), '');
+    await writeFile(join(base, 'secret.txt'), 'SECRET');
+    await link(join(base, 'secret.txt'), join(dir, 'ui', 'hard.txt'));
+  });
+  afterAll(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('폴더 밖 파일의 하드 링크(nlink 2) → 403 · resolveAssetPath 도 같다', async () => {
+    expect(await openAsset(dir, 'ui/hard.txt')).toMatchObject({ ok: false, status: 403, reason: 'hard links are not served from a plugin folder' });
+    expect(await resolveAssetPath(dir, 'ui/hard.txt')).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('보통 파일은 열린 핸들을 돌려준다(그 핸들로 읽는다) · 빈 파일도', async () => {
+    const opened = await openAsset(dir, 'ui/index.html');
+    if (!opened.ok) throw new Error(opened.reason);
+    try {
+      expect((await opened.handle.readFile()).toString()).toBe('<p>hi</p>');
+      expect(opened.size).toBe(9);
+    } finally {
+      await opened.handle.close();
+    }
+    const empty = await openAsset(dir, 'ui/empty.txt');
+    expect(empty).toMatchObject({ ok: true, size: 0 });
+    if (empty.ok) await empty.handle.close();
+  });
+});
+
+describe('WebRTC 막기 — 막힌 프록시 설정(검수 8 🟡1)', () => {
+  it('<-loopback> 이 맨 앞 · 선언한 호스트는 443 만 bypass', () => {
+    expect(pluginUiProxyConfig(VIEWY.permissions)).toEqual({
+      mode: 'fixed_servers',
+      proxyRules: PLUGIN_UI_BLOCKED_PROXY,
+      proxyBypassRules: '<-loopback>,api.example.com:443,*.example.org:443',
+    });
+    expect(pluginUiProxyConfig([]).proxyBypassRules).toBe('<-loopback>');
+    expect(PLUGIN_UI_BLOCKED_PROXY).toMatch(/\.invalid:\d+$/);
   });
 });

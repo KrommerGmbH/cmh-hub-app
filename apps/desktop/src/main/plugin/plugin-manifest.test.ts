@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compareSemver, isSafeRelativePath, parseManifest, parseManifestText, parsePermission } from './plugin-manifest.js';
+import { PLUGIN_MAX_TOOLS, compareSemver, isSafeRelativePath, parseManifest, parseManifestText, parsePermission } from './plugin-manifest.js';
 import { checkEntityAccess, checkHostAccess, checkToolAccess } from './plugin-permissions.js';
 
 const valid = () => ({
@@ -97,6 +97,24 @@ describe('parseManifest — 거부', () => {
     expect(errorsOf({ ...valid(), contributes: { views: [{ id: 'v', title: 'V', where: 'statusbar' }] } })).toEqual(['contributes.views[0].where: must be one of sidebar, pane']);
     expect(errorsOf({ ...valid(), contributes: { menus: [{ command: 'nope', location: 'x' }] } })).toEqual(['contributes.menus[0].command: "nope" is not declared in contributes.commands']);
     expect(errorsOf({ ...valid(), contributes: { settings: [{ key: 'k', type: 'number', default: 'x' }] } })).toEqual(['contributes.settings[0].default: must be a number']);
+  });
+  it('이름 첫 글자는 영문 소문자(숫자로 시작하면 Chromium 이 호스트를 IPv4 로 읽는다 · 검수 8 🟢3)', () => {
+    for (const name of ['123', '1plugin', '0-x']) expect(errorsOf({ ...valid(), name }).length, name).toBeGreaterThan(0);
+    expect(errorsOf({ ...valid(), name: 'a1-x' })).toEqual([]);
+  });
+  it(`도구는 ${PLUGIN_MAX_TOOLS} 개까지(검수 8 🟢7)`, () => {
+    const tools = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `t${i}`, description: 'd', access: 'read' }));
+    expect(errorsOf({ ...valid(), contributes: { tools: tools(PLUGIN_MAX_TOOLS) } })).toEqual([]);
+    expect(errorsOf({ ...valid(), contributes: { tools: tools(PLUGIN_MAX_TOOLS + 1) } })).toEqual([`contributes.tools: more than ${PLUGIN_MAX_TOOLS} tools (${PLUGIN_MAX_TOOLS + 1})`]);
+  });
+  it('예약 엔티티 system_config — 재정의 · 확장 · 권한 선언(read 도) 모두 거부(검수 10 🟡4)', () => {
+    expect(errorsOf({ ...valid(), contributes: { entities: [{ name: 'system_config', fields: [{ name: 'x', type: 'string' }] }] } }).length).toBe(1);
+    expect(errorsOf({ ...valid(), contributes: { entityExtensions: [{ entity: 'system_config', fields: [{ name: 'x', type: 'string' }] }] } }).length).toBe(1);
+    for (const permission of ['entity:system_config:read', 'entity:system_config:crud']) {
+      expect(errorsOf({ ...valid(), permissions: [permission] }), permission).toEqual([
+        `plugin.json.permissions[0]: "${permission}" denied — system_config is reserved for the app (plugin settings: host:settings.get)`,
+      ]);
+    }
   });
   it('JSON 이 깨지면 결과로', () => {
     const result = parseManifestText('{ nope');

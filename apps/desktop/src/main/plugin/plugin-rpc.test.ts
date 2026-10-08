@@ -36,6 +36,27 @@ describe('RpcEndpoint — 상대가 보낸 글 상한', () => {
     expect(calls).toEqual(['small']);
   });
 
+  it('acceptsNotification — 알림으로 받을 메서드만 부르고 나머지 알림은 버린다(요청은 그대로 · 검수 8 🟢8)', async () => {
+    const sent: RpcMessage[] = [];
+    const errors: string[] = [];
+    const calls: string[] = [];
+    const ep = new RpcEndpoint({
+      send: (m) => sent.push(m),
+      methods: { log: () => { calls.push('log'); }, 'host:data.upsert': () => { calls.push('upsert'); return null; } },
+      maxConcurrentIncoming: 2,
+      acceptsNotification: (m) => m === 'log',
+      onProtocolError: (m) => errors.push(m),
+    });
+    for (let i = 0; i < 5; i += 1) ep.handleMessage({ jsonrpc: '2.0', method: 'host:data.upsert', params: { entity: 'x', rows: [] } });
+    // 동기 log 알림은 한 번에 몰려 와도(동시 상한 2 보다 많이) 버리지 않는다
+    for (let i = 0; i < 5; i += 1) ep.handleMessage({ jsonrpc: '2.0', method: 'log' });
+    ep.handleMessage({ jsonrpc: '2.0', id: 1, method: 'host:data.upsert' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toEqual(['log', 'log', 'log', 'log', 'log', 'upsert']);
+    expect(errors).toEqual(Array.from({ length: 5 }, () => 'dropped notification "host:data.upsert": this method must be called as a request (with id)'));
+    expect(sent).toEqual([{ jsonrpc: '2.0', id: 1, result: null }]);
+  });
+
   it('시간초과 뒤 늦게 온 답은 버린다(pending 0)', async () => {
     const errors: string[] = [];
     const ep = new RpcEndpoint({ send: () => undefined, methods: {}, defaultTimeoutMs: 20, onProtocolError: (m) => errors.push(m) });

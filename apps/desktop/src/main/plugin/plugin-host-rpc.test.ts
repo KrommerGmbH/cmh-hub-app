@@ -69,8 +69,10 @@ describe.each([false, true])('host:* · tool:* — 실제 자식 프로세스(NO
       declaredEntity: { ok: true, result: { total: 1 } },
       setting: { ok: true, result: 'hallo' },
       undeclaredSetting: { ok: false, code: RPC_ERROR.permissionDenied, message: 'permission denied: setting "secret" is not declared in contributes.settings' },
+      dataNotification: 'sent',
     });
     expect(logs).toContain('host-rpc:info:hello from child');
+    expect(logs).toContain('host-rpc:warn:rpc: dropped notification "host:data.search": this method must be called as a request (with id)');
     expect(data.calls).toEqual(['search:cmh_ai_prompt']);
     expect(denied.map((d) => d.method)).toEqual(['host:nope', 'host:data.search', 'host:settings.get']);
   });

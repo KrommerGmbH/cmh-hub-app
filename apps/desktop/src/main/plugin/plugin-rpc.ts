@@ -44,7 +44,7 @@ export interface RpcEndpointOptions {
   readonly defaultTimeoutMs?: number;
   /** 꼴이 틀린 글 · 상대가 보낸 알림 처리 실패 같은 것을 남긴다 */
   readonly onProtocolError?: (message: string) => void;
-  /** 상대가 보낸 요청 중 아직 답하지 않은 것의 상한 — 넘으면 tooManyRequests 로 바로 답한다 · 없으면 상한 없음 */
+  /** 상대가 보낸 요청 중 아직 답하지 않은 것의 상한 — 넘으면 tooManyRequests 로 바로 답한다 · 없으면 상한 없음(알림은 세지 않는다 → acceptsNotification) */
   readonly maxConcurrentIncoming?: number;
   /** 상대가 보낸 글 한 통의 JSON 바이트 상한 — 넘으면 버린다(요청이면 Invalid Request 로 답) · 없으면 상한 없음 */
   readonly maxMessageBytes?: number;
@@ -53,6 +53,11 @@ export interface RpcEndpointOptions {
    * 플러그인 호스트는 `host:` 로 시작하는 모르는 이름을 permissionDenied 로 답한다(deny by default).
    */
   readonly unknownMethod?: (method: string) => RpcError | null;
+  /**
+   * 알림(id 없음)으로 받을 메서드인가 — false 면 부르지 않고 버린다(onProtocolError). 없으면 전부 받는다.
+   * 알림은 동시 상한(maxConcurrentIncoming)에 세지 않으므로(동기 log 알림이 한 번에 몰려 와도 버리지 않게) 무거운 메서드는 요청으로만 받는다.
+   */
+  readonly acceptsNotification?: (method: string) => boolean;
 }
 
 interface Pending {
@@ -134,7 +139,12 @@ export class RpcEndpoint {
     }
     if (typeof method === 'string') {
       if (id === undefined) {
-        void this.dispatch(method, raw['params']).catch((error: unknown) => this.protocolError(`notification "${method}" failed: ${String(error)}`));
+        // 알림(id 없음)은 maxConcurrentIncoming 을 안 지난다 → 알림으로 받을 메서드를 좁힌다(검수 8 🟢8 — host:data.* 알림 무더기로 상한 비껴가기 막기)
+        if (this.options.acceptsNotification && !this.options.acceptsNotification(method)) {
+          this.protocolError(`dropped notification "${method.slice(0, 128)}": this method must be called as a request (with id)`);
+          return;
+        }
+        void this.dispatch(method, raw['params']).catch((error: unknown) => this.protocolError(`notification "${method.slice(0, 128)}" failed: ${String(error)}`));
         return;
       }
       if (typeof id !== 'number' || !Number.isSafeInteger(id)) {

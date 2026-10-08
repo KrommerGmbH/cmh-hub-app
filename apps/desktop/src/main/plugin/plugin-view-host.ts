@@ -4,9 +4,14 @@
 // 이 클래스는 view 를 만들어 돌려줄 뿐 창에 붙이지 않는다 — 어디(사이드바 · pane)에 둘지는 셸(ShellWindow · R6/RD) 몫.
 // ⚠ main.ts 가 app ready 전에 PLUGIN_UI_SCHEME_PRIVILEGES 를 protocol.registerSchemesAsPrivileged 에 넣어야 한다(안 넣으면 표준 scheme 이 아니라
 //   상대경로 · origin 이 흐려진다). 이 파일은 그것을 대신 부르지 않는다(그 함수는 한 번만 부를 수 있다 — 다른 scheme 과 한 배열로 main.ts 에서).
+// WebRTC(검수 8 🟡1) — STUN/TURN 은 CSP · webRequest 를 둘 다 지나지 않는다. 화면마다 setWebRTCIPHandlingPolicy('disable_non_proxied_udp') +
+//   partition 에 막힌 프록시(plugin-ui-policy.ts pluginUiProxyConfig · 선언한 호스트의 443 만 bypass). 실측(2026-10-08 · Electron 44.5.1 · xvfb ·
+//   STUN UDP · TURN UDP · TURN TCP 를 127.0.0.2 와 192.0.2.2 에 동시에): 받은 UDP 0 · TCP 연결 0 · 선언한 https fetch 200.
+//   대조(같은 화면에서 프록시만 direct 로): TURN/TCP 연결 2 · 데이터 10통 — 프록시가 TCP 를 막는 것이다. 선언한 호스트 3479 포트 TURN/TCP 도 0.
+//   ⚠ 선언한 호스트의 443 포트로 가는 TURN/TCP 는 안 재 봤다(bypass 라 나갈 수 있다 · 선언한 호스트라 https 와 같은 대접).
 
 import { ipcMain, session, WebContentsView, type IpcMainInvokeEvent, type Session } from 'electron';
-import { readFile, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import type { HostApiOptions } from './plugin-host-api.js';
 import type { PluginManifest } from './plugin-manifest.js';
 import { inspectPluginFolder } from './plugin-process.js';
@@ -16,11 +21,16 @@ import {
   assetPathFromUrl,
   isAllowedPluginNavigation,
   isAllowedPluginRequest,
+  openAsset,
   pluginUiPartition,
+  pluginUiProxyConfig,
   pluginUiResponseHeaders,
   pluginUiUrl,
   resolveAssetPath,
 } from './plugin-ui-policy.js';
+
+/** 화면마다 거는 WebRTC 정책 — 프록시를 안 지나는 UDP 를 끈다(검수 8 🟡1) */
+export const PLUGIN_UI_WEBRTC_POLICY = 'disable_non_proxied_udp';
 
 /** 화면을 열 플러그인(registry.describe 를 감싼 것) — active 가 아니면 resolvePlugin 이 null 을 돌려줄 것 */
 export interface PluginUiTarget {
@@ -71,7 +81,10 @@ export class PluginViewHost {
     if (!entry.ok) throw new Error(`plugin "${pluginName}" ui: ${entry.reason}`);
 
     const partition = pluginUiPartition(pluginName);
-    this.prepareSession(pluginName, session.fromPartition(partition));
+    const ses = session.fromPartition(partition);
+    this.prepareSession(pluginName, ses);
+    // 열 때마다 그때 매니페스트의 host: 로(update 로 바뀌었을 수 있다) — WebRTC TURN/TCP 를 막힌 프록시로 보낸다
+    await ses.setProxy(pluginUiProxyConfig(target.manifest.permissions));
     const view = new WebContentsView({
       webPreferences: {
         partition,
@@ -90,6 +103,8 @@ export class PluginViewHost {
       },
     });
     const wc = view.webContents;
+    // STUN · TURN/UDP 를 끈다(UDP 는 프록시를 못 지나므로 0) · TURN/TCP 는 위 setProxy 가 막는다
+    wc.setWebRTCIPHandlingPolicy(PLUGIN_UI_WEBRTC_POLICY);
     const id = wc.id;
     this.bridge.attach(id, target.manifest);
     this.views.set(id, view);
@@ -165,14 +180,20 @@ export class PluginViewHost {
     if (!target) return new Response(null, { status: 404 });
     const rel = assetPathFromUrl(pluginName, request.url);
     if (rel === null) return new Response(null, { status: 400 });
-    const asset = await resolveAssetPath(target.pluginDir, rel);
+    // 연 핸들로 검사하고 그 핸들로 읽는다(stat ↔ 읽기 사이 TOCTOU · 하드 링크 거부 — plugin-ui-policy.ts openAsset)
+    const asset = await openAsset(target.pluginDir, rel);
     if (!asset.ok) return new Response(null, { status: asset.status });
-    const headers = pluginUiResponseHeaders(target.manifest, asset.mimeType);
-    if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
     try {
-      return new Response(new Uint8Array(await readFile(asset.file)), { status: 200, headers });
+      const headers = pluginUiResponseHeaders(target.manifest, asset.mimeType);
+      if (request.method === 'HEAD') return new Response(null, { status: 200, headers });
+      // stat 의 크기만큼만 읽는다(연 뒤에 파일이 커져도 상한 PLUGIN_UI_MAX_FILE_BYTES 를 넘기지 않게)
+      const body = new Uint8Array(asset.size);
+      const { bytesRead } = await asset.handle.read(body, 0, asset.size, 0);
+      return new Response(body.subarray(0, bytesRead), { status: 200, headers });
     } catch {
       return new Response(null, { status: 404 });
+    } finally {
+      await asset.handle.close().catch(() => undefined);
     }
   }
 }

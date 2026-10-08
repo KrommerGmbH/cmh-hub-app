@@ -19,7 +19,7 @@ import { realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { scanFolderNoFollow, type FolderScanProblemKind } from '../util/folder-scan.js';
 import type { PluginManifest } from './plugin-manifest.js';
-import { createHostMethods, unknownHostMethod, type PermissionDeniedInfo, type PluginDataAccess, type PluginSettingsReader } from './plugin-host-api.js';
+import { HOST_NOTIFICATION_METHODS, createHostMethods, unknownHostMethod, type PermissionDeniedInfo, type PluginDataAccess, type PluginSettingsReader } from './plugin-host-api.js';
 import type { ProcessLauncher, PluginChannel } from './process-launcher.js';
 import { RPC_ERROR, RpcEndpoint, RpcError } from './plugin-rpc.js';
 import type { EventBus } from './event-bus.js';
@@ -177,6 +177,8 @@ export class PluginProcess implements PluginRuntime {
         ...(this.options.onLog ? { onLog: this.options.onLog } : {}),
         ...(this.options.onPermissionDenied ? { onPermissionDenied: this.options.onPermissionDenied } : {}),
       }),
+      // 알림은 log 만(검수 8 🟢8 — 알림은 동시 상한에 안 센다 · plugin-host-api.ts HOST_NOTIFICATION_METHODS)
+      acceptsNotification: (method) => HOST_NOTIFICATION_METHODS.has(method),
       unknownMethod: (method) => {
         const error = unknownHostMethod(method);
         if (error) this.options.onPermissionDenied?.({ plugin: manifest.name, method: method.slice(0, 128), reason: `host method "${method.slice(0, 128)}" is not available to plugins` });

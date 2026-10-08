@@ -7,7 +7,7 @@
 //   ④그 다음 검사는 플러그인 프로세스와 같은 처리기(createHostMethods) — 매니페스트 permissions · 승인 엔티티 쓰기 늘 거부
 // 답은 던지지 않고 `{ ok, result | error{code,message} }` 꼴(IPC 너머로 Error 를 넘기면 code 가 사라진다).
 
-import { HOST_METHODS, createHostMethods, type HostApiOptions } from './plugin-host-api.js';
+import { HOST_METHODS, LogRateLimiter, createHostMethods, type HostApiOptions } from './plugin-host-api.js';
 import type { PluginManifest } from './plugin-manifest.js';
 import { RPC_ERROR, RpcError, type RpcMethodHandler } from './plugin-rpc.js';
 import { isPluginUiUrl } from './plugin-ui-policy.js';
@@ -17,6 +17,9 @@ export const PLUGIN_UI_IPC_CHANNEL = 'cmh-plugin-ui:call';
 /** 【AI 임시 결정】 플러그인 프로세스와 같은 상한(plugin-process.ts PLUGIN_MAX_CONCURRENT_REQUESTS · PLUGIN_MAX_MESSAGE_BYTES) */
 export const PLUGIN_UI_MAX_CONCURRENT = 16;
 export const PLUGIN_UI_MAX_MESSAGE_BYTES = 1024 * 1024;
+/** 【AI 임시 결정】 onRejected 초당 상한(플러그인 하나마다 · 붙지 않은 보낸 쪽은 한 묶음) — 거부를 무더기로 일으켜 로그를 채우지 못하게(검수 8 🟢6) */
+export const PLUGIN_UI_REJECTED_PER_SECOND = 20;
+const UNATTACHED_KEY = '\u0000unattached';
 
 export interface PluginUiSender {
   readonly webContentsId: number;
@@ -61,6 +64,8 @@ function fail(code: number, message: string): PluginUiReply {
 
 export class PluginUiBridge {
   private readonly attached = new Map<number, Attached>();
+  /** onRejected 빈도 상한 — 플러그인 이름(붙지 않은 보낸 쪽은 UNATTACHED_KEY)마다. 키 수 = 플러그인 수 + 1 이라 커지지 않는다 */
+  private readonly rejectLimiters = new Map<string, LogRateLimiter>();
 
   constructor(private readonly options: PluginUiBridgeOptions = {}) {}
 
@@ -90,7 +95,7 @@ export class PluginUiBridge {
   async handle(sender: PluginUiSender, raw: unknown): Promise<PluginUiReply> {
     const entry = this.attached.get(sender.webContentsId);
     const reject = (code: number, reason: string): PluginUiReply => {
-      this.options.onRejected?.({ webContentsId: sender.webContentsId, plugin: entry?.plugin ?? null, reason });
+      this.reportRejected({ webContentsId: sender.webContentsId, plugin: entry?.plugin ?? null, reason });
       return fail(code, reason);
     };
     if (!entry) return reject(RPC_ERROR.permissionDenied, 'permission denied: sender is not a plugin view');
@@ -125,5 +130,19 @@ export class PluginUiBridge {
     } finally {
       entry.inFlight -= 1;
     }
+  }
+
+  /** onRejected 를 초당 상한 안에서만 부른다 · 넘쳐 버린 개수는 다음 창 첫 줄 앞에 한 번 알린다 */
+  private reportRejected(info: PluginUiRejection): void {
+    const onRejected = this.options.onRejected;
+    if (!onRejected) return;
+    const key = info.plugin ?? UNATTACHED_KEY;
+    let limiter = this.rejectLimiters.get(key);
+    if (!limiter) {
+      limiter = new LogRateLimiter(PLUGIN_UI_REJECTED_PER_SECOND, this.options.now ?? Date.now);
+      this.rejectLimiters.set(key, limiter);
+    }
+    const accepted = limiter.accept((dropped) => onRejected({ webContentsId: info.webContentsId, plugin: info.plugin, reason: `rejections rate limited: ${dropped} dropped` }));
+    if (accepted) onRejected(info);
   }
 }

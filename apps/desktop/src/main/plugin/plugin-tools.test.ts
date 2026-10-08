@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { evaluateGuard, parseGuardPolicy } from '../settings/guard-policy.js';
 import { parseManifest, type PluginManifest } from './plugin-manifest.js';
 import type { PluginState } from './plugin-registry.js';
-import { PluginToolSource, parsePluginToolName, pluginToolName, toolNeedsApproval, toolResultFromPlugin, type PluginToolHost } from './plugin-tools.js';
+import { PLUGIN_TOOL_TIMEOUT_MS, PluginToolSource, parsePluginToolName, pluginToolName, toolNeedsApproval, toolResultFromPlugin, type PluginToolHost } from './plugin-tools.js';
 
 function manifestOf(input: Record<string, unknown>): PluginManifest {
   const result = parseManifest({ name: 'tooly', version: '1.0.0', minAppVersion: '0.1.0', main: 'main.mjs', activationEvents: ['onTool:echo', 'onTool:save'], ...input });
@@ -146,6 +146,45 @@ describe('PluginToolSource', () => {
     ac.abort();
     expect(await source.callTool('plugin:tooly:echo', {}, { signal: ac.signal })).toMatchObject({ ok: false, error: 'aborted' });
     expect(host.requests).toEqual([]);
+  });
+});
+
+describe('PluginToolSource — 도중 중단 · 시간초과 넘기기(검수 8 🟢9)', () => {
+  class GatedHost extends FakeHost {
+    timeouts: Array<number | undefined> = [];
+    release: (() => void) | null = null;
+    override async request(name: string, method: string, params?: unknown, timeoutMs?: number) {
+      this.timeouts.push(timeoutMs);
+      this.requests.push(`${name}:${method}:${JSON.stringify(params)}`);
+      await new Promise<void>((resolve) => { this.release = resolve; });
+      return { text: 'late' };
+    }
+  }
+
+  it('부르는 도중 중단 신호 → 답을 기다리지 않고 aborted · 늦게 온 답은 버린다', async () => {
+    const host = new GatedHost([{ name: 'tooly', state: 'active', manifest: TOOLY }]);
+    const source = new PluginToolSource({ host });
+    const ac = new AbortController();
+    const pending = source.callTool('plugin:tooly:echo', {}, { signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(host.requests).toHaveLength(1);
+    ac.abort();
+    expect(await pending).toEqual({ ok: false, error: 'plugin:tooly:echo: aborted', truncated: false });
+    host.release?.();
+  });
+
+  it('ctx.timeoutMs 를 host.request 로 넘긴다 · 없으면 옵션 · 그것도 없으면 PLUGIN_TOOL_TIMEOUT_MS', async () => {
+    const host = new GatedHost([{ name: 'tooly', state: 'active', manifest: TOOLY }]);
+    const call = async (source: PluginToolSource, ctx: { timeoutMs?: number }) => {
+      const pending = source.callTool('plugin:tooly:echo', {}, ctx);
+      await new Promise((r) => setTimeout(r, 0));
+      host.release?.();
+      return pending;
+    };
+    expect(await call(new PluginToolSource({ host }), { timeoutMs: 1234 })).toMatchObject({ ok: true, text: 'late' });
+    await call(new PluginToolSource({ host, timeoutMs: 777 }), {});
+    await call(new PluginToolSource({ host }), {});
+    expect(host.timeouts).toEqual([1234, 777, PLUGIN_TOOL_TIMEOUT_MS]);
   });
 });
 

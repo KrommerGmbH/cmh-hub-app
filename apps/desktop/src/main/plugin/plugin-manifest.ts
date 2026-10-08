@@ -6,8 +6,13 @@
 // Shopware App manifest 의 `<permissions>`(read / create / update / delete · `<crud>`) 꼴을 줄여 read | crud 둘만 둔다.
 
 import { WRITE_PROTECTED_ENTITIES, isWriteProtectedEntity } from '../settings/approval-entity.js';
+import { isPluginReservedEntity } from './plugin-permissions.js';
 
-export const PLUGIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/**
+ * 플러그인 이름 = 폴더 이름 = 화면 origin 호스트(`cmh-plugin://<이름>`). 첫 글자는 영문 소문자(검수 8 🟢3) —
+ * 숫자로 시작하면 Chromium 이 호스트를 IPv4 로 읽어 `cmh-plugin://123` 이 `0.0.0.123` 이 되어 화면이 안 열렸다(실측).
+ */
+export const PLUGIN_NAME_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 /** 엔티티 이름 — 서버 Shopware 엔티티와 같은 snake_case(예 cmh_ai_prompt) */
 export const ENTITY_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 /** 뷰 · 명령 · 서비스 · 이벤트 id — 점 · 콜론 · 하이픈 허용(예 hello.view · entity.written) */
@@ -42,6 +47,8 @@ export type ToolAccess = (typeof TOOL_ACCESS)[number];
 /** 도구 설명 글 상한 · parameters(JSON Schema) JSON 글자 상한 — 【AI 임시 결정】 모델에게 가는 토큰 상한(원칙 2) */
 export const TOOL_DESCRIPTION_MAX = 1_000;
 export const TOOL_PARAMETERS_MAX_CHARS = 8_000;
+/** 【AI 임시 결정】 플러그인 하나가 내놓는 도구 개수 상한(검수 8 🟢7 · 원칙 2 — 도구 목록은 매 턴 모델에게 간다) */
+export const PLUGIN_MAX_TOOLS = 32;
 
 export type ActivationEvent =
   | { readonly kind: 'onStartup'; readonly raw: 'onStartup' }
@@ -285,7 +292,7 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     const name = requireString(c, item, 'name', at, ENTITY_NAME_PATTERN);
     const fields = readFields(c, item, at);
     if (name === null) return;
-    if (isWriteProtectedEntity(name)) {
+    if (isWriteProtectedEntity(name) || isPluginReservedEntity(name)) {
       c.error(`${at}.name: "${name}" is a protected entity and cannot be (re)defined by a plugin`);
       return;
     }
@@ -299,7 +306,7 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     const entity = requireString(c, item, 'entity', at, ENTITY_NAME_PATTERN);
     const fields = readFields(c, item, at);
     if (entity === null) return;
-    if (isWriteProtectedEntity(entity)) {
+    if (isWriteProtectedEntity(entity) || isPluginReservedEntity(entity)) {
       c.error(`${at}.entity: "${entity}" is a protected entity and cannot be extended by a plugin`);
       return;
     }
@@ -446,6 +453,7 @@ function readContributes(c: Collector, value: unknown): PluginContributes {
     tools.push({ name, description, parameters, access: accessValue === 'read' ? 'read' : 'write' });
   });
   uniqueIds(c, tools.map((t) => t.name), 'contributes.tools');
+  if (tools.length > PLUGIN_MAX_TOOLS) c.error(`contributes.tools: more than ${PLUGIN_MAX_TOOLS} tools (${tools.length})`);
 
   return { entities, entityExtensions, services, subscribers, views, commands, menus, settings, snippets, tools };
 }
@@ -544,6 +552,10 @@ export function parseManifest(input: unknown, options: ManifestParseOptions = {}
       }
       if (permission.kind === 'entity' && permission.access !== 'read' && isWriteProtectedEntity(permission.entity)) {
         c.error(`plugin.json.permissions[${index}]: "${permission.raw}" denied — writes to ${permission.entity} are only allowed from the app UI (human click)`);
+        return;
+      }
+      if (permission.kind === 'entity' && isPluginReservedEntity(permission.entity)) {
+        c.error(`plugin.json.permissions[${index}]: "${permission.raw}" denied — ${permission.entity} is reserved for the app (plugin settings: host:settings.get)`);
         return;
       }
       if (seen.has(permission.raw)) return;

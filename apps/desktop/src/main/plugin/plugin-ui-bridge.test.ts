@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { PluginDataAccess } from './plugin-host-api.js';
 import { parseManifest, type PluginManifest } from './plugin-manifest.js';
 import { RPC_ERROR } from './plugin-rpc.js';
-import { PLUGIN_UI_IPC_CHANNEL, PluginUiBridge, type PluginUiRejection, type PluginUiSender } from './plugin-ui-bridge.js';
+import { PLUGIN_UI_IPC_CHANNEL, PLUGIN_UI_REJECTED_PER_SECOND, PluginUiBridge, type PluginUiRejection, type PluginUiSender } from './plugin-ui-bridge.js';
 
 function manifestOf(name: string, permissions: string[]): PluginManifest {
   const result = parseManifest({ name, version: '1.0.0', minAppVersion: '0.1.0', main: 'main.mjs', ui: 'ui/index.html', activationEvents: ['onStartup'], permissions });
@@ -109,5 +109,24 @@ describe('PluginUiBridge — 보낸 쪽 검사', () => {
     const text = await readFile(new URL('../../preload/plugin-ui-preload.cts', import.meta.url), 'utf8');
     expect(text).toContain(`const PLUGIN_UI_IPC_CHANNEL = '${PLUGIN_UI_IPC_CHANNEL}';`);
     expect(text).not.toMatch(/from '\.\.?\//); // 우리 모듈 import 0
+  });
+});
+
+describe('PluginUiBridge — onRejected 빈도 상한(검수 8 🟢6)', () => {
+  it('플러그인마다 초당 상한 · 넘친 개수는 다음 창에 한 번 · 붙지 않은 보낸 쪽은 따로 센다', async () => {
+    let now = 50_000;
+    const rejected: PluginUiRejection[] = [];
+    const bridge = new PluginUiBridge({ data: new FakeData(), onRejected: (r) => rejected.push(r), now: () => now });
+    bridge.attach(VIEW_ID, manifestOf('viewy', []));
+    const n = PLUGIN_UI_REJECTED_PER_SECOND + 5;
+    for (let i = 0; i < n; i += 1) {
+      expect(await bridge.handle(sender(), { method: 'host:nope' })).toMatchObject({ ok: false, error: { code: RPC_ERROR.permissionDenied } });
+    }
+    for (let i = 0; i < 3; i += 1) await bridge.handle(sender({ webContentsId: 999 }), { method: 'host:log' });
+    expect(rejected.filter((r) => r.plugin === 'viewy')).toHaveLength(PLUGIN_UI_REJECTED_PER_SECOND);
+    expect(rejected.filter((r) => r.plugin === null)).toHaveLength(3);
+    now += 1_000;
+    await bridge.handle(sender(), { method: 'host:nope' });
+    expect(rejected.slice(-2).map((r) => r.reason)).toEqual(['rejections rate limited: 5 dropped', 'permission denied: host method "host:nope" is not available to plugin views']);
   });
 });

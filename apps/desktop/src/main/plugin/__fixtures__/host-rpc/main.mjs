@@ -1,5 +1,5 @@
 // 시험용 플러그인(R2-b) — host:* RPC 와 tool:* 를 실제 별도 프로세스에서 확인한다(plugin-host-rpc.test.ts).
-// probe: host:log(선언 없이 허용) · 표에 없는 host:nope · 선언 없는 엔티티 host:data.search · 선언한 설정 · 선언 안 한 설정을 차례로 부른다.
+// probe: host:log(선언 없이 허용) · 표에 없는 host:nope · 선언 없는 엔티티 host:data.search · 선언한 설정 · 선언 안 한 설정을 차례로 부르고 · host:data.search 알림을 하나 보낸다.
 const port = process.parentPort ?? null;
 const send = (m) => (port ? port.postMessage(m) : process.send?.(m));
 const on = (f) => (port ? port.on('message', (e) => f(e.data)) : process.on('message', f));
@@ -31,6 +31,8 @@ const methods = {
     declaredEntity: await attempt('host:data.search', { entity: 'cmh_ai_prompt', criteria: { limit: 1 } }),
     setting: await attempt('host:settings.get', { key: 'greeting' }),
     undeclaredSetting: await attempt('host:settings.get', { key: 'secret' }),
+    // 검수 8 🟢8 — host:data.* 를 알림(id 없음)으로 보내면 앱이 버린다(log 알림만 받는다)
+    dataNotification: (send({ jsonrpc: '2.0', method: 'host:data.search', params: { entity: 'cmh_ai_prompt' } }), 'sent'),
   }),
   'tool:echo': (args) => ({ text: String(args?.text ?? '') }),
   'tool:save': () => ({ ok: false, error: 'save refused by plugin' }),
