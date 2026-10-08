@@ -7,7 +7,8 @@
 //     【AI 임시 결정】 자료층이 failed(또는 내리는 중 취소)거나 open 이 실패하면(깨진 행 · RPC 오류) 메모리 backend 로 열고 경고를 남긴다 —
 //     그때 바꾼 설정은 앱을 끄면 사라진다. 어느 쪽인지는 AppSettings.source · persistent · failure 로 본다(설정 화면이 생기면 알린다).
 //     검수 10 🟡1: 메모리에서 바꾼 키마다 처음 한 번 warn · 되살아날 수 있는 까닭이면 자료층이 running 이 될 때 system_config 로 다시 열고
-//     메모리에서 바꾼 키를 옮긴 뒤 바꾼다(openAppSettings 주석).
+//     메모리에서 바꾼 키를 옮긴 뒤 바꾼다(openAppSettings 주석). 검수 11 🟡2: system_config 에 이미 값이 있던 키는 옮기지 않는다(DB 가 이긴다) ·
+//     검수 11 🟡1: 옮기기가 하나라도 실패하면 바꾸지 않는다(AppSettingsHandle.switchTo).
 //   ③플러그인 — startPlugins(): 창을 띄운 «뒤» userData/plugins 를 scan → startup → PluginViewHost. 실패는 로그만(앱은 산다).
 //   ④설정 바뀜 → EventBus 'settings.changed'(【AI 임시 결정】 이름). 값은 싣지 않고 키만 싣는다(아래 settingsChangePayload).
 // 내리기(will-quit · start-data-service.ts 의 beforeStop): 돌던 startPlugins 기다림(상한) → 플러그인 화면 → 플러그인 레지스트리 →
@@ -71,6 +72,16 @@ export interface AppSettings {
   /**
    * 지금 쓰는 저장소. memory 로 열었다가 자료층이 다시 running 이 되면 data 로 한 번 바뀐다 —
    * 붙잡아 두지 말고 쓸 때마다 이 속성을 읽는다(onStoreChange).
+   * 검수 11 🟢1: 바뀐 뒤 옛 memory store 로 쓴 값도 system_config 로 옮기지만(DB 가 이긴다 검사 없이 그대로) 그 옮기기는 늦게 끝나므로
+   *   새 store 로 «나중에» 쓴 값을 덮을 수 있다(늦게 쓴 옛 store 쓰기가 이긴다). 그래서 옛 store 를 붙잡아 두면 안 된다.
+   *
+   * 【AI 임시 결정】(검수 11 🟡2 · 정책 ① «DB 가 이긴다») memory → data 로 바뀔 때:
+   *   · memory 에서 바꾼(set · delete) 키 중 system_config 에 «이미 값이 있던» 키(data store 를 연 때의 행)는 옮기지 않는다 —
+   *     memory 의 바꿈은 버리고 키마다 warn 로그(키 이름만 · 값은 안 적는다). memory 에서 지운 키도 같다(DB 값이 남는다).
+   *     까닭: memory store 는 빈 채로 열리므로 사용자가 못 본 DB 값(목록 설정 등)을 default 위에서 고친 값으로 덮게 된다.
+   *   · system_config 에 없던 키만 옮긴다. 하나라도 옮기지 못하면(검수 11 🟡1) 바꾸지 않고 memory 를 그대로 쓴다 —
+   *     바꾼 키 표시는 남기고 error 로그(실패한 키 이름) · 자료층이 다음에 running 이 될 때 다시 해 본다.
+   *   · 바뀌면서 읽히는 값이 달라진 키는 onStoreChange 의 changedKeys 로 알린다(→ settings.changed).
    */
   readonly store: SettingsStore;
   /** data = system_config(앱 SQLite) · memory = 앱을 끄면 사라진다 */
@@ -81,7 +92,10 @@ export interface AppSettings {
   readonly failure: string | null;
   /** 차례 줄에 선 쓰기 · memory → data 옮기기가 모두 끝나면 풀린다(거부하지 않는다) — will-quit 에서 자료층을 내리기 전에 기다린다 */
   whenIdle(): Promise<void>;
-  /** store 가 바뀔 때(memory → data). changedKeys = 바뀌면서 읽히는 값이 달라진 키(system_config 에 이미 있던 키) */
+  /**
+   * store 가 바뀔 때(memory → data). changedKeys = 바뀌면서 읽히는 값이 달라진 키 — memory 에 없던 system_config 키 ·
+   * memory 에서 바꿨지만 DB 가 이겨 버린 키(값을 JSON 글로 견준다 · 같은 값이 객체 속성 차례만 달라도 한 번 더 알릴 수 있다)
+   */
   onStoreChange(listener: (store: SettingsStore, changedKeys: readonly string[]) => void): Disposable;
   /** 다시 열기(retry)를 멈춘다 — will-quit 에서 부른다 */
   close(): void;
@@ -119,19 +133,45 @@ async function openDataSettings(data: SettingsDataAccess): Promise<OpenAttempt> 
   }
 }
 
+/** 내리는 중(앱 종료) — open 실패가 오류가 아니다(start-data-service.ts 의 «start cancelled by shutdown» 과 같은 info) */
+function isQuittingState(state: DataServiceState): boolean {
+  return state === 'stopping' || state === 'stopped';
+}
+
+/**
+ * 검수 11 🟢3 — 다시 열기는 자료층 상태가 running «으로 바뀔 때»만 돈다. 실패한 때 이미 running 이면(예: open timeout) 자료층이
+ * 다시 띄워지지 않는 한 다시 열지 않으므로 «will retry» 라고 적지 않는다.
+ */
+function retryNote(state: DataServiceState): string {
+  return state === 'running'
+    ? ' (no retry scheduled — data service is running; settings are retried only if it restarts)'
+    : ' (will retry when the data service is running again)';
+}
+
+/** 값이 같나(JSON 글로 견준다 · 둘 다 없으면 같다) — 바꾸며 읽히는 값이 달라진 키를 고를 때 */
+function sameSetting(a: SettingsStore, b: SettingsStore, key: string): boolean {
+  const inA = a.has(key);
+  if (inA !== b.has(key)) return false;
+  if (!inA) return true;
+  return JSON.stringify(a.get(key, (raw) => raw)) === JSON.stringify(b.get(key, (raw) => raw));
+}
+
 /**
  * AppSettings 구현. memory 모드:
  *   · set · delete 는 된다(앱은 쓸 수 있어야 한다) — 키마다 처음 한 번 warn 로그(앱을 끄면 사라진다)
- *   · 되살아날 수 있는 까닭이면 자료층이 running 이 될 때 system_config 로 다시 열고, memory 에서 바꾼 키를 그대로 옮겨 쓴 뒤 data 로 바꾼다
- *     (바꾼 뒤 memory 저장소에 늦게 끝난 쓰기도 옮긴다 — 붙잡아 둔 옛 store 로 부른 쓰기가 사라지지 않게)
+ *   · 되살아날 수 있는 까닭이면 자료층이 running 이 될 때 system_config 로 다시 열고, memory 에서 바꾼 키 중 system_config 에 없던 키만
+ *     옮겨 쓴 뒤 data 로 바꾼다(AppSettings.store 주석 «DB 가 이긴다» · 옮기기 실패면 안 바꾼다)
+ *     (바꾼 뒤 memory 저장소에 늦게 끝난 쓰기도 옮긴다 — 붙잡아 둔 옛 store 로 부른 쓰기가 사라지지 않게 · 검수 11 🟢1)
  */
 class AppSettingsHandle implements AppSettings {
   private current: SettingsStore;
   private sourceValue: 'data' | 'memory';
   private failureValue: string | null;
   private readonly memory: SettingsStore | null;
-  /** memory 에서 바뀐 키(옮기기 전) */
+  /** memory 에서 바뀐 키(옮기기 전 · 옮기기가 실패하면 다시 넣는다) */
   private readonly touched = new Set<string>();
+  /** 앞선 (실패한) 바꾸기에서 system_config 로 옮긴 키 — 다음 바꾸기에서 «DB 에 이미 있던 값»으로 치지 않는다(그 DB 값은 memory 에서 온 것) */
+  private readonly copiedKeys = new Set<string>();
   private readonly warned = new Set<string>();
   private readonly pending = new Set<Promise<void>>();
   private readonly storeListeners = new Set<(store: SettingsStore, changedKeys: readonly string[]) => void>();
@@ -201,7 +241,7 @@ class AppSettingsHandle implements AppSettings {
     if (data.state === 'running') this.attempt(data);
   }
 
-  private attempt(data: SettingsDataAccess): void {
+  private attempt(data: SettingsDataAccess & Pick<DataService, 'state'>): void {
     if (this.attempting) return;
     this.attempting = true;
     this.track(
@@ -210,11 +250,18 @@ class AppSettingsHandle implements AppSettings {
           const opened = await openDataSettings(data);
           if (this.closed) return;
           if ('store' in opened) {
-            await this.switchTo(opened.store);
+            await this.switchTo(opened.store, data);
             return;
           }
           this.failureValue = opened.failure;
-          this.log('error', `${opened.failure} — settings stay in memory${opened.retryable ? ' (will retry when the data service is running again)' : ''}`);
+          const state = data.state;
+          if (TERMINAL_DATA_STATES.includes(state)) {
+            // 검수 11 🟢6 — 내리는 중(stopping · stopped)이면 info · 끝 상태면 듣기를 멈춘다
+            this.log(isQuittingState(state) ? 'info' : 'error', `${opened.failure} — settings stay in memory (data service is ${state})`);
+            this.close();
+            return;
+          }
+          this.log('error', `${opened.failure} — settings stay in memory${opened.retryable ? retryNote(state) : ''}`);
           if (!opened.retryable) this.close();
         } finally {
           this.attempting = false;
@@ -223,9 +270,14 @@ class AppSettingsHandle implements AppSettings {
     );
   }
 
-  private async switchTo(dataStore: SettingsStore): Promise<void> {
+  private async switchTo(dataStore: SettingsStore, data: Pick<DataService, 'state'>): Promise<void> {
     const memory = this.memory;
     if (memory === null) return;
+    // 【AI 임시 결정】(검수 11 🟡2 · 정책 ①) system_config 를 연 때 이미 값이 있던 키 — 옮기기 «전»에 잡는다(옮긴 키가 섞이지 않게)
+    const existingInData = new Set(dataStore.keys());
+    const processed = new Set<string>();
+    const failed = new Set<string>();
+    const discarded = new Set<string>();
     let copied = 0;
     // memory 에서 바꾼 키를 옮긴다 — 옮기는 사이 또 바뀐 키가 없을 때까지(마지막 확인과 바꾸기 사이에 await 이 없다)
     for (;;) {
@@ -234,20 +286,45 @@ class AppSettingsHandle implements AppSettings {
       this.touched.clear();
       if (keys.length === 0) break;
       for (const key of keys) {
-        if (await copySetting(memory, dataStore, key, this.log)) copied += 1;
+        processed.add(key);
+        if (existingInData.has(key) && !this.copiedKeys.has(key)) {
+          discarded.add(key); // DB 가 이긴다 — memory 의 set · delete 를 버린다
+          continue;
+        }
+        if (await copySetting(memory, dataStore, key, this.log)) {
+          copied += 1;
+          failed.delete(key);
+          this.copiedKeys.add(key);
+        } else {
+          failed.add(key);
+        }
       }
     }
     if (this.closed) {
       this.log('warn', `settings: system_config came back while quitting — ${copied} change(s) copied, staying in memory`);
       return;
     }
-    // memory 에 없던 키(system_config 에 원래 있던 값)는 읽히는 값이 바뀐다 → 알린다
-    const changedKeys = dataStore.keys().filter((key) => !memory.has(key));
+    if (failed.size > 0) {
+      // 【AI 임시 결정】(검수 11 🟡1) 바꾸지 않는다 — memory 를 그대로 쓰고 바꾼 키 표시를 되돌려 둔다(다음 running 에 다시 해 본다)
+      for (const key of processed) this.touched.add(key);
+      const names = [...failed].map((key) => JSON.stringify(key)).join(', ');
+      this.failureValue = `settings changed in memory could not be copied to ${SYSTEM_CONFIG_ENTITY}: ${names}`;
+      this.log('error', `${this.failureValue} — settings stay in memory${retryNote(data.state)}`);
+      return;
+    }
+    // 바꾸며 읽히는 값이 달라진 키 — memory 에 없던 system_config 키 · DB 가 이겨 버린 memory 바꿈
+    const changedKeys = [...new Set([...memory.keys(), ...dataStore.keys()])].filter((key) => !sameSetting(memory, dataStore, key));
     this.current = dataStore;
     this.sourceValue = 'data';
     this.failureValue = null;
     this.close();
-    this.log('info', `settings moved to ${SYSTEM_CONFIG_ENTITY} (${dataStore.keys().length} key(s) · ${copied} change(s) made in memory copied)`);
+    for (const key of discarded) {
+      this.log('warn', `setting "${key}" was changed in memory but ${SYSTEM_CONFIG_ENTITY} already has a value for it — the memory change is discarded`);
+    }
+    this.log(
+      'info',
+      `settings moved to ${SYSTEM_CONFIG_ENTITY} (${dataStore.keys().length} key(s) · ${copied} change(s) made in memory copied · ${discarded.size} discarded)`,
+    );
     for (const listener of [...this.storeListeners]) {
       try {
         listener(dataStore, changedKeys);
@@ -259,7 +336,7 @@ class AppSettingsHandle implements AppSettings {
 
   private onMemoryChange(key: string): void {
     if (this.sourceValue === 'data') {
-      // 바꾼 뒤 늦게 끝난 memory 쓰기 → system_config 로 옮긴다
+      // 바꾼 뒤 늦게 끝난 memory 쓰기 → system_config 로 옮긴다(DB 가 이긴다 검사 없음 · 검수 11 🟢1 — AppSettings.store 주석)
       const memory = this.memory;
       if (memory !== null) this.track(copySetting(memory, this.current, key, this.log).then(() => undefined));
       return;
@@ -267,7 +344,10 @@ class AppSettingsHandle implements AppSettings {
     this.touched.add(key);
     if (this.warned.has(key)) return;
     this.warned.add(key);
-    this.log('warn', `setting "${key}" was changed in memory only — it is lost on quit unless ${SYSTEM_CONFIG_ENTITY} comes back (${this.failureValue ?? 'unknown'})`);
+    this.log(
+      'warn',
+      `setting "${key}" was changed in memory only — it is lost on quit, and also when ${SYSTEM_CONFIG_ENTITY} comes back if it already has a value for this key (${this.failureValue ?? 'unknown'})`,
+    );
   }
 
   private track(work: Promise<void>): void {
@@ -296,6 +376,7 @@ async function copySetting(from: SettingsStore, to: SettingsStore, key: string, 
  * 【AI 임시 결정】(검수 10 🟡1) 메모리여도 set · delete 는 된다 · persistent false 와 failure 로 알린다 · 키마다 처음 한 번 warn.
  *   다시 열기: 까닭이 되살아날 수 있을 때만(자료층이 restarting · open 이 timeout · processExited · unavailable · notOpen 로 실패) —
  *   failed · stopping · stopped 는 앱을 다시 켜기 전에는 running 이 안 되고(data-service.ts start 는 idle 에서만) · 깨진 행은 다시 열어도 같다.
+ *   검수 11 🟢6: open 이 실패한 때 자료층이 stopping · stopped(앱 종료 중)면 info 로 남기고 듣지 않는다(failed 는 error · 듣지 않는다).
  */
 export async function openAppSettings(
   data: SettingsDataAccess & Pick<DataService, 'state'>,
@@ -313,12 +394,13 @@ export async function openAppSettings(
       return new AppSettingsHandle(opened.store, 'data', null, log);
     }
     failure = opened.failure;
-    retryable = opened.retryable;
-    log('error', `${failure} — using in-memory settings (changes are lost on quit)`);
+    const state = data.state;
+    retryable = opened.retryable && !TERMINAL_DATA_STATES.includes(state);
+    log(isQuittingState(state) ? 'info' : 'error', `${failure} — using in-memory settings (changes are lost on quit)`);
   } else {
     failure = `data service is ${data.state}`;
     retryable = !TERMINAL_DATA_STATES.includes(data.state);
-    log('warn', `${failure} — using in-memory settings (changes are lost on quit)`);
+    log(isQuittingState(data.state) ? 'info' : 'warn', `${failure} — using in-memory settings (changes are lost on quit)`);
   }
   const handle = new AppSettingsHandle(await SettingsStore.open(new InMemorySettingsBackend()), 'memory', failure, log);
   if (retryable && options.watchState) handle.retryWhenRunning(data, options.watchState);

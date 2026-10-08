@@ -206,11 +206,12 @@ describe('설정 열기 · settings.changed', () => {
     };
   }
 
-  it('검수 10 🟡1: memory(자료층 restarting) → running 이 되면 system_config 로 다시 열고 메모리에서 바꾼 키를 옮긴다 · 늦은 메모리 쓰기도 옮긴다', async () => {
+  it('검수 10 🟡1 · 검수 11 🟡2: memory(자료층 restarting) → running 이면 system_config 로 바꾼다 · DB 에 없던 키만 옮긴다(DB 가 이긴다) · 늦은 메모리 쓰기도 옮긴다', async () => {
     const { core, access } = await coreOver();
     const store0 = await SettingsStore.open(new (await import('./settings/data-settings-backend.js')).DataSettingsBackend(access));
     await store0.set('app.ui.existing', 'old');
     await store0.set('app.ui.edited', 'db');
+    await store0.set('app.ui.list', ['a', 'b']);
     const data = { ...access, state: 'restarting' as string };
     const w = stateWatch();
     const { log, lines } = collectingLog();
@@ -218,14 +219,18 @@ describe('설정 열기 · settings.changed', () => {
     expect(s).toMatchObject({ source: 'memory', persistent: false, failure: 'data service is restarting' });
     expect(w.size()).toBe(1);
     const bus = new EventBus();
-    const seen: unknown[] = [];
-    bus.on(SETTINGS_CHANGED_EVENT, (payload) => void seen.push(payload));
+    const seen: { key: string }[] = [];
+    bus.on(SETTINGS_CHANGED_EVENT, (payload) => void seen.push(payload as { key: string }));
     bridgeAppSettingsToBus(s, bus);
     const memory = s.store;
-    await memory.set('app.ui.edited', 'mem');
+    await memory.set('app.ui.edited', 'mem'); // DB 에 있던 키 — 버린다
+    await memory.set('app.ui.list', ['x']); // 빈 memory 의 default 위에서 고친 목록 — DB 의 [a, b] 를 덮지 않는다
+    await memory.delete('app.ui.list'); // DB 에 있던 키를 memory 에서 지움 — 버린다(DB 값이 남는다)
     await memory.set('app.ui.new', 1);
     await memory.set('app.ui.new', 2);
-    expect(lines.filter((l) => l.message.includes('changed in memory only'))).toHaveLength(2); // 키마다 한 번
+    await memory.set('app.ui.same', 'v'); // DB 에 없던 키 · 옮긴다
+    expect(lines.filter((l) => l.message.includes('changed in memory only'))).toHaveLength(4); // 키마다 한 번
+    const memoryEvents = seen.length;
 
     data.state = 'running';
     w.fire('running');
@@ -233,23 +238,87 @@ describe('설정 열기 · settings.changed', () => {
     expect(s).toMatchObject({ source: 'data', persistent: true, failure: null });
     expect(s.store).not.toBe(memory);
     expect(w.size()).toBe(0); // 바꾼 뒤 듣기를 멈춘다
-    expect(s.store.get('app.ui.edited', (v) => v)).toBe('mem');
+    expect(s.store.get('app.ui.edited', (v) => v)).toBe('db');
+    expect(s.store.get('app.ui.list', (v) => v)).toEqual(['a', 'b']);
     expect(s.store.get('app.ui.new', (v) => v)).toBe(2);
     expect(s.store.get('app.ui.existing', (v) => v)).toBe('old');
+    // 버린 키마다 warn(키 이름만 · 값은 안 적는다)
+    const discards = lines.filter((l) => l.level === 'warn' && l.message.includes('memory change is discarded'));
+    expect(discards.map((l) => l.message.match(/"([^"]+)"/)?.[1]).sort()).toEqual(['app.ui.edited', 'app.ui.list']);
+    expect(discards.some((l) => l.message.includes('"mem"') || l.message.includes('"x"'))).toBe(false); // 값은 안 적는다
+    expect(lines.some((l) => l.level === 'info' && l.message.includes('2 change(s) made in memory copied · 2 discarded'))).toBe(true);
+    // 바꾸며 읽히는 값이 달라진 키만 알린다: existing(memory 에 없었다) · edited(mem → db) · list(없음 → [a, b]) — new · same 은 같은 값
+    expect(seen.slice(memoryEvents).map((p) => p.key).sort()).toEqual(['app.ui.edited', 'app.ui.existing', 'app.ui.list']);
 
-    // 붙잡아 둔 옛 메모리 store 로 늦게 쓴 것도 system_config 로 간다(쓰기 · 지우기)
+    // 붙잡아 둔 옛 메모리 store 로 늦게 쓴 것도 system_config 로 간다(쓰기 · 지우기 · DB 가 이긴다 검사 없음 — AppSettings.store 주석)
+    const afterSwitch = seen.length;
     await memory.set('app.ui.late', true);
     await memory.delete('app.ui.new');
     await s.whenIdle();
     const raw = (await core.methods()[DATA_METHOD.search]!({ entity: 'system_config', criteria: {} })) as { elements: Record<string, unknown>[] };
     expect(Object.fromEntries(raw.elements.map((e) => [e['configurationKey'], e['configurationValue']]))).toEqual({
       'app.ui.existing': { _value: 'old' },
-      'app.ui.edited': { _value: 'mem' },
+      'app.ui.edited': { _value: 'db' },
+      'app.ui.list': { _value: ['a', 'b'] },
+      'app.ui.same': { _value: 'v' },
       'app.ui.late': { _value: true },
     });
-    // 메모리 쓰기 알림 셋 → 바꾸며 값이 달라진 키(existing) → data store 의 알림(late · new 지움) — 메모리 쪽 알림은 끊었다(두 번 오지 않는다)
-    expect(seen).toEqual([{ key: 'app.ui.edited' }, { key: 'app.ui.new' }, { key: 'app.ui.new' }, { key: 'app.ui.existing' }, { key: 'app.ui.late' }, { key: 'app.ui.new' }]);
-    expect(lines.some((l) => l.level === 'info' && l.message.includes('settings moved to system_config') && l.message.includes('2 change(s)'))).toBe(true);
+    // 메모리 쪽 알림은 끊었다(두 번 오지 않는다) — data store 의 알림만
+    expect(seen.slice(afterSwitch)).toEqual([{ key: 'app.ui.late' }, { key: 'app.ui.new' }]);
+    await core.close();
+  });
+
+  it('검수 11 🟡1: 옮기기가 하나라도 실패하면 바꾸지 않는다 — memory 값 그대로 · error 로그(키 이름) · 다음 running 에 다시 해 본다', async () => {
+    const { core, access } = await coreOver();
+    const store0 = await SettingsStore.open(new (await import('./settings/data-settings-backend.js')).DataSettingsBackend(access));
+    await store0.set('app.ui.k', 'db');
+    const data = { ...access, state: 'restarting' as string };
+    const w = stateWatch();
+    const { log, lines } = collectingLog();
+    const s = await openAppSettings(data as never, Promise.resolve(true), log, { watchState: w.watchState as never });
+    const bus = new EventBus();
+    const seen: unknown[] = [];
+    bus.on(SETTINGS_CHANGED_EVENT, (payload) => void seen.push(payload));
+    bridgeAppSettingsToBus(s, bus);
+    await s.store.set('app.ui.k', 'mem');
+    await s.store.set('app.ui.ok', 'first'); // 이것은 옮겨진다(첫 upsert)
+    await s.store.set('app.ui.only', 'memonly'); // 이것은 실패한다
+    const memoryEvents = seen.length;
+    const realUpsert = data.upsert;
+    let upserts = 0;
+    data.upsert = async (entity, rows) => {
+      upserts += 1;
+      if (upserts > 1) throw new RpcError(DATA_RPC_ERROR.timeout, 'request timed out');
+      return realUpsert(entity, rows);
+    };
+    data.state = 'running';
+    w.fire('running');
+    await s.whenIdle();
+    // 바꾸지 않았다 — memory 값이 그대로 읽힌다
+    expect(s.source).toBe('memory');
+    expect(s.store.get('app.ui.k', (v) => v)).toBe('mem');
+    expect(s.store.get('app.ui.only', (v) => v)).toBe('memonly');
+    expect(s.failure).toMatch(/could not be copied to system_config: "app\.ui\.only"/);
+    expect(seen.length).toBe(memoryEvents); // 바꾸지 않았으니 settings.changed 도 없다
+    const err = lines.filter((l) => l.level === 'error');
+    expect(err).toHaveLength(1);
+    expect(err[0]?.message).toMatch(/"app\.ui\.only"/);
+    expect(err[0]?.message).not.toMatch(/memonly|"app\.ui\.ok"/); // 값 · 옮겨진 키는 안 적는다
+    expect(err[0]?.message).toMatch(/no retry scheduled/); // 지금 running — 자료층이 다시 띄워져야 다시 해 본다(검수 11 🟢3)
+    expect(w.size()).toBe(1); // 듣기는 남는다
+
+    // 자료층이 다시 띄워지면(restarting → running) 다시 해 본다 · 앞서 옮긴 ok 는 «DB 에 있던 값»으로 치지 않는다
+    data.upsert = realUpsert;
+    await s.store.set('app.ui.ok', 'second');
+    w.fire('restarting');
+    w.fire('running');
+    await s.whenIdle();
+    expect(s.source).toBe('data');
+    expect(s.store.get('app.ui.k', (v) => v)).toBe('db'); // DB 가 이긴다(검수 11 🟡2)
+    expect(s.store.get('app.ui.only', (v) => v)).toBe('memonly');
+    expect(s.store.get('app.ui.ok', (v) => v)).toBe('second');
+    expect(lines.filter((l) => l.message.includes('memory change is discarded')).map((l) => l.message.match(/"([^"]+)"/)?.[1])).toEqual(['app.ui.k']);
+    expect(w.size()).toBe(0);
     await core.close();
   });
 
@@ -283,6 +352,80 @@ describe('설정 열기 · settings.changed', () => {
     expect(w2.size()).toBe(0);
     expect(b.lines.at(-1)?.message).toMatch(/stay in memory — data service is failed/);
     expect(s2.source).toBe('memory');
+  });
+
+  it('검수 11 🟢3: open 이 timeout 이고 자료층이 그대로 running 이면 «will retry» 라고 적지 않는다 · restarting 이면 적는다', async () => {
+    const { core, access } = await coreOver();
+    let searches = 0;
+    const data = {
+      ...access,
+      state: 'running' as string,
+      search: (async () => {
+        searches += 1;
+        throw new RpcError(DATA_RPC_ERROR.timeout, 'request timed out');
+      }) as never,
+    };
+    const w = stateWatch();
+    const { log, lines } = collectingLog();
+    const s = await openAppSettings(data as never, Promise.resolve(true), log, { watchState: w.watchState as never });
+    await s.whenIdle(); // 듣기 시작할 때 running — 한 번 바로 다시 열어 본다(또 timeout)
+    expect(searches).toBe(2);
+    expect(s.source).toBe('memory');
+    const last = lines.at(-1)?.message ?? '';
+    expect(last).toMatch(/no retry scheduled/);
+    expect(last).not.toMatch(/will retry/);
+    expect(w.size()).toBe(1);
+    // 자료층이 다시 띄워지는 중에 실패하면 «will retry»
+    w.fire('restarting');
+    data.state = 'restarting';
+    w.fire('running'); // 듣는 쪽은 running 을 받았지만 open 이 실패한 때 상태는 restarting
+    await s.whenIdle();
+    expect(searches).toBe(3);
+    expect(lines.at(-1)?.message).toMatch(/will retry when the data service is running again/);
+    await core.close();
+  });
+
+  it('검수 11 🟢6: 앱 종료 중(stopping · stopped) open 실패는 info · 듣기를 남기지 않는다', async () => {
+    const { core, access } = await coreOver();
+    // 처음 열 때: open 하는 사이 자료층이 stopping 이 되고 unavailable
+    const data = {
+      ...access,
+      state: 'running' as string,
+      search: (async () => {
+        data.state = 'stopping';
+        throw new RpcError(DATA_RPC_ERROR.unavailable, 'data service is stopped');
+      }) as never,
+    };
+    const w = stateWatch();
+    const a = collectingLog();
+    const s = await openAppSettings(data as never, Promise.resolve(true), a.log, { watchState: w.watchState as never });
+    expect(s.source).toBe('memory');
+    expect(a.lines.map((l) => l.level)).toEqual(['info']);
+    expect(w.size()).toBe(0);
+
+    // 다시 열기 중: restarting → running 을 받고 여는 사이 stopping
+    const data2 = { ...access, state: 'restarting' as string, search: data.search };
+    const w2 = stateWatch();
+    const b = collectingLog();
+    const s2 = await openAppSettings(data2 as never, Promise.resolve(true), b.log, { watchState: w2.watchState as never });
+    data2.search = (async () => {
+      data2.state = 'stopping';
+      throw new RpcError(DATA_RPC_ERROR.unavailable, 'data service is stopped');
+    }) as never;
+    w2.fire('running');
+    await s2.whenIdle();
+    expect(s2.source).toBe('memory');
+    expect(b.lines.at(-1)).toMatchObject({ level: 'info' });
+    expect(b.lines.at(-1)?.message).toMatch(/data service is stopping/);
+    expect(b.lines.some((l) => l.level === 'error')).toBe(false);
+    expect(w2.size()).toBe(0);
+
+    // 첫 띄우기가 내리는 중 취소(started false · stopped)도 info
+    const c = collectingLog();
+    await openAppSettings({ ...access, state: 'stopped' } as never, Promise.resolve(false), c.log, { watchState: w.watchState as never });
+    expect(c.lines.map((l) => l.level)).toEqual(['info']);
+    expect(w.size()).toBe(0);
+    await core.close();
   });
 
   it('SettingsStore.onChange → EventBus settings.changed — 값은 싣지 않고 키(+ 플러그인 이름 · 설정 키)만', async () => {
@@ -405,6 +548,28 @@ describe('will-quit 리스너 · startDataService 두 번째 부름', () => {
     expect(logged).toEqual(['beforeStop failed — stopping data service anyway']);
   });
 
+  it('검수 11: stop 이 거부돼도 exit 은 한 번 — will-quit 이 두 번 와도', async () => {
+    const exit = vi.fn();
+    const logged: string[] = [];
+    const handler = startDataServiceModule.createWillQuitHandler({
+      stop: async () => {
+        throw new Error('stop boom');
+      },
+      exit,
+      logError: (message) => void logged.push(message),
+    });
+    const event = { preventDefault: vi.fn() };
+    handler(event);
+    handler(event);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(logged).toEqual(['data service stop failed — exiting anyway']);
+    expect(event.preventDefault).toHaveBeenCalledTimes(2);
+    handler(event); // 내린 뒤에는 막지 않는다
+    expect(event.preventDefault).toHaveBeenCalledTimes(2);
+  });
+
   it('【AI 임시 결정】 🟢6: 두 번째 startDataService — 옵션 없으면 처음 것 · beforeStop 을 주면 예외(조용히 버리지 않는다)', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -481,5 +646,46 @@ describe('startAppServices', () => {
     await pending;
     await vi.waitFor(() => expect(order).toEqual(['views.dispose', 'registry.dispose', 'settings.upsert', 'data.stop', 'exit']));
     expect(h.removed).toEqual(h.handled); // 화면 호스트가 ipcMain 핸들러를 걷었다
+  });
+
+  it('검수 11: 끝나지 않는 설정 쓰기 — SETTINGS_IDLE_TIMEOUT_MS(3초) 뒤 warn 하고 자료층 stop → exit', async () => {
+    // startAppServices 는 한 번만 만든다(모듈 변수) — 새 모듈로 다시 부른다(vi.mock 은 그대로)
+    vi.resetModules();
+    const fresh = await import('./app-services.js');
+    const freshStart = await vi.importActual<typeof import('./data/start-data-service.js')>('./data/start-data-service.js');
+    h.userData = dir;
+    h.fakeService = {
+      state: 'running',
+      search: async () => ({ total: null, elements: [], aggregations: {} }),
+      get: async () => null,
+      upsert: () => new Promise(() => undefined), // 끝나지 않는다
+      delete: async () => ({ ids: [] }),
+    };
+    h.started = Promise.resolve(true);
+    const { log, lines } = collectingLog();
+    const services = fresh.startAppServices(log);
+    expect(services).not.toBe(startAppServices(log));
+    await services.startPlugins();
+    const settings = await services.settings;
+    expect(settings.source).toBe('data');
+    void settings.store.set('app.ui.theme', 'dark');
+    const order: string[] = [];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const handler = freshStart.createWillQuitHandler({
+        beforeStop: h.startOptions!.beforeStop!,
+        stop: async () => void order.push('data.stop'),
+        exit: () => void order.push('exit'),
+      });
+      handler({ preventDefault: () => undefined });
+      await vi.advanceTimersByTimeAsync(fresh.SETTINGS_IDLE_TIMEOUT_MS - 1);
+      expect(order).toEqual([]); // 상한 전에는 자료층을 내리지 않는다
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(order).toEqual(['data.stop', 'exit']));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(fresh.SETTINGS_IDLE_TIMEOUT_MS).toBe(3_000);
+    expect(lines.some((l) => l.level === 'warn' && l.message.includes('settings writes did not finish in 3000ms'))).toBe(true);
   });
 });

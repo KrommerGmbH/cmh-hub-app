@@ -207,5 +207,37 @@ describe('DataSettingsBackend (R7-c · system_config 위 SettingsStore)', () => 
     expect(toSettingsRow({ ...ok, configurationKey: 3 })).toMatchObject({ configuration_key: `system_config:${'a'.repeat(32)}` });
     expect(toSettingsRow({ ...ok, createdAt: undefined })).toMatchObject({ configuration_key: 'a.b.c', created_at: null, problem: expect.stringMatching(/createdAt/) });
     expect(() => toSettingsRow({ ...ok, id: undefined as unknown as string })).toThrow(/without id/);
+    // 검수 11 🟢7 — 진짜 키가 `system_config:` 로 시작하면 자기 id 의 지은 키(꼴이 맞는 행이어도)
+    expect(toSettingsRow({ ...ok, configurationKey: `system_config:${'c'.repeat(32)}` })).toMatchObject({
+      unmapped: true,
+      configuration_key: `system_config:${'a'.repeat(32)}`,
+      problem: expect.stringMatching(/reserved prefix/),
+    });
+  });
+
+  it('검수 11 🟢7: 진짜 키가 다른 행의 지은 키(`system_config:<판매채널 행 id>`)와 같아도 repair 로 열리고 둘 다 지운다', async () => {
+    const core = await openCore();
+    const sc = 'b'.repeat(32);
+    await core.methods()[DATA_METHOD.upsert]!({
+      entity: 'system_config',
+      rows: [{ configurationKey: 'x.y.z', configurationValue: { _value: 2 }, salesChannelId: sc, createdAt: '2026-10-08T00:00:00.000Z' }],
+    });
+    const all = async () => ((await core.methods()[DATA_METHOD.search]!({ entity: 'system_config', criteria: {} })) as EntitySearchResult).elements;
+    const channelId = (await all())[0]!.id;
+    // SettingsStore 밖에서(DataService.upsert 를 바로) 지은 키 꼴의 진짜 키를 쓴 행
+    await core.methods()[DATA_METHOD.upsert]!({
+      entity: 'system_config',
+      rows: [{ configurationKey: `system_config:${channelId}`, configurationValue: { _value: 3 }, createdAt: '2026-10-08T00:00:00.000Z' }],
+    });
+    const reservedId = (await all()).find((e) => e.id !== channelId)!.id;
+    const backend = new DataSettingsBackend(accessOver(core));
+    await expect(SettingsStore.open(backend)).rejects.toThrow(/2 invalid row/); // duplicate 가 아니다
+    const repair = await SettingsStore.open(backend, { repair: true });
+    expect(repair.invalidKeys().sort()).toEqual([`system_config:${channelId}`, `system_config:${reservedId}`].sort());
+    await repair.delete(`system_config:${reservedId}`);
+    expect((await all()).map((e) => e.id)).toEqual([channelId]);
+    await repair.delete(`system_config:${channelId}`);
+    expect(await all()).toEqual([]);
+    await core.close();
   });
 });

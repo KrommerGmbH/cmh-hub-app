@@ -7,6 +7,7 @@
 // 못 바꾸는 행(검수 10 🟡1 · 판매채널 행 · 값 null · createdAt 없음 …): load 가 던지지 않고 UnmappedSystemConfigRow 로 넘긴다 →
 //   SettingsStore.open(…, { repair: true }) 의 invalidKeys() 에 보이고 delete 로 지운다. 진짜 키를 캐시 키로 쓸 수 없는 행(판매채널 행 · 키 없음)은
 //   `system_config:<id>` 로 지은 키를 쓰고 delete 가 그 키를 id 로 지운다. id 가 없는 행만 아직 예외(어느 행인지 가리킬 길이 없다).
+//   진짜 키가 `system_config:` 로 시작하는 행도 지은 키(자기 id)로 넘긴다(검수 11 🟢7 · toSettingsRow).
 
 import type { Entity } from '@cmh-hub-app/data';
 import type { DataService } from '../data/data-service.js';
@@ -60,16 +61,20 @@ const ERROR_PREFIX = 'settings backend: ';
 /**
  * 자료층 응답 한 줄 → SystemConfigRow, 못 바꾸면 UnmappedSystemConfigRow(던지지 않는다 · id 가 없는 행만 예외).
  * 판매채널 행 · 키가 글이 아닌 행은 캐시 키로 `system_config:<id>` 를 쓴다(로컬 행과 같은 키여도 겹치지 않게).
+ * 검수 11 🟢7 — 진짜 키가 `system_config:` 로 시작하는 행(SettingsStore 밖에서 쓴 행)도 못 바꾸는 행으로 «자기 id» 의 지은 키를 쓴다:
+ *   진짜 키 그대로 두면 다른 행의 지은 키와 겹쳐 SettingsStore.open 이 duplicate 로 던지고 repair 로도 못 본다.
  */
 export function toSettingsRow(entity: Entity): SystemConfigRow | UnmappedSystemConfigRow {
   if (typeof entity.id !== 'string') throw new Error(`${ERROR_PREFIX}row without id`);
+  const key = entity['configurationKey'];
+  const reservedKey = typeof key === 'string' && key.startsWith(UNMAPPED_KEY_PREFIX);
   try {
+    if (reservedKey) throw new Error(`${ERROR_PREFIX}system_config ${entity.id} has configurationKey with the reserved prefix "${UNMAPPED_KEY_PREFIX}"`);
     return toSystemConfigRow(entity);
   } catch (error) {
-    const key = entity['configurationKey'];
     const channel = entity['salesChannelId'];
     const createdAt = entity['createdAt'];
-    const ownKey = typeof key === 'string' && (channel === null || channel === undefined);
+    const ownKey = typeof key === 'string' && !reservedKey && (channel === null || channel === undefined);
     const message = error instanceof Error ? error.message : String(error);
     return {
       unmapped: true,
